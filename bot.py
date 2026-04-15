@@ -758,6 +758,52 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mini App'ten gelen veriyi işle ve gruba ilet"""
     logger.info("=== WEBAPP DATA RECEIVED ===")
+
+    # Mini App ID → güzel isim
+    NAMES = {
+        "esp":"Кофе эспрессо смесь 1кг","col":"Кофе Колумбия 250г","eth":"Кофе Эфиопия 250г",
+        "brz":"Кофе Бразилия 250г","crm":"Кофе эспрессо крема 250г","dcf":"Кофе Декаф 250г",
+        "dc":"Дрип Колумбия (5шт)","de":"Дрип Эфиопия (5шт)",
+        "m32":"Молоко 3.2% (12л)","mal":"Молоко миндальное 1л","mco":"Молоко кокосовое 1л",
+        "mlf":"Молоко безлактозное 1л","c10":"Сливки 10% 200мл","c33":"Сливки 33% 1л",
+        "sb":"Сироп банановый","sv":"Сироп ванильный","sk":"Сироп карамельный",
+        "ss":"Сироп клубничный","sco":"Сироп кокосовый","sl":"Сироп лаванды",
+        "sa":"Сироп миндальный","sm":"Сироп мятный","sh":"Сироп лесной орех",
+        "ssc":"Сироп солёная карамель","sp":"Сироп фисташки","sch":"Сироп шоколадный",
+        "tc":"Топпинг шоколадный","pk":"Пюре клубничное",
+        "mnt":"Мята 100г","obl":"Облепиха с/м 0.5кг","med":"Мёд 1кг",
+        "imb":"Имбирь 0.5кг","lim":"Лимон","smr":"Смородина кр. 0.5кг",
+        "mr":"Мороженое 1.8кг","sok":"Сок апельсиновый",
+        "k1":"Стакан 100мл","k2":"Стакан 200мл","k3":"Стакан 300мл",
+        "k4":"Стакан 400мл","kd":"Купол 400мл","k5":"Стакан 500мл",
+        "l2":"Крышка 200","ld":"Крышка купол 400","l3":"Крышка 300-500",
+        "h2":"Подстаканник 2","h4":"Подстаканник 4",
+        "pt":"Пакет майка","kr":"Крафт пакет","fr":"Фирм. пакет","ml":"Марк. лента",
+        "slv":"Салфетки","tg2":"Трубочки гофр.","tf":"Трубочки плоские",
+        "fh":"Фильтры холод.","ch":"Чековая лента","ms":"Мусорный пакет",
+        "fb":"Фильтры батч","tu":"Тряпка уборки","td":"Тряпка дельфин",
+        "gm":"Гель мыло рук","pr":"Полотенца рук","xo":"Химия оборуд.",
+        "pe":"Перчатки","ba":"Баллон азот",
+        "ip":"Мороженое пломбир","ic":"Мороженое шоколад",
+        "is":"Мороженое сол.карам.","ik":"Мороженое клубника",
+        "cu":"Кукис классик","sb2":"Shoko balls",
+        "sug":"Сахар 1кг","cac":"Какао 500г","mat":"Матча 100г","cin":"Корица 100г",
+        "hal":"Халва 500г","fpi":"Мука фисташки 500г","szm":"Сахарозаменитель",
+        "wg":"Вода с газом (уп.)","ws":"Вода без газа (уп.)",
+    }
+
+    # ID → категория
+    CATS = {
+        "esp":"☕","col":"☕","eth":"☕","brz":"☕","crm":"☕","dcf":"☕","dc":"☕","de":"☕",
+        "m32":"🥛","mal":"🥛","mco":"🥛","mlf":"🥛","c10":"🥛","c33":"🥛",
+        "sb":"🍯","sv":"🍯","sk":"🍯","ss":"🍯","sco":"🍯","sl":"🍯","sa":"🍯","sm":"🍯","sh":"🍯","ssc":"🍯","sp":"🍯","sch":"🍯","tc":"🍯","pk":"🍯",
+        "mnt":"🍊","obl":"🍊","med":"🍊","imb":"🍊","lim":"🍊","smr":"🍊","mr":"🍊","sok":"🍊",
+        "k1":"🥤","k2":"🥤","k3":"🥤","k4":"🥤","kd":"🥤","k5":"🥤","l2":"🥤","ld":"🥤","l3":"🥤","h2":"🥤","h4":"🥤","pt":"🥤","kr":"🥤","fr":"🥤","ml":"🥤",
+        "slv":"🧻","tg2":"🧻","tf":"🧻","fh":"🧻","ch":"🧻","ms":"🧻","fb":"🧻","tu":"🧻","td":"🧻","gm":"🧻","pr":"🧻","xo":"🧻","pe":"🧻","ba":"🧻",
+        "ip":"🍦","ic":"🍦","is":"🍦","ik":"🍦","cu":"🍦","sb2":"🍦",
+        "sug":"🏪","cac":"🏪","mat":"🏪","cin":"🏪","hal":"🏪","fpi":"🏪","szm":"🏪","wg":"🏪","ws":"🏪",
+    }
+
     try:
         raw = update.effective_message.web_app_data.data
         logger.info(f"Raw data: {raw}")
@@ -767,32 +813,44 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         now = datetime.now(TZ)
 
         group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
-        logger.info(f"Action: {action}, User: {user.first_name}, Group ID: {group_id}")
 
         if action == "order":
             items = data.get("items", {})
 
-            # Mesaj oluştur
-            text = f"📦 *НОВЫЙ ЗАКАЗ*\n\n"
-            text += f"👤 {user.first_name}\n"
-            text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n\n"
+            # Kategoriye göre grupla
+            grouped = {}
             for pid, qty in items.items():
-                text += f"  • {pid}: *{qty}*\n"
+                cat_emoji = CATS.get(pid, "📦")
+                if cat_emoji not in grouped:
+                    grouped[cat_emoji] = []
+                name = NAMES.get(pid, pid)
+                grouped[cat_emoji].append(f"{name}: *{qty}*")
 
-            # Kullanıcıya cevap
+            # Güzel mesaj
+            text = f"☕ *ЗАКАЗ — CAFFELITO*\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"👤 {user.first_name}\n"
+            text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n\n"
+
+            for cat_emoji, lines in grouped.items():
+                for line in lines:
+                    text += f"  {cat_emoji} {line}\n"
+                text += "\n"
+
+            total = sum(items.values())
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"📊 Итого: *{total} позиций*"
+
             await update.message.reply_text("✅ Заказ принят!")
 
-            # Gruba gönder
             if group_id:
                 try:
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
-                    await update.message.reply_text(f"⚠️ Ошибка отправки в группу: {e}")
-            else:
-                logger.warning("No GROUP_CHAT_ID set!")
-                await update.message.reply_text("⚠️ GROUP_CHAT_ID не настроен. Напишите /setgroup в группе.")
+                    await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
         elif action == "tasks":
             completed = data.get("completed", [])
@@ -802,18 +860,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if group_id:
                 try:
-                    text = f"✅ *ЗАДАЧИ ВЫПОЛНЕНЫ*\n\n"
+                    text = f"✅ *ЗАДАЧИ ВЫПОЛНЕНЫ*\n"
+                    text += f"━━━━━━━━━━━━━━━━━━\n"
                     text += f"👤 {user.first_name}\n"
                     text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
-                    text += f"📋 {category}\n\n"
-                    for item in completed[:10]:
+                    text += f"📋 {category}\n"
+                    text += f"━━━━━━━━━━━━━━━━━━\n\n"
+                    for item in completed:
                         text += f"  ✅ {item}\n"
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
-                    logger.info("Tasks forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
-        else:
-            logger.warning(f"Unknown action: {action}")
 
     except Exception as e:
         logger.error(f"WEBAPP DATA ERROR: {e}")
