@@ -823,11 +823,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
 
             grouped = {}
+            names_from_app = data.get("names", {})
             for pid, qty in items.items():
                 cat_key = CAT_MAP.get(pid, "other")
                 if cat_key not in grouped:
                     grouped[cat_key] = []
-                name = NAMES.get(pid, pid)
+                name = names_from_app.get(pid) or NAMES.get(pid, pid)
                 grouped[cat_key].append((name, qty))
 
             # Temiz, kalın, emojisiz mesaj
