@@ -7,7 +7,7 @@ import json, os, logging, sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    WebAppInfo, BotCommand
+    WebAppInfo, BotCommand, KeyboardButton, ReplyKeyboardMarkup
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -352,20 +352,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.execute("INSERT OR IGNORE INTO shops (chat_id) VALUES (?)",
                (update.effective_chat.id,))
     db.commit()
-    keyboard = [
-        [InlineKeyboardButton("📦 Заказ", callback_data="menu_order")],
-        [InlineKeyboardButton("📋 Задачи смены", callback_data="menu_gorev")],
-        [InlineKeyboardButton("🧹 Уборка", callback_data="menu_temizlik")],
-        [InlineKeyboardButton("✅ Проверка ОКК", callback_data="menu_okk")],
-        [InlineKeyboardButton("📊 Отчёт за сегодня", callback_data="menu_report")],
-    ]
+
+    # Kalıcı buton altta — her zaman görünür
     if WEBAPP_URL:
-        keyboard.append([InlineKeyboardButton("📱 Приложение",
-                         web_app=WebAppInfo(url=WEBAPP_URL))])
+        reply_kb = ReplyKeyboardMarkup(
+            [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=WEBAPP_URL))]],
+            resize_keyboard=True
+        )
+    else:
+        reply_kb = None
 
     await update.message.reply_text(
-        "☕ *CAFFELITO BOT*\nВыберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "☕ *CAFFELITO BOT*\n\n"
+        "Нажмите кнопку ниже чтобы открыть приложение 👇",
+        reply_markup=reply_kb,
         parse_mode="Markdown")
 
 
@@ -756,56 +756,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════
 
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mini App'ten gelen veriyi işle ve gruba ilet"""
+    logger.info("=== WEBAPP DATA RECEIVED ===")
     try:
-        data = json.loads(update.effective_message.web_app_data.data)
+        raw = update.effective_message.web_app_data.data
+        logger.info(f"Raw data: {raw}")
+        data = json.loads(raw)
         action = data.get("action")
         user = update.effective_user
         now = datetime.now(TZ)
-        db = get_db()
+
+        group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+        logger.info(f"Action: {action}, User: {user.first_name}, Group ID: {group_id}")
 
         if action == "order":
             items = data.get("items", {})
-            db.execute(
-                "INSERT INTO orders (chat_id, user_id, user_name, items, created_at) VALUES (?,?,?,?,?)",
-                (update.effective_chat.id, user.id, user.first_name,
-                 json.dumps(items), now.isoformat()))
-            db.commit()
 
-            # Güzel mesaj oluştur
+            # Mesaj oluştur
             text = f"📦 *НОВЫЙ ЗАКАЗ*\n\n"
             text += f"👤 {user.first_name}\n"
             text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n\n"
             for pid, qty in items.items():
-                p = next((x for x in ALL_PRODUCTS if x["id"] == pid), None)
-                name = p["name"] if p else pid
-                text += f"  • {name}: *{qty}*\n"
+                text += f"  • {pid}: *{qty}*\n"
 
-            await update.message.reply_text(f"✅ Заказ отправлен!", parse_mode="Markdown")
+            # Kullanıcıya cevap
+            await update.message.reply_text("✅ Заказ принят!")
 
-            # Gruba ilet
-            group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+            # Gruba gönder
             if group_id:
                 try:
-                    await context.bot.send_message(
-                        chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    logger.info("Order forwarded to group OK")
                 except Exception as e:
-                    logger.error(f"Group forward error: {e}")
+                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    await update.message.reply_text(f"⚠️ Ошибка отправки в группу: {e}")
+            else:
+                logger.warning("No GROUP_CHAT_ID set!")
+                await update.message.reply_text("⚠️ GROUP_CHAT_ID не настроен. Напишите /setgroup в группе.")
 
         elif action == "tasks":
             completed = data.get("completed", [])
             category = data.get("category", "")
-            db.execute(
-                "INSERT INTO tasks (chat_id, user_id, user_name, category, tasks, date, created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (update.effective_chat.id, user.id, user.first_name,
-                 category, json.dumps(completed, ensure_ascii=False),
-                 now.strftime("%Y-%m-%d"), now.isoformat()))
-            db.commit()
 
-            await update.message.reply_text(f"✅ Задачи сохранены!", parse_mode="Markdown")
+            await update.message.reply_text("✅ Задачи сохранены!")
 
-            # Gruba ilet
-            group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
             if group_id:
                 try:
                     text = f"✅ *ЗАДАЧИ ВЫПОЛНЕНЫ*\n\n"
@@ -814,15 +808,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     text += f"📋 {category}\n\n"
                     for item in completed[:10]:
                         text += f"  ✅ {item}\n"
-                    if len(completed) > 10:
-                        text += f"  ... и ещё {len(completed)-10}\n"
-                    await context.bot.send_message(
-                        chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    logger.info("Tasks forwarded to group OK")
                 except Exception as e:
-                    logger.error(f"Group forward error: {e}")
+                    logger.error(f"GROUP FORWARD FAILED: {e}")
+        else:
+            logger.warning(f"Unknown action: {action}")
 
     except Exception as e:
-        logger.error(f"WebApp data error: {e}")
+        logger.error(f"WEBAPP DATA ERROR: {e}")
+        try:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        except:
+            pass
 
 
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -843,23 +841,22 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Grupta webapp butonu göster — pin'le!"""
+    """Grupta veya özelde webapp butonu göster"""
     webapp_url = WEBAPP_URL
     if not webapp_url:
         await update.message.reply_text("❌ WEBAPP_URL не настроен.")
         return
 
-    keyboard = [[InlineKeyboardButton(
-        "☕ Открыть Caffelito",
-        web_app=WebAppInfo(url=webapp_url)
-    )]]
+    # Kalıcı buton — klavyenin üstünde her zaman görünür
+    reply_kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=webapp_url))]],
+        resize_keyboard=True
+    )
     await update.message.reply_text(
         "☕ *CAFFELITO*\n\n"
-        "📦 Заказ продукции\n"
-        "📋 Задачи смены\n"
-        "🧹 Контроль уборки\n\n"
-        "👇 Нажмите чтобы открыть:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        "Кнопка приложения добавлена 👇\n"
+        "Нажмите «☕ Открыть Caffelito» внизу экрана",
+        reply_markup=reply_kb,
         parse_mode="Markdown")
 
 
