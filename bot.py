@@ -792,18 +792,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "wg":"Вода с газом (уп.)","ws":"Вода без газа (уп.)",
     }
 
-    # ID → категория
-    CATS = {
-        "esp":"☕","col":"☕","eth":"☕","brz":"☕","crm":"☕","dcf":"☕","dc":"☕","de":"☕",
-        "m32":"🥛","mal":"🥛","mco":"🥛","mlf":"🥛","c10":"🥛","c33":"🥛",
-        "sb":"🍯","sv":"🍯","sk":"🍯","ss":"🍯","sco":"🍯","sl":"🍯","sa":"🍯","sm":"🍯","sh":"🍯","ssc":"🍯","sp":"🍯","sch":"🍯","tc":"🍯","pk":"🍯",
-        "mnt":"🍊","obl":"🍊","med":"🍊","imb":"🍊","lim":"🍊","smr":"🍊","mr":"🍊","sok":"🍊",
-        "k1":"🥤","k2":"🥤","k3":"🥤","k4":"🥤","kd":"🥤","k5":"🥤","l2":"🥤","ld":"🥤","l3":"🥤","h2":"🥤","h4":"🥤","pt":"🥤","kr":"🥤","fr":"🥤","ml":"🥤",
-        "slv":"🧻","tg2":"🧻","tf":"🧻","fh":"🧻","ch":"🧻","ms":"🧻","fb":"🧻","tu":"🧻","td":"🧻","gm":"🧻","pr":"🧻","xo":"🧻","pe":"🧻","ba":"🧻",
-        "ip":"🍦","ic":"🍦","is":"🍦","ik":"🍦","cu":"🍦","sb2":"🍦",
-        "sug":"🏪","cac":"🏪","mat":"🏪","cin":"🏪","hal":"🏪","fpi":"🏪","szm":"🏪","wg":"🏪","ws":"🏪",
-    }
-
     try:
         raw = update.effective_message.web_app_data.data
         logger.info(f"Raw data: {raw}")
@@ -818,31 +806,49 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             items = data.get("items", {})
 
             # Kategoriye göre grupla
+            CAT_NAMES = {
+                "coffee":"Кофе","milk":"Молоко и сливки","syrup":"Сиропы и топпинги",
+                "prep":"Заготовки","cups":"Стаканы и крышки","supply":"Расходники",
+                "snack":"Штучные","grocery":"Бакалея и вода",
+            }
+            CAT_MAP = {
+                "esp":"coffee","col":"coffee","eth":"coffee","brz":"coffee","crm":"coffee","dcf":"coffee","dc":"coffee","de":"coffee",
+                "m32":"milk","mal":"milk","mco":"milk","mlf":"milk","c10":"milk","c33":"milk",
+                "sb":"syrup","sv":"syrup","sk":"syrup","ss":"syrup","sco":"syrup","sl":"syrup","sa":"syrup","sm":"syrup","sh":"syrup","ssc":"syrup","sp":"syrup","sch":"syrup","tc":"syrup","pk":"syrup",
+                "mnt":"prep","obl":"prep","med":"prep","imb":"prep","lim":"prep","smr":"prep","mr":"prep","sok":"prep",
+                "k1":"cups","k2":"cups","k3":"cups","k4":"cups","kd":"cups","k5":"cups","l2":"cups","ld":"cups","l3":"cups","h2":"cups","h4":"cups","pt":"cups","kr":"cups","fr":"cups","ml":"cups",
+                "slv":"supply","tg2":"supply","tf":"supply","fh":"supply","ch":"supply","ms":"supply","fb":"supply","tu":"supply","td":"supply","gm":"supply","pr":"supply","xo":"supply","pe":"supply","ba":"supply",
+                "ip":"snack","ic":"snack","is":"snack","ik":"snack","cu":"snack","sb2":"snack",
+                "sug":"grocery","cac":"grocery","mat":"grocery","cin":"grocery","hal":"grocery","fpi":"grocery","szm":"grocery","wg":"grocery","ws":"grocery",
+            }
+
             grouped = {}
             for pid, qty in items.items():
-                cat_emoji = CATS.get(pid, "📦")
-                if cat_emoji not in grouped:
-                    grouped[cat_emoji] = []
+                cat_key = CAT_MAP.get(pid, "other")
+                if cat_key not in grouped:
+                    grouped[cat_key] = []
                 name = NAMES.get(pid, pid)
-                grouped[cat_emoji].append(f"{name}: *{qty}*")
+                grouped[cat_key].append((name, qty))
 
-            # Güzel mesaj
-            text = f"☕ *ЗАКАЗ — CAFFELITO*\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"👤 {user.first_name}\n"
-            text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n\n"
+            # Temiz, kalın, emojisiz mesaj
+            text = f"*ЗАКАЗ — CAFFELITO*\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"*{user.first_name}*\n"
+            text += f"*{now.strftime('%d.%m.%Y  %H:%M')}*\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
 
-            for cat_emoji, lines in grouped.items():
-                for line in lines:
-                    text += f"  {cat_emoji} {line}\n"
+            for cat_key, lines in grouped.items():
+                cat_title = CAT_NAMES.get(cat_key, "Прочее")
+                text += f"*{cat_title}:*\n"
+                for name, qty in lines:
+                    text += f"  — {name} x*{qty}*\n"
                 text += "\n"
 
             total = sum(items.values())
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"📊 Итого: *{total} позиций*"
+            text += f"━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"*Итого: {total} позиций*"
 
-            await update.message.reply_text("✅ Заказ принят!")
+            await update.message.reply_text("Заказ принят!")
 
             if group_id:
                 try:
@@ -850,24 +856,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
-                    await update.message.reply_text(f"⚠️ Ошибка: {e}")
+                    await update.message.reply_text(f"Ошибка: {e}")
 
         elif action == "tasks":
             completed = data.get("completed", [])
             category = data.get("category", "")
 
-            await update.message.reply_text("✅ Задачи сохранены!")
+            await update.message.reply_text("Задачи сохранены!")
 
             if group_id:
                 try:
-                    text = f"✅ *ЗАДАЧИ ВЫПОЛНЕНЫ*\n"
-                    text += f"━━━━━━━━━━━━━━━━━━\n"
-                    text += f"👤 {user.first_name}\n"
-                    text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
-                    text += f"📋 {category}\n"
-                    text += f"━━━━━━━━━━━━━━━━━━\n\n"
+                    text = f"*ЗАДАЧИ ВЫПОЛНЕНЫ*\n"
+                    text += f"━━━━━━━━━━━━━━━━━━━━\n"
+                    text += f"*{user.first_name}*\n"
+                    text += f"*{now.strftime('%d.%m.%Y  %H:%M')}*\n"
+                    text += f"_{category}_\n"
+                    text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
                     for item in completed:
-                        text += f"  ✅ {item}\n"
+                        text += f"  — {item}\n"
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
