@@ -842,6 +842,67 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Эту команду нужно использовать в группе, не в личном чате.")
 
 
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grupta webapp butonu göster — pin'le!"""
+    webapp_url = WEBAPP_URL
+    if not webapp_url:
+        await update.message.reply_text("❌ WEBAPP_URL не настроен.")
+        return
+
+    keyboard = [[InlineKeyboardButton(
+        "☕ Открыть Caffelito",
+        web_app=WebAppInfo(url=webapp_url)
+    )]]
+    await update.message.reply_text(
+        "☕ *CAFFELITO*\n\n"
+        "📦 Заказ продукции\n"
+        "📋 Задачи смены\n"
+        "🧹 Контроль уборки\n\n"
+        "👇 Нажмите чтобы открыть:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown")
+
+
+async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug: chat ID göster"""
+    chat = update.effective_chat
+    group_id = GROUP_CHAT_ID or context.bot_data.get("group_id", "не задан")
+    await update.message.reply_text(
+        f"ℹ️ *Информация:*\n\n"
+        f"Этот чат ID: `{chat.id}`\n"
+        f"Тип: {chat.type}\n"
+        f"GROUP\\_CHAT\\_ID: `{group_id}`",
+        parse_mode="Markdown")
+
+
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test: gruba mesaj göndermeyi dene"""
+    group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+    if not group_id:
+        await update.message.reply_text(
+            "❌ GROUP_CHAT_ID не задан.\n\n"
+            "1. Добавьте бота в группу\n"
+            "2. В группе напишите /setgroup\n"
+            "3. Или добавьте GROUP_CHAT_ID в Railway Variables")
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(group_id),
+            text=f"✅ *Тест успешен!*\nБот может отправлять сообщения в эту группу.\n\n"
+                 f"👤 Отправил: {update.effective_user.first_name}",
+            parse_mode="Markdown")
+        await update.message.reply_text("✅ Тестовое сообщение отправлено в группу!")
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Ошибка: `{e}`\n\n"
+            f"Убедитесь что:\n"
+            f"1. Бот добавлен в группу\n"
+            f"2. Бот — администратор группы\n"
+            f"3. GROUP_CHAT_ID правильный: `{group_id}`",
+            parse_mode="Markdown")
+
+
 # ═══════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════
@@ -855,6 +916,9 @@ def main():
     app.add_handler(CommandHandler("okk", cmd_okk))
     app.add_handler(CommandHandler("otchet", cmd_report))
     app.add_handler(CommandHandler("setgroup", cmd_setgroup))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("chatid", cmd_chatid))
+    app.add_handler(CommandHandler("test", cmd_test))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     print("☕ Caffelito Bot запущен!")
