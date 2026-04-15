@@ -16,6 +16,7 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 TZ = timezone(timedelta(hours=5))
 
 logging.basicConfig(level=logging.INFO)
@@ -763,25 +764,82 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         db = get_db()
 
         if action == "order":
+            items = data.get("items", {})
             db.execute(
                 "INSERT INTO orders (chat_id, user_id, user_name, items, created_at) VALUES (?,?,?,?,?)",
                 (update.effective_chat.id, user.id, user.first_name,
-                 json.dumps(data.get("items", {})), now.isoformat()))
+                 json.dumps(items), now.isoformat()))
             db.commit()
-            await update.message.reply_text(
-                f"✅ *Заказ сохранён!*\n👤 {user.first_name}", parse_mode="Markdown")
+
+            # Güzel mesaj oluştur
+            text = f"📦 *НОВЫЙ ЗАКАЗ*\n\n"
+            text += f"👤 {user.first_name}\n"
+            text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n\n"
+            for pid, qty in items.items():
+                p = next((x for x in ALL_PRODUCTS if x["id"] == pid), None)
+                name = p["name"] if p else pid
+                text += f"  • {name}: *{qty}*\n"
+
+            await update.message.reply_text(f"✅ Заказ отправлен!", parse_mode="Markdown")
+
+            # Gruba ilet
+            group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+            if group_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(group_id), text=text, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Group forward error: {e}")
+
         elif action == "tasks":
+            completed = data.get("completed", [])
+            category = data.get("category", "")
             db.execute(
                 "INSERT INTO tasks (chat_id, user_id, user_name, category, tasks, date, created_at) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (update.effective_chat.id, user.id, user.first_name,
-                 data.get("category", ""), json.dumps(data.get("completed", []), ensure_ascii=False),
+                 category, json.dumps(completed, ensure_ascii=False),
                  now.strftime("%Y-%m-%d"), now.isoformat()))
             db.commit()
-            await update.message.reply_text(
-                f"✅ *Задачи сохранены!*\n👤 {user.first_name}", parse_mode="Markdown")
+
+            await update.message.reply_text(f"✅ Задачи сохранены!", parse_mode="Markdown")
+
+            # Gruba ilet
+            group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+            if group_id:
+                try:
+                    text = f"✅ *ЗАДАЧИ ВЫПОЛНЕНЫ*\n\n"
+                    text += f"👤 {user.first_name}\n"
+                    text += f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
+                    text += f"📋 {category}\n\n"
+                    for item in completed[:10]:
+                        text += f"  ✅ {item}\n"
+                    if len(completed) > 10:
+                        text += f"  ... и ещё {len(completed)-10}\n"
+                    await context.bot.send_message(
+                        chat_id=int(group_id), text=text, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Group forward error: {e}")
+
     except Exception as e:
         logger.error(f"WebApp data error: {e}")
+
+
+async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grubu kaydet — grupta /setgroup yaz"""
+    chat = update.effective_chat
+    if chat.type in ['group', 'supergroup']:
+        context.bot_data["group_id"] = str(chat.id)
+        await update.message.reply_text(
+            f"✅ Группа привязана!\n\n"
+            f"ID: `{chat.id}`\n\n"
+            f"Теперь заказы и задачи из Mini App будут приходить сюда.\n\n"
+            f"💡 Для Railway: добавьте переменную\n"
+            f"`GROUP_CHAT_ID = {chat.id}`",
+            parse_mode="Markdown")
+    else:
+        await update.message.reply_text(
+            "❌ Эту команду нужно использовать в группе, не в личном чате.")
 
 
 # ═══════════════════════════════════════
@@ -796,6 +854,7 @@ def main():
     app.add_handler(CommandHandler("uborka", cmd_temizlik))
     app.add_handler(CommandHandler("okk", cmd_okk))
     app.add_handler(CommandHandler("otchet", cmd_report))
+    app.add_handler(CommandHandler("setgroup", cmd_setgroup))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     print("☕ Caffelito Bot запущен!")
