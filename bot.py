@@ -840,7 +840,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for cat_name, lines in grouped.items():
                 text += f"<b>{esc_html(cat_name)}:</b>\n"
                 for name, qty in lines:
-                    text += f"  — {esc_html(name)}:  <b>{qty}x</b>\n"
+                    text += f"  <b>— {esc_html(name)}:  {qty}x</b>\n"
                 text += "\n"
 
             total = sum(items.values())
