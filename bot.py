@@ -806,62 +806,58 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
 
         if action == "order":
-            items = data.get("items") or data.get("i", {})
-            names_from_app = data.get("names") or data.get("n", {})
-
-            # Kategoriye göre grupla — önce app'ten gelen kategori, yoksa CAT_MAP
-            CAT_MAP = {
-                "esp":"Кофе","col":"Кофе","eth":"Кофе","brz":"Кофе","crm":"Кофе","dcf":"Кофе","dc":"Кофе","de":"Кофе",
-                "m32":"Молоко","mal":"Молоко","mco":"Молоко","mlf":"Молоко","c10":"Молоко","c33":"Молоко",
-                "sb":"Сиропы","sv":"Сиропы","sk":"Сиропы","ss":"Сиропы","sco":"Сиропы","sl":"Сиропы","sa":"Сиропы","sm":"Сиропы","sh":"Сиропы","ssc":"Сиропы","sp":"Сиропы","sch":"Сиропы","tc":"Сиропы","pk":"Сиропы",
-                "mnt":"Заготовки","obl":"Заготовки","med":"Заготовки","imb":"Заготовки","lim":"Заготовки","smr":"Заготовки","mr":"Заготовки","sok":"Заготовки",
-                "k1":"Стаканы","k2":"Стаканы","k3":"Стаканы","k4":"Стаканы","kd":"Стаканы","k5":"Стаканы","l2":"Стаканы","ld":"Стаканы","l3":"Стаканы","h2":"Стаканы","h4":"Стаканы","pt":"Стаканы","kr":"Стаканы","fr":"Стаканы","ml":"Стаканы",
-                "slv":"Расходники","tg2":"Расходники","tf":"Расходники","fh":"Расходники","ch":"Расходники","ms":"Расходники","fb":"Расходники","tu":"Расходники","td":"Расходники","gm":"Расходники","pr":"Расходники","xo":"Расходники","pe":"Расходники","ba":"Расходники",
-                "ip":"Штучные","ic":"Штучные","is":"Штучные","ik":"Штучные","cu":"Штучные","sb2":"Штучные",
-                "sug":"Бакалея","cac":"Бакалея","mat":"Бакалея","cin":"Бакалея","hal":"Бакалея","fpi":"Бакалея","szm":"Бакалея","wg":"Бакалея","ws":"Бакалея",
-            }
-
-            grouped = {}
-            for pid, qty in items.items():
-                cat_name = CAT_MAP.get(pid, "Прочее")
-                if cat_name not in grouped:
-                    grouped[cat_name] = []
-                name = names_from_app.get(pid) or NAMES.get(pid, pid)
-                grouped[cat_name].append((name, qty))
-
-            # HTML mesaj — özel karakterler sorun yaratmaz
             from html import escape as esc_html
+            total = data.get("c", 0)
+            groups = data.get("g", [])
+
+            # HTML mesaj oluştur
             text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>{esc_html(user.first_name)}</b>\n"
             text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-
-            for cat_name, lines in grouped.items():
-                text += f"<b>{esc_html(cat_name)}:</b>\n"
-                for name, qty in lines:
-                    text += f"  <b>— {esc_html(name)}:  {qty}x</b>\n"
-                text += "\n"
-
-            total = sum(items.values())
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
+
+            if groups:
+                # Yeni kompakt format: ["Кофе|Эспрессо:1|Колумбия:3", ...]
+                for group_str in groups:
+                    parts = group_str.split('|')
+                    cat_name = parts[0] if parts else "Прочее"
+                    text += f"\n<b>{esc_html(cat_name)}:</b>\n"
+                    for item_str in parts[1:]:
+                        if ':' in item_str:
+                            iname, iqty = item_str.rsplit(':', 1)
+                            text += f"<b>  — {esc_html(iname)}:  {iqty}x</b>\n"
+                        else:
+                            text += f"<b>  — {esc_html(item_str)}</b>\n"
+            else:
+                # Eski format desteği
+                items = data.get("items") or data.get("i", {})
+                names_from_app = data.get("names") or data.get("n", {})
+                total = sum(items.values()) if items else total
+                for pid, qty in items.items():
+                    name = names_from_app.get(pid) or NAMES.get(pid, pid)
+                    text += f"<b>  — {esc_html(name)}:  {qty}x</b>\n"
+
+            text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
 
             await update.message.reply_text("Заказ принят!")
 
             if group_id:
                 try:
-                    if len(text) <= 4096:
+                    if len(text.encode('utf-8')) <= 4096:
                         await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                     else:
-                        parts = text.split('\n')
+                        lines_all = text.split('\n')
                         chunk = ""
-                        for line in parts:
-                            if len(chunk) + len(line) + 1 > 3900:
-                                await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
+                        for line in lines_all:
+                            test = chunk + line + "\n"
+                            if len(test.encode('utf-8')) > 3900:
+                                if chunk.strip():
+                                    await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
                                 chunk = line + "\n"
                             else:
-                                chunk += line + "\n"
+                                chunk = test
                         if chunk.strip():
                             await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
                     logger.info("Order forwarded to group OK")
