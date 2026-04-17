@@ -829,40 +829,41 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 name = names_from_app.get(pid) or NAMES.get(pid, pid)
                 grouped[cat_name].append((name, qty))
 
-            # Mesaj oluştur
-            text = f"*ЗАКАЗ — CAFFELITO*\n"
+            # HTML mesaj — özel karakterler sorun yaratmaz
+            from html import escape as esc_html
+            text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            text += f"*{user.first_name}*\n"
-            text += f"*{now.strftime('%d.%m.%Y  %H:%M')}*\n"
+            text += f"<b>{esc_html(user.first_name)}</b>\n"
+            text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
 
             for cat_name, lines in grouped.items():
-                text += f"*{cat_name}:*\n"
+                text += f"<b>{esc_html(cat_name)}:</b>\n"
                 for name, qty in lines:
-                    text += f"  — {name}:  *{qty}x*\n"
+                    text += f"  — {esc_html(name)}:  <b>{qty}x</b>\n"
                 text += "\n"
 
             total = sum(items.values())
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            text += f"*Итого: {total} позиций*"
+            text += f"<b>Итого: {total} позиций</b>"
 
             await update.message.reply_text("Заказ принят!")
 
             if group_id:
                 try:
                     if len(text) <= 4096:
-                        await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                        await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                     else:
                         parts = text.split('\n')
                         chunk = ""
                         for line in parts:
                             if len(chunk) + len(line) + 1 > 3900:
-                                await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="Markdown")
+                                await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
                                 chunk = line + "\n"
                             else:
                                 chunk += line + "\n"
                         if chunk.strip():
-                            await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="Markdown")
+                            await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
@@ -876,15 +877,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if group_id:
                 try:
-                    text = f"*ЗАДАЧИ ВЫПОЛНЕНЫ*\n"
+                    from html import escape as esc_html
+                    text = f"<b>ЗАДАЧИ ВЫПОЛНЕНЫ</b>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n"
-                    text += f"*{user.first_name}*\n"
-                    text += f"*{now.strftime('%d.%m.%Y  %H:%M')}*\n"
-                    text += f"_{category}_\n"
+                    text += f"<b>{esc_html(user.first_name)}</b>\n"
+                    text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
+                    text += f"<i>{esc_html(category)}</i>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
                     for item in completed:
-                        text += f"  — {item}\n"
-                    await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                        text += f"  — {esc_html(item)}\n"
+                    await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
 
