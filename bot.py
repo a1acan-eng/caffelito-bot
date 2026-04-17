@@ -794,18 +794,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         raw = update.effective_message.web_app_data.data
-        logger.info(f"Raw data: {raw}")
+        logger.info(f"Raw data: {raw[:200]}")
         data = json.loads(raw)
-        action = data.get("action")
+        # Hem eski hem yeni format desteği
+        action = data.get("action") or data.get("a")
+        if action == "o":
+            action = "order"
         user = update.effective_user
         now = datetime.now(TZ)
 
         group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
 
         if action == "order":
-            items = data.get("items", {})
-            names_from_app = data.get("names", {})
-            cats_from_app = data.get("cats", {})
+            items = data.get("items") or data.get("i", {})
+            names_from_app = data.get("names") or data.get("n", {})
 
             # Kategoriye göre grupla — önce app'ten gelen kategori, yoksa CAT_MAP
             CAT_MAP = {
@@ -821,7 +823,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             grouped = {}
             for pid, qty in items.items():
-                cat_name = cats_from_app.get(pid) or CAT_MAP.get(pid, "Прочее")
+                cat_name = CAT_MAP.get(pid, "Прочее")
                 if cat_name not in grouped:
                     grouped[cat_name] = []
                 name = names_from_app.get(pid) or NAMES.get(pid, pid)
