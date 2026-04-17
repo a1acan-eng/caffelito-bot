@@ -853,7 +853,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if group_id:
                 try:
-                    await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    # Telegram limit 4096 karakter — uzun mesajı böl
+                    if len(text) <= 4096:
+                        await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
+                    else:
+                        lines_all = text.split('\n')
+                        chunk = ""
+                        for line in lines_all:
+                            if len(chunk) + len(line) + 1 > 4000:
+                                await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="Markdown")
+                                chunk = line + "\n"
+                            else:
+                                chunk += line + "\n"
+                        if chunk.strip():
+                            await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="Markdown")
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
