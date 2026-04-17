@@ -804,43 +804,38 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if action == "order":
             items = data.get("items", {})
+            names_from_app = data.get("names", {})
+            cats_from_app = data.get("cats", {})
 
-            # Kategoriye göre grupla
-            CAT_NAMES = {
-                "coffee":"Кофе","milk":"Молоко и сливки","syrup":"Сиропы и топпинги",
-                "prep":"Заготовки","cups":"Стаканы и крышки","supply":"Расходники",
-                "snack":"Штучные","grocery":"Бакалея и вода",
-            }
+            # Kategoriye göre grupla — önce app'ten gelen kategori, yoksa CAT_MAP
             CAT_MAP = {
-                "esp":"coffee","col":"coffee","eth":"coffee","brz":"coffee","crm":"coffee","dcf":"coffee","dc":"coffee","de":"coffee",
-                "m32":"milk","mal":"milk","mco":"milk","mlf":"milk","c10":"milk","c33":"milk",
-                "sb":"syrup","sv":"syrup","sk":"syrup","ss":"syrup","sco":"syrup","sl":"syrup","sa":"syrup","sm":"syrup","sh":"syrup","ssc":"syrup","sp":"syrup","sch":"syrup","tc":"syrup","pk":"syrup",
-                "mnt":"prep","obl":"prep","med":"prep","imb":"prep","lim":"prep","smr":"prep","mr":"prep","sok":"prep",
-                "k1":"cups","k2":"cups","k3":"cups","k4":"cups","kd":"cups","k5":"cups","l2":"cups","ld":"cups","l3":"cups","h2":"cups","h4":"cups","pt":"cups","kr":"cups","fr":"cups","ml":"cups",
-                "slv":"supply","tg2":"supply","tf":"supply","fh":"supply","ch":"supply","ms":"supply","fb":"supply","tu":"supply","td":"supply","gm":"supply","pr":"supply","xo":"supply","pe":"supply","ba":"supply",
-                "ip":"snack","ic":"snack","is":"snack","ik":"snack","cu":"snack","sb2":"snack",
-                "sug":"grocery","cac":"grocery","mat":"grocery","cin":"grocery","hal":"grocery","fpi":"grocery","szm":"grocery","wg":"grocery","ws":"grocery",
+                "esp":"Кофе","col":"Кофе","eth":"Кофе","brz":"Кофе","crm":"Кофе","dcf":"Кофе","dc":"Кофе","de":"Кофе",
+                "m32":"Молоко","mal":"Молоко","mco":"Молоко","mlf":"Молоко","c10":"Молоко","c33":"Молоко",
+                "sb":"Сиропы","sv":"Сиропы","sk":"Сиропы","ss":"Сиропы","sco":"Сиропы","sl":"Сиропы","sa":"Сиропы","sm":"Сиропы","sh":"Сиропы","ssc":"Сиропы","sp":"Сиропы","sch":"Сиропы","tc":"Сиропы","pk":"Сиропы",
+                "mnt":"Заготовки","obl":"Заготовки","med":"Заготовки","imb":"Заготовки","lim":"Заготовки","smr":"Заготовки","mr":"Заготовки","sok":"Заготовки",
+                "k1":"Стаканы","k2":"Стаканы","k3":"Стаканы","k4":"Стаканы","kd":"Стаканы","k5":"Стаканы","l2":"Стаканы","ld":"Стаканы","l3":"Стаканы","h2":"Стаканы","h4":"Стаканы","pt":"Стаканы","kr":"Стаканы","fr":"Стаканы","ml":"Стаканы",
+                "slv":"Расходники","tg2":"Расходники","tf":"Расходники","fh":"Расходники","ch":"Расходники","ms":"Расходники","fb":"Расходники","tu":"Расходники","td":"Расходники","gm":"Расходники","pr":"Расходники","xo":"Расходники","pe":"Расходники","ba":"Расходники",
+                "ip":"Штучные","ic":"Штучные","is":"Штучные","ik":"Штучные","cu":"Штучные","sb2":"Штучные",
+                "sug":"Бакалея","cac":"Бакалея","mat":"Бакалея","cin":"Бакалея","hal":"Бакалея","fpi":"Бакалея","szm":"Бакалея","wg":"Бакалея","ws":"Бакалея",
             }
 
             grouped = {}
-            names_from_app = data.get("names", {})
             for pid, qty in items.items():
-                cat_key = CAT_MAP.get(pid, "other")
-                if cat_key not in grouped:
-                    grouped[cat_key] = []
+                cat_name = cats_from_app.get(pid) or CAT_MAP.get(pid, "Прочее")
+                if cat_name not in grouped:
+                    grouped[cat_name] = []
                 name = names_from_app.get(pid) or NAMES.get(pid, pid)
-                grouped[cat_key].append((name, qty))
+                grouped[cat_name].append((name, qty))
 
-            # Temiz, kalın, emojisiz mesaj
+            # Mesaj oluştur
             text = f"*ЗАКАЗ — CAFFELITO*\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
             text += f"*{user.first_name}*\n"
             text += f"*{now.strftime('%d.%m.%Y  %H:%M')}*\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
 
-            for cat_key, lines in grouped.items():
-                cat_title = CAT_NAMES.get(cat_key, "Прочее")
-                text += f"*{cat_title}:*\n"
+            for cat_name, lines in grouped.items():
+                text += f"*{cat_name}:*\n"
                 for name, qty in lines:
                     text += f"  — {name}:  *{qty}x*\n"
                 text += "\n"
@@ -853,14 +848,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if group_id:
                 try:
-                    # Telegram limit 4096 karakter — uzun mesajı böl
                     if len(text) <= 4096:
                         await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="Markdown")
                     else:
-                        lines_all = text.split('\n')
+                        parts = text.split('\n')
                         chunk = ""
-                        for line in lines_all:
-                            if len(chunk) + len(line) + 1 > 4000:
+                        for line in parts:
+                            if len(chunk) + len(line) + 1 > 3900:
                                 await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="Markdown")
                                 chunk = line + "\n"
                             else:
