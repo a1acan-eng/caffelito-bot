@@ -7,7 +7,8 @@ import json, os, logging, sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    WebAppInfo, BotCommand, KeyboardButton, ReplyKeyboardMarkup
+    WebAppInfo, BotCommand, KeyboardButton, ReplyKeyboardMarkup,
+    InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -677,7 +678,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
 
-    # Kalıcı buton altta — her zaman görünür
+    # 👑 İlk kullanıcı otomatik owner olur
+    auto_owner = False
+    if not has_owner(db):
+        db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
+        db.commit()
+        auto_owner = True
+
+    chat_type = update.effective_chat.type  # 'private', 'group', 'supergroup', 'channel'
+
+    # Grupta web_app çalışmaz — DM'ye yönlendiren inline buton gönder
+    if chat_type != "private":
+        bot_user = await context.bot.get_me()
+        deep = f"https://t.me/{bot_user.username}?start=menu"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("☕ Открыть Caffelito (в личке)", url=deep)]])
+        await update.message.reply_text(
+            "☕ *CAFFELITO*\n\nЭто приложение работает только в личных сообщениях.\nНажмите кнопку, чтобы открыть бота 👇",
+            reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # DM — web_app butonu (ReplyKeyboard)
     if WEBAPP_URL:
         url = build_webapp_url(WEBAPP_URL, user.id, user.first_name, db)
         reply_kb = ReplyKeyboardMarkup(
@@ -687,11 +707,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         reply_kb = None
 
+    role_now = get_role(db, user.id)
     role_note = ""
-    if not has_owner(db):
-        role_note = "\n\n👑 Владелец ещё не назначен. Используйте /setowner чтобы стать владельцем."
-    elif get_role(db, user.id) == "owner":
-        role_note = "\n\n👑 Вы — владелец."
+    if auto_owner:
+        role_note = "\n\n👑 *Вы автоматически назначены владельцем* (первый пользователь)."
+    elif role_now == "owner":
+        role_note = "\n\n👑 Вы — *владелец*."
+    else:
+        role_note = "\n\n👤 Вы — *бариста*. Чтобы стать владельцем — /setowner (если ещё нет владельца) или попросите владельца /grantowner."
 
     await update.message.reply_text(
         "☕ *CAFFELITO BOT*\n\n"
@@ -2001,6 +2024,24 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+
+    # 👑 İlk kullanıcı otomatik owner olur (eğer hiç owner yoksa)
+    if not has_owner(db):
+        db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
+        db.commit()
+
+    chat_type = update.effective_chat.type
+
+    # Grupta web_app çalışmaz — inline buton ile DM'ye yönlendir
+    if chat_type != "private":
+        bot_user = await context.bot.get_me()
+        deep = f"https://t.me/{bot_user.username}?start=menu"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("☕ Открыть Caffelito (в личке)", url=deep)]])
+        await update.message.reply_text(
+            "☕ *CAFFELITO*\n\nПриложение открывается только в личных сообщениях бота.\nНажмите кнопку 👇",
+            reply_markup=kb, parse_mode="Markdown")
+        return
+
     url = build_webapp_url(webapp_url, user.id, user.first_name, db)
     role = get_role(db, user.id)
 
@@ -2009,13 +2050,37 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=url))]],
         resize_keyboard=True
     )
-    role_line = "👑 *Владелец*" if role == "owner" else "👤 *Бариста*"
+    role_line = "👑 *Владелец · Бухгалтерия*" if role == "owner" else "👤 *Бариста*"
+    hint = ""
+    if role != "owner":
+        hint = "\n\n_Чтобы стать владельцем — /setowner (если ещё не назначен)._"
     await update.message.reply_text(
         f"☕ *CAFFELITO*\n\n"
         f"{role_line}\n\n"
         f"Кнопка приложения обновлена 👇\n"
-        f"Нажмите «☕ Открыть Caffelito» внизу экрана",
+        f"Нажмите «☕ Открыть Caffelito» внизу экрана.{hint}",
         reply_markup=reply_kb,
+        parse_mode="Markdown")
+
+
+async def cmd_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug: текущий user ID + role"""
+    db = get_db()
+    user = update.effective_user
+    upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+    role = get_role(db, user.id)
+    dn = display_name_for(db, user.id, fallback=user.first_name)
+    has_o = has_owner(db)
+    owner_count = db.execute("SELECT COUNT(*) as c FROM users WHERE role='owner'").fetchone()["c"]
+    await update.message.reply_text(
+        f"ℹ️ *Кто я:*\n\n"
+        f"ID: `{user.id}`\n"
+        f"Имя в TG: {user.first_name}\n"
+        f"Имя для UI: {dn}\n"
+        f"@username: {user.username or '—'}\n"
+        f"Роль: *{('👑 Владелец' if role=='owner' else '👤 Бариста')}*\n"
+        f"Всего владельцев: {owner_count}\n\n"
+        + ("" if has_o else "_Владелец ещё не назначен — /setowner._"),
         parse_mode="Markdown")
 
 
@@ -2073,6 +2138,7 @@ def main():
     app.add_handler(CommandHandler("otchet", cmd_report))
     app.add_handler(CommandHandler("setgroup", cmd_setgroup))
     app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("test", cmd_test))
     # ─── Зарплата (Salary) команды ───
