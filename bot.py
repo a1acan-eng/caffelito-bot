@@ -43,12 +43,25 @@ def get_db():
         username TEXT,
         role TEXT DEFAULT 'barista',
         chat_id INTEGER,
-        created_at TEXT)""")
+        created_at TEXT,
+        display_name TEXT)""")
+    # display_name eski DB'lerde yoksa ekle
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+    except sqlite3.OperationalError:
+        pass
     db.execute("""CREATE TABLE IF NOT EXISTS shifts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, hours REAL, drinks TEXT,
         bonus INTEGER, hourly_pay INTEGER, total INTEGER,
-        date TEXT, period TEXT, created_at TEXT)""")
+        date TEXT, period TEXT, created_at TEXT,
+        start_time TEXT, end_time TEXT, note TEXT)""")
+    # ── Migration: eski DB'de bu kolonlar yoksa ekle ──
+    for col, ddl in [("start_time", "TEXT"), ("end_time", "TEXT"), ("note", "TEXT")]:
+        try:
+            db.execute(f"ALTER TABLE shifts ADD COLUMN {col} {ddl}")
+        except sqlite3.OperationalError:
+            pass  # Kolon zaten var
     db.execute("""CREATE TABLE IF NOT EXISTS fines (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, reason TEXT,
@@ -59,6 +72,27 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, period TEXT,
         paid_by INTEGER, paid_by_name TEXT, paid_at TEXT)""")
+    # ─── Çaевые (Bahşiş) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS tips (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, amount INTEGER, period TEXT,
+        note TEXT,
+        added_by INTEGER, added_by_name TEXT,
+        created_at TEXT)""")
+    # ─── Bardak fiyatları (override) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS prices (
+        drink_id TEXT PRIMARY KEY,
+        amount INTEGER,
+        updated_by INTEGER, updated_by_name TEXT,
+        updated_at TEXT)""")
+    # ─── Audit log ───
+    db.execute("""CREATE TABLE IF NOT EXISTS logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT,
+        actor_id INTEGER, actor_name TEXT,
+        target_id INTEGER, target_name TEXT,
+        details TEXT,
+        created_at TEXT)""")
     db.commit()
     return db
 
@@ -131,17 +165,53 @@ def find_user(db, handle):
     return db.execute("SELECT * FROM users WHERE name=? COLLATE NOCASE", (h,)).fetchone()
 
 
-def calc_bonus(drinks):
+def calc_bonus(drinks, prices=None):
+    """drinks={ml100:5,...}; prices ondan kullanılır, yoksa default."""
     total = 0
+    p = prices or BONUS_RATES
     for k, v in (drinks or {}).items():
-        total += BONUS_RATES.get(k, 0) * int(v or 0)
+        total += int(p.get(k, BONUS_RATES.get(k, 0))) * int(v or 0)
     return total
+
+
+# ─── Display name (Owner tarafından özel atanmış isim) ───
+def display_name_for(db, user_id, fallback=None):
+    row = db.execute("SELECT display_name, name FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if row and (row["display_name"] or "").strip():
+        return row["display_name"].strip()
+    if row and row["name"]:
+        return row["name"]
+    return fallback or "Бариста"
+
+
+# ─── Bardak fiyatları (override + default) ───
+def get_prices(db):
+    """Returns {drink_id: amount}; DB override > default BONUS_RATES."""
+    out = dict(BONUS_RATES)
+    try:
+        for r in db.execute("SELECT drink_id, amount FROM prices").fetchall():
+            out[r["drink_id"]] = int(r["amount"])
+    except Exception:
+        pass
+    return out
+
+
+# ─── Audit log ───
+def log_action(db, action, actor_id, actor_name, target_id=None, target_name=None, details=None):
+    db.execute(
+        "INSERT INTO logs (action, actor_id, actor_name, target_id, target_name, details, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (action, actor_id, actor_name or "", target_id, target_name or "",
+         json.dumps(details or {}, ensure_ascii=False),
+         datetime.now(TZ).isoformat()))
+    db.commit()
 
 
 def calc_summary(db, user_id, period=None):
     period = period or current_period()
+    # Aktif olmayan (bitmiş) vardiyaları topla
     shifts = db.execute(
-        "SELECT * FROM shifts WHERE user_id=? AND period=? ORDER BY created_at",
+        "SELECT * FROM shifts WHERE user_id=? AND period=? AND (end_time IS NOT NULL OR start_time IS NULL) ORDER BY created_at",
         (user_id, period)).fetchall()
     fines = db.execute(
         "SELECT * FROM fines WHERE user_id=? AND period=? ORDER BY created_at",
@@ -149,13 +219,18 @@ def calc_summary(db, user_id, period=None):
     paid_row = db.execute(
         "SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE user_id=? AND period=?",
         (user_id, period)).fetchone()
+    tips = db.execute(
+        "SELECT * FROM tips WHERE user_id=? AND period=? ORDER BY created_at",
+        (user_id, period)).fetchall()
+    active = get_active_shift(db, user_id)
 
-    hours = sum(s["hours"] for s in shifts)
-    bonus = sum(s["bonus"] for s in shifts)
-    hourly = sum(s["hourly_pay"] for s in shifts)
+    hours = sum(s["hours"] or 0 for s in shifts)
+    bonus = sum(s["bonus"] or 0 for s in shifts)
+    hourly = sum(s["hourly_pay"] or 0 for s in shifts)
     fine_total = sum(f["amount"] for f in fines)
     paid_total = paid_row["s"] or 0
-    gross = hourly + bonus
+    tips_total = sum(t["amount"] for t in tips)
+    gross = hourly + bonus + tips_total
     net = gross - fine_total - paid_total
 
     return {
@@ -165,49 +240,125 @@ def calc_summary(db, user_id, period=None):
         "hourly": hourly,
         "fines": fine_total,
         "paid": paid_total,
+        "tips": tips_total,
+        "tips_count": len(tips),
+        "tips_list": [dict(t) for t in tips],
         "gross": gross,
         "net": net,
         "shifts_count": len(shifts),
         "fines_count": len(fines),
         "shifts": [dict(s) for s in shifts],
         "fines_list": [dict(f) for f in fines],
+        "active": dict(active) if active else None,
     }
 
 
+# ─── Vardiya başlat / bitir ───
+def get_active_shift(db, user_id):
+    return db.execute(
+        "SELECT * FROM shifts WHERE user_id=? AND start_time IS NOT NULL AND end_time IS NULL "
+        "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+
+
+def start_shift(db, user_id):
+    """Aktif vardiya yoksa yeni başlat. Varsa onu döner."""
+    existing = get_active_shift(db, user_id)
+    if existing:
+        return existing
+    now = datetime.now(TZ)
+    period = now.strftime("%Y-%m")
+    cur = db.execute(
+        "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (user_id, 0.0, json.dumps({}), 0, 0, 0,
+         now.strftime("%Y-%m-%d"), period, now.isoformat(),
+         now.isoformat(), None, ""))
+    db.commit()
+    return db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
+
+
+def end_shift(db, user_id, drinks, note=""):
+    """Aktif vardiyayı sonlandır. Saati start_time'dan hesapla."""
+    active = get_active_shift(db, user_id)
+    if not active:
+        return None
+    now = datetime.now(TZ)
+    try:
+        start = datetime.fromisoformat(active["start_time"])
+    except Exception:
+        start = now
+    delta_h = (now - start).total_seconds() / 3600.0
+    hours = round(max(0.0, delta_h), 2)
+    bonus = calc_bonus(drinks, get_prices(db))
+    hourly_pay = int(hours * HOURLY_RATE)
+    total = hourly_pay + bonus
+    db.execute(
+        "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=? WHERE id=?",
+        (now.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
+         bonus, hourly_pay, total, note or "", active["id"]))
+    db.commit()
+    return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
+
+
 def build_webapp_url(base_url, user_id, name, db):
-    """Build WebApp URL with user, role, summary and (for owner) baristas embedded in hash."""
+    """Build WebApp URL with user, role, summary, active shift and (for owner) baristas embedded in hash."""
     from urllib.parse import quote
     upsert_user(db, user_id, name, None, None)
     role = get_role(db, user_id)
     s = calc_summary(db, user_id)
+    # Owner tarafından atanan display_name varsa onu kullan
+    show_name = display_name_for(db, user_id, fallback=name)
+    prices = get_prices(db)
     summary = {
         "hours": s["hours"], "bonus": s["bonus"], "hourly": s["hourly"],
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
+        "tips": s["tips"], "tips_count": s["tips_count"],
+        "tips_list": s["tips_list"][-30:],
         "period": s["period"], "shifts_count": s["shifts_count"],
         "fines_count": s["fines_count"],
         "shifts": s["shifts"][-30:],
         "fines_list": s["fines_list"][-30:],
+        "active": s["active"],
     }
     parts = [
         f"uid={user_id}",
         f"role={role}",
-        f"name={quote(name or '')}",
+        f"name={quote(show_name or '')}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
+        f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
+        f"ts={int(datetime.now(TZ).timestamp())}",
     ]
     if role == "owner":
         rows = db.execute(
-            "SELECT user_id, name, username, role FROM users ORDER BY name").fetchall()
+            "SELECT user_id, name, username, role, display_name FROM users ORDER BY COALESCE(display_name,name)").fetchall()
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
+            today_shifts = db.execute(
+                "SELECT id, start_time, end_time, hours, total, drinks "
+                "FROM shifts WHERE user_id=? AND start_time IS NOT NULL "
+                "ORDER BY id DESC LIMIT 10",
+                (b["user_id"],)).fetchall()
+            real_name = (b["display_name"] or b["name"] or "?").strip()
             baristas.append({
-                "id": b["user_id"], "n": b["name"], "u": b["username"] or "",
+                "id": b["user_id"], "n": real_name,
+                "rn": b["name"] or "",  # gerçek telegram adı
+                "dn": b["display_name"] or "",  # owner-atanmış
+                "u": b["username"] or "",
                 "r": b["role"], "h": bs["hours"], "b": bs["bonus"],
                 "hp": bs["hourly"], "f": bs["fines"],
                 "paid": bs["paid"], "net": bs["net"],
+                "tips": bs["tips"],
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
+                "active": bs["active"],
+                "recent": [dict(r) for r in today_shifts],
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
+        # Son 50 log
+        logs_rows = db.execute(
+            "SELECT * FROM logs ORDER BY id DESC LIMIT 50").fetchall()
+        logs = [dict(l) for l in logs_rows]
+        parts.append(f"logs={quote(json.dumps(logs, ensure_ascii=False))}")
     return base_url + "#" + "&".join(parts)
 
 # ═══════════════════════════════════════
@@ -753,6 +904,149 @@ async def cmd_ceza(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"Notify fine failed: {e}")
 
 
+async def cmd_setname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner: /setname @user Yeni Display İsim"""
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        await update.message.reply_text("❌ Только владелец.")
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Использование: /setname @username Новое Имя\n\n"
+            "Пример: /setname @ahmet Ахмет К.")
+        return
+    target = find_user(db, context.args[0])
+    if not target:
+        await update.message.reply_text(f"❌ Не найден: {context.args[0]}\n\nПопросите написать /start.")
+        return
+    new_name = " ".join(context.args[1:]).strip()
+    db.execute("UPDATE users SET display_name=? WHERE user_id=?", (new_name or None, target["user_id"]))
+    db.commit()
+    log_action(db, "rename", user.id, user.first_name, target["user_id"], new_name,
+               {"old": target["name"], "new": new_name})
+    await update.message.reply_text(
+        f"✏️ Имя обновлено\n@{target['username'] or target['user_id']} → *{new_name}*",
+        parse_mode="Markdown")
+
+
+async def cmd_setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner: /setprice ml200 800"""
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        await update.message.reply_text("❌ Только владелец.")
+        return
+    if len(context.args) < 2:
+        prices = get_prices(db)
+        text = "💰 *Текущие цены за стакан:*\n━━━━━━━━━━━━━━━━━━\n"
+        for k, v in prices.items():
+            text += f"`{k}` — *{fmt_sum(v)}* сум\n"
+        text += "\nИспользование: /setprice <id> <сум>\nПример: /setprice ml200 800"
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+    drink_id = context.args[0].strip()
+    try:
+        amount = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Сумма должна быть числом.")
+        return
+    old = db.execute("SELECT amount FROM prices WHERE drink_id=?", (drink_id,)).fetchone()
+    old_amt = (old["amount"] if old else BONUS_RATES.get(drink_id, 0))
+    db.execute(
+        "INSERT INTO prices (drink_id, amount, updated_by, updated_by_name, updated_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(drink_id) DO UPDATE SET amount=excluded.amount, updated_by=excluded.updated_by, "
+        "updated_by_name=excluded.updated_by_name, updated_at=excluded.updated_at",
+        (drink_id, amount, user.id, user.first_name, datetime.now(TZ).isoformat()))
+    db.commit()
+    log_action(db, "price_update", user.id, user.first_name, None, None,
+               {"drink_id": drink_id, "old": old_amt, "new": amount})
+    await update.message.reply_text(
+        f"💰 *{drink_id}*: {fmt_sum(old_amt)} → *{fmt_sum(amount)}* сум", parse_mode="Markdown")
+
+
+async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner: /tip @user 50000 [açıklama]"""
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        await update.message.reply_text("❌ Только владелец.")
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Использование: /tip @username 50000 [заметка]\n\n"
+            "Для распределения по нескольким сразу — откройте Mini App.")
+        return
+    target = find_user(db, context.args[0])
+    if not target:
+        await update.message.reply_text(f"❌ Не найден: {context.args[0]}")
+        return
+    try:
+        amount = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Сумма должна быть числом.")
+        return
+    note = " ".join(context.args[2:]).strip()
+    period = current_period()
+    db.execute(
+        "INSERT INTO tips (user_id, amount, period, note, added_by, added_by_name, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (target["user_id"], amount, period, note, user.id, user.first_name,
+         datetime.now(TZ).isoformat()))
+    db.commit()
+    log_action(db, "tip_add", user.id, user.first_name, target["user_id"],
+               display_name_for(db, target["user_id"]),
+               {"amount": amount, "period": period, "note": note})
+    await update.message.reply_text(
+        f"💝 Чаевые: +{fmt_sum(amount)} сум → {display_name_for(db, target['user_id'])}")
+    try:
+        await context.bot.send_message(
+            target["user_id"],
+            f"💝 *Вам начислены чаевые!*\n\nСумма: *+{fmt_sum(amount)}* сум\n" +
+            (f"📝 {note}\n" if note else "") +
+            f"От: {user.first_name}\n\nБаланс: /zarplata", parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Notify tip failed: {e}")
+
+
+async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner: son 20 işlem"""
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        await update.message.reply_text("❌ Только владелец.")
+        return
+    rows = db.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 20").fetchall()
+    if not rows:
+        await update.message.reply_text("📜 Логов нет.")
+        return
+    icons = {"fine_add": "⚠️", "pay": "✅", "tip_add": "💝", "price_update": "💰",
+             "rename": "✏️", "role_change": "🔑"}
+    text = "📜 *Последние 20 действий*\n━━━━━━━━━━━━━━━━━━"
+    for r in rows:
+        try:
+            dt = datetime.fromisoformat(r["created_at"]).strftime("%d.%m %H:%M")
+        except Exception:
+            dt = "?"
+        ic = icons.get(r["action"], "•")
+        actor = r["actor_name"] or "?"
+        target = r["target_name"] or ""
+        try:
+            d = json.loads(r["details"] or "{}")
+        except Exception:
+            d = {}
+        extra = ""
+        if "amount" in d:
+            extra = f" · {fmt_sum(d['amount'])} сум"
+        elif "new" in d:
+            extra = f" · {d['new']}"
+        line = f"{ic} *{dt}* — {actor} → {target}{extra}"
+        if d.get("reason"):
+            line += f"\n  💬 _{d['reason']}_"
+        text += "\n" + line
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def cmd_odendi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     user = update.effective_user
@@ -1296,7 +1590,99 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
 
+        elif action == "shift_start":
+            # Vardiya başlat (geliş zamanını kaydet)
+            db = get_db()
+            upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+            existing = get_active_shift(db, user.id)
+            if existing:
+                start_dt = datetime.fromisoformat(existing["start_time"])
+                await update.message.reply_text(
+                    f"ℹ️ У вас уже есть открытая смена с {start_dt.strftime('%H:%M')}.")
+                return
+            sh = start_shift(db, user.id)
+            start_dt = datetime.fromisoformat(sh["start_time"])
+            await update.message.reply_text(
+                f"🟢 *Смена началась!*\n\n"
+                f"📅 {start_dt.strftime('%d.%m.%Y')}\n"
+                f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*\n\n"
+                f"Когда закончите — нажмите «Завершить смену» в приложении.",
+                parse_mode="Markdown")
+            if group_id:
+                try:
+                    from html import escape as esc_html
+                    gtext = (f"🟢 <b>{esc_html(user.first_name)}</b> начал(а) смену\n"
+                             f"⏰ {start_dt.strftime('%d.%m.%Y %H:%M')}")
+                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"GROUP FORWARD FAILED: {e}")
+
+        elif action == "shift_end":
+            # Vardiyayı bitir (gidiş + bardak sayıları + bonus)
+            db = get_db()
+            upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+            active = get_active_shift(db, user.id)
+            if not active:
+                await update.message.reply_text("❌ Нет активной смены. Сначала нажмите «Начать смену».")
+                return
+            drinks = data.get("drinks", {}) or {}
+            note = (data.get("note") or "").strip()
+            sh = end_shift(db, user.id, drinks, note)
+            if not sh:
+                await update.message.reply_text("❌ Не удалось закрыть смену.")
+                return
+            start_dt = datetime.fromisoformat(sh["start_time"])
+            end_dt = datetime.fromisoformat(sh["end_time"])
+            hours = sh["hours"] or 0
+            hourly_pay = sh["hourly_pay"] or 0
+            bonus = sh["bonus"] or 0
+            total = sh["total"] or 0
+            cups = sum(int(v or 0) for v in drinks.values())
+            period = sh["period"]
+            s = calc_summary(db, user.id, period)
+            text = (f"🔴 *Смена закрыта!*\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
+                    f"🥤 Напитков: *{cups}* шт\n"
+                    f"💰 Часы: {fmt_sum(hourly_pay)} + Бонус: {fmt_sum(bonus)}\n"
+                    f"💵 За смену: *{fmt_sum(total)}* сум\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 *Месяц {period}:*\n"
+                    f"Часы: {s['hours']:g}h | Смен: {s['shifts_count']}\n"
+                    f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*")
+            if note:
+                text += f"\n📝 {note}"
+            await update.message.reply_text(text, parse_mode="Markdown")
+            if group_id:
+                try:
+                    from html import escape as esc_html
+                    gtext = (f"🔴 <b>{esc_html(user.first_name)}</b> закрыл(а) смену\n"
+                             f"━━━━━━━━━━━━━━━━━━━━\n"
+                             f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
+                             f"🥤 {cups} шт · 💵 <b>{fmt_sum(total)} сум</b>")
+                    if note:
+                        gtext += f"\n📝 {esc_html(note)}"
+                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"GROUP FORWARD FAILED: {e}")
+            # Sahiplere bildir
+            try:
+                owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
+                for o in owners:
+                    try:
+                        await context.bot.send_message(
+                            o["user_id"],
+                            f"📢 *{user.first_name}* закрыл(а) смену\n"
+                            f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')} ({hours:g}h)\n"
+                            f"🥤 {cups} шт · 💵 {fmt_sum(total)} сум",
+                            parse_mode="Markdown")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Notify owners failed: {e}")
+
         elif action == "shift":
+            # Geriye dönük manuel kayıt (eski akış)
             db = get_db()
             upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
             hours = float(data.get("hours", 0) or 0)
@@ -1307,11 +1693,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             total = hourly_pay + bonus
             period = current_period()
             db.execute(
-                "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user.id, hours, json.dumps(drinks, ensure_ascii=False),
                  bonus, hourly_pay, total,
-                 now.strftime("%Y-%m-%d"), period, now.isoformat()))
+                 now.strftime("%Y-%m-%d"), period, now.isoformat(),
+                 None, now.isoformat(), note))
             db.commit()
             s = calc_summary(db, user.id, period)
             text = (f"✅ *Смена записана!*\n"
@@ -1341,44 +1728,67 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.error(f"GROUP FORWARD FAILED: {e}")
 
         elif action == "fine":
+            # Tek veya çoklu (denetim — split) ceza
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец может выписывать штрафы.")
                 return
-            target_id = int(data.get("target", 0) or 0)
+            # Sebep ZORUNLU
+            reason = (data.get("reason") or "").strip()
+            if not reason:
+                await update.message.reply_text("❌ Причина обязательна.")
+                return
             amount = int(data.get("amount", 0) or 0)
-            reason = (data.get("reason") or "").strip() or "Без причины"
             ftype = data.get("type", "manual")
-            if not target_id or amount <= 0:
+            # targets liste olabilir (split) veya tek hedef olabilir
+            targets_raw = data.get("targets") or ([data.get("target")] if data.get("target") else [])
+            targets = [int(t) for t in targets_raw if t]
+            if not targets or amount <= 0:
                 await update.message.reply_text("❌ Неверные данные штрафа.")
                 return
-            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
-            if not target_row:
-                await update.message.reply_text(f"❌ Бариста не найден: {target_id}")
-                return
+            split = bool(data.get("split"))
+            per_target = (amount // len(targets)) if split and len(targets) > 1 else amount
             period = current_period()
-            db.execute(
-                "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (target_id, amount, reason, ftype, period,
-                 user.id, user.first_name, now.isoformat()))
+            sent_to = []
+            for tid in targets:
+                trow = db.execute("SELECT * FROM users WHERE user_id=?", (tid,)).fetchone()
+                if not trow:
+                    continue
+                final_reason = reason + (f" (раздел.: {len(targets)})" if split and len(targets) > 1 else "")
+                db.execute(
+                    "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (tid, per_target, final_reason, ftype, period,
+                     user.id, user.first_name, now.isoformat()))
+                sent_to.append(trow)
+                # Log
+                log_action(db, "fine_add", user.id, user.first_name,
+                           tid, display_name_for(db, tid),
+                           {"amount": per_target, "reason": final_reason, "type": ftype, "split": split})
+                # Bildir
+                try:
+                    await context.bot.send_message(
+                        tid,
+                        f"⚠️ *Вам начислен штраф*\n\n"
+                        f"Сумма: *-{fmt_sum(per_target)}* сум\n"
+                        f"Причина: {final_reason}\n"
+                        f"От: {user.first_name}\n\n"
+                        f"Баланс: /zarplata",
+                        parse_mode="Markdown")
+                except Exception as e:
+                    logger.warning(f"Notify fine failed: {e}")
             db.commit()
-            await update.message.reply_text(
-                f"⚠️ Штраф добавлен\n\n"
-                f"Кому: {target_row['name']}\n"
-                f"Сумма: -{fmt_sum(amount)} сум\n"
-                f"Причина: {reason}")
-            try:
-                await context.bot.send_message(
-                    target_id,
-                    f"⚠️ *Вам начислен штраф*\n\n"
-                    f"Сумма: *-{fmt_sum(amount)}* сум\n"
-                    f"Причина: {reason}\n"
-                    f"От: {user.first_name}\n\n"
-                    f"Баланс: /zarplata",
-                    parse_mode="Markdown")
-            except Exception as e:
-                logger.warning(f"Notify fine failed: {e}")
+            if split and len(sent_to) > 1:
+                await update.message.reply_text(
+                    f"⚠️ Штраф разделён на {len(sent_to)} человек\n"
+                    f"По {fmt_sum(per_target)} сум каждому\n"
+                    f"Причина: {reason}")
+            elif sent_to:
+                await update.message.reply_text(
+                    f"⚠️ Штраф добавлен\n\n"
+                    f"Кому: {display_name_for(db, sent_to[0]['user_id'])}\n"
+                    f"Сумма: -{fmt_sum(per_target)} сум\n"
+                    f"Причина: {reason}")
 
         elif action == "pay":
             db = get_db()
@@ -1400,9 +1810,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "VALUES (?,?,?,?,?,?)",
                 (target_id, s["net"], period, user.id, user.first_name, now.isoformat()))
             db.commit()
+            log_action(db, "pay", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id),
+                       {"amount": s["net"], "period": period})
             await update.message.reply_text(
                 f"✅ Выплата записана\n\n"
-                f"Кому: {target_row['name']}\n"
+                f"Кому: {display_name_for(db, target_id)}\n"
                 f"Период: {period}\n"
                 f"Сумма: {fmt_sum(s['net'])} сум")
             try:
@@ -1437,7 +1850,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     return
             db.execute("UPDATE users SET role=? WHERE user_id=?", (new_role, target_id))
             db.commit()
-            await update.message.reply_text(f"✅ {target_row['name']}: роль → {new_role}")
+            log_action(db, "role_change", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id), {"new_role": new_role})
+            await update.message.reply_text(f"✅ {display_name_for(db, target_id)}: роль → {new_role}")
             try:
                 if new_role == "owner":
                     msg = f"👑 Вам выдали роль *владельца*!\nОт: {user.first_name}"
@@ -1446,6 +1861,110 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await context.bot.send_message(target_id, msg, parse_mode="Markdown")
             except Exception as e:
                 logger.warning(f"Notify role failed: {e}")
+
+        # ─── Yeni: Bahşiş dağıtımı ───
+        elif action == "tip_distribute":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может раздавать чаевые.")
+                return
+            # distributions: [{target:uid, amount:int}, ...]
+            distributions = data.get("distributions") or []
+            note = (data.get("note") or "").strip()
+            if not distributions:
+                await update.message.reply_text("❌ Список получателей пуст.")
+                return
+            period = current_period()
+            total_dist = 0
+            recipients = []
+            for d in distributions:
+                tid = int(d.get("target", 0) or 0)
+                amt = int(d.get("amount", 0) or 0)
+                if tid <= 0 or amt <= 0:
+                    continue
+                trow = db.execute("SELECT * FROM users WHERE user_id=?", (tid,)).fetchone()
+                if not trow:
+                    continue
+                db.execute(
+                    "INSERT INTO tips (user_id, amount, period, note, added_by, added_by_name, created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (tid, amt, period, note, user.id, user.first_name, now.isoformat()))
+                total_dist += amt
+                recipients.append((tid, amt))
+                log_action(db, "tip_add", user.id, user.first_name, tid,
+                           display_name_for(db, tid),
+                           {"amount": amt, "period": period, "note": note})
+                try:
+                    await context.bot.send_message(
+                        tid,
+                        f"💝 *Вам начислены чаевые!*\n\n"
+                        f"Сумма: *+{fmt_sum(amt)}* сум\n" +
+                        (f"📝 {note}\n" if note else "") +
+                        f"От: {user.first_name}\n\nБаланс: /zarplata",
+                        parse_mode="Markdown")
+                except Exception as e:
+                    logger.warning(f"Notify tip failed: {e}")
+            db.commit()
+            await update.message.reply_text(
+                f"💝 Чаевые распределены\n\n"
+                f"Всего: {fmt_sum(total_dist)} сум · Получателей: {len(recipients)}" +
+                (f"\n📝 {note}" if note else ""))
+
+        # ─── Yeni: Bardak fiyatı güncelle ───
+        elif action == "price_update":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            drink_id = (data.get("drink_id") or "").strip()
+            try:
+                amount = int(data.get("amount", 0) or 0)
+            except Exception:
+                amount = 0
+            if not drink_id or amount < 0:
+                await update.message.reply_text("❌ Неверные данные цены.")
+                return
+            old = db.execute("SELECT amount FROM prices WHERE drink_id=?", (drink_id,)).fetchone()
+            old_amt = (old["amount"] if old else BONUS_RATES.get(drink_id, 0))
+            db.execute(
+                "INSERT INTO prices (drink_id, amount, updated_by, updated_by_name, updated_at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(drink_id) DO UPDATE SET amount=excluded.amount, "
+                "updated_by=excluded.updated_by, updated_by_name=excluded.updated_by_name, "
+                "updated_at=excluded.updated_at",
+                (drink_id, amount, user.id, user.first_name, now.isoformat()))
+            db.commit()
+            log_action(db, "price_update", user.id, user.first_name, None, None,
+                       {"drink_id": drink_id, "old": old_amt, "new": amount})
+            await update.message.reply_text(
+                f"💰 Цена обновлена\n\n"
+                f"{drink_id}: {fmt_sum(old_amt)} → *{fmt_sum(amount)}* сум",
+                parse_mode="Markdown")
+
+        # ─── Yeni: Display name ata ───
+        elif action == "rename_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            new_name = (data.get("display_name") or "").strip()
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            old_name = display_name_for(db, target_id)
+            db.execute(
+                "UPDATE users SET display_name=? WHERE user_id=?",
+                (new_name or None, target_id))
+            db.commit()
+            log_action(db, "rename", user.id, user.first_name, target_id, new_name or target_row["name"],
+                       {"old": old_name, "new": new_name})
+            shown = new_name or target_row["name"] or "?"
+            await update.message.reply_text(
+                f"✏️ Имя обновлено\n\n"
+                f"@{target_row['username'] or target_id} → *{shown}*",
+                parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"WEBAPP DATA ERROR: {e}")
@@ -1571,6 +2090,10 @@ def main():
     app.add_handler(CommandHandler("fine", cmd_ceza))
     app.add_handler(CommandHandler("odendi", cmd_odendi))
     app.add_handler(CommandHandler("paid", cmd_odendi))
+    app.add_handler(CommandHandler("setname", cmd_setname))
+    app.add_handler(CommandHandler("setprice", cmd_setprice))
+    app.add_handler(CommandHandler("tip", cmd_tip))
+    app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     print("☕ Caffelito Bot запущен!")
