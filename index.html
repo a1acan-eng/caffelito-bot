@@ -1928,17 +1928,16 @@ function rMSettings(m,b){
         +'</div>';
       });
     }
-    // Yeni tatlı ekleme formu
+    // Yeni tatlı ekleme formu — basit, id otomatik
     h+='<div style="margin-top:14px;padding:12px;border:2px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
       +'<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--t1)">➕ Добавить новый десерт</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
-        +'<input class="set-input" type="text" id="ndId" placeholder="id (eng)" style="width:100px;font-size:12px">'
         +'<input class="set-input" type="text" id="ndIc" placeholder="🍰" maxlength="2" style="width:48px;text-align:center;font-size:18px">'
-        +'<input class="set-input wide" type="text" id="ndLb" placeholder="название" style="flex:1;min-width:120px">'
+        +'<input class="set-input wide" type="text" id="ndLb" placeholder="название (например: Сэндвич)" style="flex:1;min-width:140px">'
         +'<input class="set-input" type="number" inputmode="numeric" min="0" id="ndPr" placeholder="цена" value="500" style="width:80px">'
         +'<button class="add-btn" onclick="addNewDessert()" style="padding:8px 12px">➕ Добавить</button>'
       +'</div>'
-      +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id — латиницей без пробелов, например: tiramisu, cookie_choco</div>'
+      +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id создаётся автоматически из названия</div>'
     +'</div>';
   } else if(settingsTab==='names'){
     h+='<div class="refresh-hint" style="margin-top:0">Назначьте отображаемое имя для каждого бариста — оно будет показано в интерфейсе.</div>';
@@ -2041,22 +2040,46 @@ function deleteDessert(id){
   render();
 }
 
+// Cyrillic → latin transliteration (id otomatik üretmek için)
+function translit(s){
+  const map={
+    'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z',
+    'и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
+    'с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch',
+    'ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'
+  };
+  let out='';
+  for(const ch of (s||'').toLowerCase()){
+    if(map[ch]!==undefined)out+=map[ch];
+    else if(/[a-z0-9]/.test(ch))out+=ch;
+    else if(ch===' '||ch==='-'||ch==='_')out+='_';
+    // diğer karakterleri atla
+  }
+  // Birden fazla _ olmasın
+  out=out.replace(/_+/g,'_').replace(/^_|_$/g,'');
+  return out||'item';
+}
+
 function addNewDessert(){
-  const id=((document.getElementById('ndId')||{}).value||'').trim().toLowerCase();
-  const ic=((document.getElementById('ndIc')||{}).value||'🍮').trim();
+  const ic=((document.getElementById('ndIc')||{}).value||'🍮').trim()||'🍮';
   const lb=((document.getElementById('ndLb')||{}).value||'').trim();
-  const pr=parseInt((document.getElementById('ndPr')||{}).value)||500;
-  if(!id||!lb){toast('❌ Заполните id и название');return}
-  if(!/^[a-z0-9_]+$/.test(id)){toast('❌ id: только латинские буквы, цифры и _');return}
-  if(DESSERT_CAT.some(function(x){return x.id===id})){toast('❌ Такой id уже есть');return}
+  const pr=Math.max(0,parseInt((document.getElementById('ndPr')||{}).value)||500);
+  if(!lb){toast('❌ Введите название');return}
+  // id otomatik: isimden transliteration
+  let id=translit(lb);
+  // Eğer aynı id varsa numaralandır: tiramisu, tiramisu_2, tiramisu_3...
+  let base=id,n=2;
+  while(DESSERT_CAT.some(function(x){return x.id===id})){
+    id=base+'_'+n;n++;
+  }
   // Optimistik
   const newD={id:id,label:lb,icon:ic,price:pr,sort_order:50,active:1};
   DESSERT_CAT.push(newD);
   DESSERT_LIST.push({id:id,l:lb,c:ic,r:pr,active:true});
   // Inputları temizle
-  ['ndId','ndIc','ndLb'].forEach(function(x){const el=document.getElementById(x);if(el)el.value=''});
+  ['ndIc','ndLb'].forEach(function(x){const el=document.getElementById(x);if(el)el.value=''});
   const pe=document.getElementById('ndPr');if(pe)pe.value='500';
-  toast('➕ Добавлен');
+  toast('➕ Добавлен: '+ic+' '+lb);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
   render();
