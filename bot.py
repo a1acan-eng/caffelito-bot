@@ -19,15 +19,26 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
-ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor
+ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor (eski sistem — fallback)
+# 🗂  DB yolu — Railway Volume için: env DB_PATH=/data/caffelito.db
+# Boş bırakılırsa current dir'de "caffelito.db" kullanılır (LOCAL test için).
+DB_PATH = os.getenv("DB_PATH", "caffelito.db")
 TZ = timezone(timedelta(hours=5))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info(f"DB_PATH = {DB_PATH}")
 
 # ─── DATABASE ───
 def get_db():
-    db = sqlite3.connect("caffelito.db")
+    # DB_PATH dizin varsa otomatik oluştur (Railway Volume mount'u için güvenli)
+    try:
+        d = os.path.dirname(DB_PATH)
+        if d and not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
+    except Exception as _e:
+        logger.warning(f"DB dir create skipped: {_e}")
+    db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     db.execute("""CREATE TABLE IF NOT EXISTS shops (
         chat_id INTEGER PRIMARY KEY, name TEXT DEFAULT 'Caffelito')""")
@@ -56,6 +67,11 @@ def get_db():
     # authorized: ACCESS_CODE doğru girildiyse 1 olur
     try:
         db.execute("ALTER TABLE users ADD COLUMN authorized INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    # password: her bariastanın kendi şifresi (owner atayıp/silebilir)
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN password TEXT")
     except sqlite3.OperationalError:
         pass
     db.execute("""CREATE TABLE IF NOT EXISTS shifts (
@@ -217,18 +233,40 @@ def get_role(db, user_id):
     return row["role"] if row else "barista"
 
 
+def auth_required(db):
+    """
+    Auth gerekiyor mu?
+    - Eğer DB'de en az bir owner varsa → her bariastanın kendi şifresi gerekir
+      (owner her zaman authorized).
+    - Owner yoksa ve ACCESS_CODE da boşsa → açık (herkes giriş yapabilir, ilk kullanıcı owner olur).
+    """
+    # En az bir owner kayıtlıysa parola sistemi aktif
+    try:
+        if has_owner(db):
+            return True
+    except Exception:
+        pass
+    # Eski sistem: ACCESS_CODE varsa zorunlu
+    return bool(ACCESS_CODE)
+
+
 def is_authorized(db, user_id):
-    """ACCESS_CODE boşsa herkes yetkili. Doluysa users.authorized=1 olanlar yetkili."""
-    if not ACCESS_CODE:
+    """
+    Yetki:
+    - Owner her zaman yetkili.
+    - Auth açıksa: users.authorized=1 olanlar yetkili.
+    - Auth kapalıysa: herkes yetkili.
+    """
+    row = db.execute("SELECT role, authorized FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if row and (row["role"] or "") == "owner":
         return True
-    row = db.execute("SELECT authorized FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if not auth_required(db):
+        return True
     return bool(row and row["authorized"])
 
 
 async def require_auth(update, context):
-    """Eğer ACCESS_CODE varsa ve kullanıcı yetkisizse uyarı gönder ve False döndür."""
-    if not ACCESS_CODE:
-        return True
+    """Yetkisizse uyarı gönder ve False döndür."""
     db = get_db()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
@@ -236,9 +274,9 @@ async def require_auth(update, context):
         return True
     await update.message.reply_text(
         "🔒 *Доступ ограничен*\n\n"
-        "Этот бот — только для сотрудников.\n"
-        "Введите код доступа:\n"
-        "`/login ВАШ_КОД`",
+        "Этот бот — только для сотрудников Caffelito.\n"
+        "Введите ваш личный пароль (получите у владельца):\n"
+        "`/login ВАШ_ПАРОЛЬ`",
         parse_mode="Markdown")
     return False
 
@@ -497,7 +535,8 @@ def build_webapp_url(base_url, user_id, name, db):
     ]
     if role == "owner":
         rows = db.execute(
-            "SELECT user_id, name, username, role, display_name FROM users ORDER BY COALESCE(display_name,name)").fetchall()
+            "SELECT user_id, name, username, role, display_name, password, authorized "
+            "FROM users ORDER BY COALESCE(display_name,name)").fetchall()
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
@@ -519,6 +558,9 @@ def build_webapp_url(base_url, user_id, name, db):
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "recent": [dict(r) for r in today_shifts],
+                # Şifre durumu (owner için): pw=1 → şifresi var, auth=1 → giriş yapmış
+                "pw": 1 if (b["password"] or "").strip() else 0,
+                "auth": 1 if (b["authorized"] or 0) else 0,
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
         # Son 50 log
@@ -837,28 +879,65 @@ ITEMS_PER_PAGE = 5
 # ═══════════════════════════════════════
 
 async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Erişim kodu doğrulama: /login KOD"""
-    if not ACCESS_CODE:
-        await update.message.reply_text("ℹ️ Код доступа не настроен — все могут пользоваться ботом.")
-        return
+    """
+    Şifre doğrulama: /login PAROLA
+    Sırayla denenir:
+      1) Bariastanın kendi şifresi (owner tarafından atanmış users.password)
+      2) Eski global ACCESS_CODE (eğer set edilmişse — geri uyumluluk için)
+    Owner her zaman parolasız erişebilir.
+    """
     db = get_db()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+
+    # Owner ise zaten yetkili
+    if get_role(db, user.id) == "owner":
+        db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
+        db.commit()
+        await update.message.reply_text("👑 Вы — владелец. Доступ открыт.\n/menu чтобы открыть приложение.")
+        return
+
+    # Auth gerekmiyorsa (henüz owner yok ve ACCESS_CODE de boş)
+    if not auth_required(db):
+        db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
+        db.commit()
+        await update.message.reply_text("ℹ️ Пароль пока не настроен — доступ открыт.\n/menu чтобы открыть приложение.")
+        return
+
     args = context.args or []
     if not args:
         await update.message.reply_text(
-            "🔑 Использование:\n`/login ВАШ_КОД`",
+            "🔑 Использование:\n`/login ВАШ_ПАРОЛЬ`\n\n"
+            "Пароль выдаёт владелец кофейни.",
             parse_mode="Markdown")
         return
+
     given = " ".join(args).strip()
-    if given == ACCESS_CODE:
+
+    # 1) Kendi şifresi
+    row = db.execute("SELECT password FROM users WHERE user_id=?", (user.id,)).fetchone()
+    own_pwd = (row["password"] if row else None) or ""
+    own_pwd = own_pwd.strip()
+
+    ok = False
+    if own_pwd and given == own_pwd:
+        ok = True
+    elif ACCESS_CODE and given == ACCESS_CODE:
+        # Eski global kod — fallback
+        ok = True
+
+    if ok:
         db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
         db.commit()
+        log_action(db, "login_ok", user.id, user.first_name, user.id, user.first_name, {})
         await update.message.reply_text(
-            "✅ *Доступ открыт!*\n\nТеперь вы можете пользоваться ботом.\nНажмите /menu чтобы открыть приложение.",
+            "✅ *Доступ открыт!*\n\nНажмите /menu чтобы открыть приложение.",
             parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ Неверный код. Попробуйте ещё раз: `/login ВАШ_КОД`", parse_mode="Markdown")
+        log_action(db, "login_fail", user.id, user.first_name, user.id, user.first_name, {})
+        await update.message.reply_text(
+            "❌ Неверный пароль. Попросите владельца выдать вам новый.\n`/login ВАШ_ПАРОЛЬ`",
+            parse_mode="Markdown")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -869,13 +948,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
 
-    # Auth check
-    if ACCESS_CODE and not is_authorized(db, user.id):
+    # Auth check (per-barista password)
+    if not is_authorized(db, user.id):
         await update.message.reply_text(
             "🔒 *Caffelito — закрытый бот*\n\n"
             "Этот бот только для сотрудников кофейни.\n"
-            "Введите код доступа:\n\n"
-            "`/login ВАШ_КОД`",
+            "Введите ваш личный пароль (получите у владельца):\n\n"
+            "`/login ВАШ_ПАРОЛЬ`",
             parse_mode="Markdown")
         return
 
@@ -1686,16 +1765,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mini App'ten gelen veriyi işle ve gruba ilet"""
     logger.info("=== WEBAPP DATA RECEIVED ===")
-    # 🔒 Auth check
-    if ACCESS_CODE:
-        db = get_db()
-        user = update.effective_user
-        upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
-        if not is_authorized(db, user.id):
-            await update.message.reply_text(
-                "🔒 У вас нет доступа. Введите: `/login ВАШ_КОД`",
-                parse_mode="Markdown")
-            return
+    # 🔒 Auth check (her zaman, per-barista şifre kontrolü)
+    db = get_db()
+    user = update.effective_user
+    upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+    if not is_authorized(db, user.id):
+        await update.message.reply_text(
+            "🔒 У вас нет доступа. Введите: `/login ВАШ_ПАРОЛЬ`",
+            parse_mode="Markdown")
+        return
 
     # Mini App ID → güzel isim
     NAMES = {
@@ -2264,6 +2342,54 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"🗑 Десерт «{row['label']}» скрыт.")
             await refresh_webapp_keyboard(update, context, db, user,
                 "🔄 Каталог десертов обновлён 👇")
+
+        # ─── Şifre yönetimi (owner-only) ───
+        elif action == "set_password":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может менять пароли.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            new_pwd = (data.get("password") or "").strip()
+            if not target_id or not new_pwd:
+                await update.message.reply_text("❌ Укажите бариста и новый пароль.")
+                return
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            # Yeni şifre atanınca eski authorized=0 olur — barista yeni şifreyle tekrar girmek zorunda
+            db.execute("UPDATE users SET password=?, authorized=0 WHERE user_id=?",
+                       (new_pwd, target_id))
+            db.commit()
+            log_action(db, "set_password", user.id, user.first_name, target_id,
+                       target_row["display_name"] or target_row["name"], {})
+            shown = display_name_for(db, target_id, fallback=target_row["name"])
+            await update.message.reply_text(
+                f"🔐 Пароль для *{shown}* установлен.\n\n"
+                f"Передайте бариста: он(а) должен(а) написать боту:\n`/login {new_pwd}`",
+                parse_mode="Markdown")
+
+        elif action == "clear_password":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            # Şifre silinir + erişim kapatılır
+            db.execute("UPDATE users SET password=NULL, authorized=0 WHERE user_id=?",
+                       (target_id,))
+            db.commit()
+            log_action(db, "clear_password", user.id, user.first_name, target_id,
+                       target_row["display_name"] or target_row["name"], {})
+            shown = display_name_for(db, target_id, fallback=target_row["name"])
+            await update.message.reply_text(
+                f"🗑 Пароль для *{shown}* удалён. Доступ закрыт.",
+                parse_mode="Markdown")
 
         # ─── Yeni: Display name ata ───
         elif action == "rename_user":
