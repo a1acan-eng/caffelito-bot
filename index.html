@@ -8,14 +8,36 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-:root{--bg:#faf8f4;--card:#fff;--card2:#f5f2ec;--card3:#ece8e0;--border:rgba(0,0,0,.06);--border2:rgba(0,0,0,.1);--t1:#1a1a1a;--t2:#6b6356;--t3:#a69e92;--gold:#d4a020;--gold2:#c4941a;--gold-bg:rgba(212,160,32,.08);--gold-border:rgba(212,160,32,.2);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.15);--yellow-border:rgba(245,212,75,.4);--green:#16a34a;--green-bg:rgba(22,163,74,.06);--green-border:rgba(22,163,74,.15);--red:#dc2626;--red-bg:rgba(220,38,38,.06);--r:14px;--r2:10px}
-body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
-.hdr{position:sticky;top:0;z-index:100;background:rgba(250,248,244,.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border)}
+:root{--bg:#faf8f4;--bg-rgb:250,248,244;--card:#fff;--card2:#f5f2ec;--card3:#ece8e0;--border:rgba(0,0,0,.06);--border2:rgba(0,0,0,.1);--t1:#1a1a1a;--t2:#6b6356;--t3:#a69e92;--gold:#d4a020;--gold2:#c4941a;--gold-bg:rgba(212,160,32,.08);--gold-border:rgba(212,160,32,.2);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.15);--yellow-border:rgba(245,212,75,.4);--green:#16a34a;--green-bg:rgba(22,163,74,.06);--green-border:rgba(22,163,74,.15);--red:#dc2626;--red-bg:rgba(220,38,38,.06);--r:14px;--r2:10px;--shadow:0 1px 2px rgba(0,0,0,.04);--shadow-lg:0 4px 16px rgba(0,0,0,.08)}
+[data-theme="dark"]{--bg:#0f1115;--bg-rgb:15,17,21;--card:#1a1d24;--card2:#22262f;--card3:#2a2f3a;--border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.1);--t1:#f1f1f1;--t2:#b0b6c0;--t3:#7a8290;--gold:#e6b942;--gold2:#f0c45a;--gold-bg:rgba(230,185,66,.12);--gold-border:rgba(230,185,66,.25);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.18);--yellow-border:rgba(245,212,75,.35);--green:#22c55e;--green-bg:rgba(34,197,94,.12);--green-border:rgba(34,197,94,.25);--red:#ef4444;--red-bg:rgba(239,68,68,.12);--shadow:0 1px 2px rgba(0,0,0,.4);--shadow-lg:0 4px 16px rgba(0,0,0,.5)}
+/* ─── Dark mode: hardcoded açık renk override'ları ─── */
+[data-theme="dark"] .badge-today{background:rgba(245,212,75,.18);color:#fde68a}
+[data-theme="dark"] .badge-month{background:rgba(167,139,250,.2);color:#d8b4fe}
+[data-theme="dark"] .sf-hours,[data-theme="dark"] .opt-r,[data-theme="dark"] .qv.editing,[data-theme="dark"] .set-input,[data-theme="dark"] .set-tab.on{background:var(--card2);color:var(--t1)}
+[data-theme="dark"] .opt.on .opt-r::after{background:var(--gold)}
+[data-theme="dark"] .act-dot{background:#fff;box-shadow:0 0 0 0 rgba(255,255,255,.5)}
+[data-theme="dark"] .btn-end{background:var(--card2);color:#34d399}
+[data-theme="dark"] .tg-sw::after{background:var(--card)}
+[data-theme="dark"] .split-toggle{background:rgba(245,212,75,.1);color:var(--t1)}
+[data-theme="dark"] [style*="background:#f8fafc"]{background:var(--card2)!important;color:var(--t1)}
+[data-theme="dark"] [style*="background:#ecfdf5"]{background:rgba(34,197,94,.08)!important;border-color:rgba(34,197,94,.3)!important;color:var(--t1)}
+[data-theme="dark"] [style*="background:#fefce8"]{background:rgba(245,212,75,.08)!important;color:var(--t1)}
+[data-theme="dark"] [style*="border:1px dashed #cbd5e1"],[data-theme="dark"] [style*="border:2px dashed #cbd5e1"]{border-color:var(--border2)!important}
+[data-theme="dark"] input,[data-theme="dark"] textarea,[data-theme="dark"] select{color-scheme:dark}
+[data-theme="dark"] input[type="number"],[data-theme="dark"] input[type="text"],[data-theme="dark"] input[type="time"],[data-theme="dark"] textarea{background:var(--card2);color:var(--t1);border-color:var(--border2)}
+.card,.set-row,.opt,.hist,.alert,.btn-end{transition:background .3s ease,border-color .3s ease,color .3s ease}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased;transition:background .3s ease,color .3s ease}
+.hdr{position:sticky;top:0;z-index:100;background:rgba(var(--bg-rgb),.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);transition:background .3s ease,border-color .3s ease}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
 .brand{display:flex;align-items:center;gap:10px}
-.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .2s ease}
-.brand-logo img{width:100%;height:100%;object-fit:cover;display:block}
-.brand-logo:hover{transform:scale(1.06)}
+.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer;position:relative;box-shadow:0 0 0 0 var(--gold)}
+.brand-logo img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;-webkit-user-drag:none}
+.brand-logo:hover{transform:scale(1.08) rotate(-3deg);box-shadow:0 0 0 3px var(--gold-border)}
+.brand-logo:active{transform:scale(.94) rotate(8deg)}
+.brand-logo::after{content:'';position:absolute;inset:-4px;border-radius:14px;border:2px dashed var(--gold);opacity:0;transform:scale(.8);transition:all .3s ease;pointer-events:none}
+.brand-logo:hover::after{opacity:.5;transform:scale(1)}
+@keyframes themeFlash{0%{opacity:0;transform:scale(0)}50%{opacity:1;transform:scale(1.2)}100%{opacity:0;transform:scale(2.5)}}
+.theme-flash{position:fixed;top:30px;left:30px;width:38px;height:38px;border-radius:50%;background:radial-gradient(circle,var(--gold) 0%,transparent 70%);pointer-events:none;z-index:9999;animation:themeFlash .6s ease-out forwards}
 .brand-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
 .brand-name .caffe{color:var(--yellow)}
 .brand-name .lito{color:var(--t1)}
@@ -279,7 +301,7 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 <div class="hdr">
   <div class="hdr-top">
     <div class="brand">
-      <div class="brand-logo"><img src="nero.jpg" alt="NERO" onerror="this.parentNode.innerHTML='C'"></div>
+      <div class="brand-logo" onclick="toggleTheme(event)" title="Сменить тему (день/ночь)"><img src="nero.jpg" alt="NERO" onerror="this.parentNode.innerHTML='C'"></div>
       <div class="brand-name"><span class="caffe">Caffe</span><span class="lito">lito</span></div>
     </div>
     <div class="clock-box">
@@ -296,7 +318,47 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 <div class="bottom" id="bot" style="display:none"></div>
 <div class="toast" id="toast"></div>
 <script>
-const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();tg.setHeaderColor('#faf8f4');tg.setBackgroundColor('#faf8f4')}
+const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
+
+// ═══════════════════════════════════════
+//  ТЕМА (день/ночь) — клик на NERO логотип
+// ═══════════════════════════════════════
+const THEME_COLORS={light:{header:'#faf8f4',bg:'#faf8f4'},dark:{header:'#0f1115',bg:'#0f1115'}};
+function applyTheme(theme){
+  const t=(theme==='dark')?'dark':'light';
+  document.documentElement.setAttribute('data-theme',t);
+  // Telegram başlık + arka plan rengini eşitle (mini app penceresi tek renk gözüksün)
+  if(tg){
+    try{tg.setHeaderColor(THEME_COLORS[t].header);}catch(e){}
+    try{tg.setBackgroundColor(THEME_COLORS[t].bg);}catch(e){}
+  }
+  try{localStorage.setItem('cf_theme',t);}catch(e){}
+}
+function toggleTheme(ev){
+  const cur=document.documentElement.getAttribute('data-theme')||'light';
+  const next=(cur==='dark')?'light':'dark';
+  // Güzel görsel efekt: NERO'dan dalga yayılsın
+  try{
+    const f=document.createElement('div');
+    f.className='theme-flash';
+    if(ev&&ev.currentTarget){
+      const r=ev.currentTarget.getBoundingClientRect();
+      f.style.left=(r.left)+'px';f.style.top=(r.top)+'px';
+      f.style.width=r.width+'px';f.style.height=r.height+'px';
+    }
+    document.body.appendChild(f);
+    setTimeout(()=>f.remove(),650);
+  }catch(e){}
+  if(tg)tg.HapticFeedback?.impactOccurred?.('medium');
+  applyTheme(next);
+}
+// İlk açılışta kayıtlı tercihi uygula (yoksa Telegram'ın temasını izle)
+(function initTheme(){
+  let saved=null;
+  try{saved=localStorage.getItem('cf_theme');}catch(e){}
+  if(!saved && tg && tg.colorScheme){saved=tg.colorScheme;} // 'light' | 'dark'
+  applyTheme(saved||'light');
+})();
 const DR=['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
 const MO=['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
 function gT(){
