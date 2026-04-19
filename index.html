@@ -503,6 +503,21 @@ DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
 // Bot'tan gelen tatlı kataloğu — owner Settings'ten yönetir
 let DESSERT_CAT=[];
 try{DESSERT_CAT=JSON.parse(decodeURIComponent(HP.get('desserts')||'[]'))}catch(e){DESSERT_CAT=[]}
+// localStorage'dan owner'ın yaptığı SON değişiklikleri al ve birleştir
+// (Telegram sendData app'i kapattığı için bot'a kaydetme + bot'tan dönen URL arasında
+//  geçici uçurum oluşuyor — localStorage onu doldurur)
+try{
+  const localCat=JSON.parse(localStorage.getItem('cf_desserts_cat')||'[]');
+  const localTs=parseInt(localStorage.getItem('cf_desserts_cat_ts')||'0');
+  // 24 saatten yeni değişiklikler hâlâ geçerli sayılır (sonra DB'den gelen kazanır)
+  if(localCat.length && (Date.now()-localTs)<24*3600*1000){
+    const map={};
+    DESSERT_CAT.forEach(function(d){map[d.id]=d});
+    // Local override server (en taze sayılır)
+    localCat.forEach(function(d){map[d.id]=d});
+    DESSERT_CAT=Object.keys(map).map(function(k){return map[k]});
+  }
+}catch(e){}
 // HTML kodunun beklediği format: {id,l,c,r}
 DESSERT_LIST=DESSERT_CAT.filter(function(d){return d.active!==0}).map(function(d){
   return {id:d.id,l:d.label,c:d.icon||'🍮',r:parseInt(d.price)||DESSERT_RATE,active:d.active!==0};
@@ -520,6 +535,14 @@ if(!DESSERT_LIST.length){
   ];
 }
 
+// localStorage'a yazma fonksiyonu — her değişiklikten sonra çağrılır
+function persistDesserts(){
+  try{
+    localStorage.setItem('cf_desserts_cat',JSON.stringify(DESSERT_CAT));
+    localStorage.setItem('cf_desserts_cat_ts',String(Date.now()));
+  }catch(e){}
+}
+
 // Bot'tan açıldıysa direkt «Смена» açılsın; aksi halde «Заказ»
 if(!MY_UID)tab='order';
 // (zaten yukarıda tab='shift' default)
@@ -531,7 +554,7 @@ let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:fa
 let payTarget=0;
 let detailShift=null;                      // Tıklanan vardiya kaydı
 let tipDraft={total:'',distributions:{},note:'',mode:'equal'}; // equal|custom
-let settingsTab='prices'; // prices|names|logs
+let settingsTab='prices'; // prices|desserts|names|passwords|logs
 
 function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.').replace(/,/g,'.')}
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
@@ -1885,14 +1908,15 @@ function saveTips(){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',logs:'Логи'}[settingsTab]||'';
+  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',passwords:'Пароли',logs:'Логи'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
-  // Mini tabs (4 alt sekme — yeni sayfa açmıyoruz)
-  h+='<div class="set-tabs">'
-    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
-    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'desserts\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
-    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
-    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
+  // Mini tabs (5 alt sekme — yeni sayfa açmıyoruz)
+  h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
+    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
+    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'desserts\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
+    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
+    +'<div class="opt '+(settingsTab==='passwords'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'passwords\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🔐 Пароли</div></div></div>'
+    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
   +'</div>';
 
   if(settingsTab==='prices'){
@@ -1955,6 +1979,40 @@ function rMSettings(m,b){
         +'</div>';
       });
     }
+  } else if(settingsTab==='passwords'){
+    h+='<div class="refresh-hint" style="margin-top:0">У каждого бариста — свой пароль. Без пароля никто не войдёт. Вы можете задать новый или удалить (закрыть доступ).</div>';
+    if(!BARISTAS.length){
+      h+='<div class="empty-mini">Нет баристов.</div>';
+    } else {
+      BARISTAS.forEach(function(brs){
+        if(brs.r==='owner') return; // Owner'ın şifresine ihtiyacı yok
+        const hasPw=!!brs.pw;
+        const isAuth=!!brs.auth;
+        const statusBadge = hasPw
+          ? (isAuth
+              ? '<span style="color:#16a34a;font-weight:600">🔓 пароль есть · вошёл</span>'
+              : '<span style="color:#f59e0b;font-weight:600">🔐 пароль выдан · не входил</span>')
+          : '<span style="color:#ef4444;font-weight:600">⛔ нет пароля · доступа нет</span>';
+        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px">'
+          +'<div class="set-row-l" style="min-width:130px">'
+            +'<div class="set-row-t">'+escH(brs.n)+'</div>'
+            +'<div class="set-row-s">'+(brs.u?'@'+escH(brs.u):'id: '+brs.id)+'</div>'
+            +'<div class="set-row-s" style="margin-top:2px">'+statusBadge+'</div>'
+          +'</div>'
+          +'<input class="set-input wide" type="text" id="pw_'+brs.id+'" placeholder="новый пароль" style="flex:1;min-width:120px" autocomplete="off">'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="setBaristaPassword('+brs.id+')" title="Установить">💾</button>'
+          +(hasPw?'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="clearBaristaPassword('+brs.id+',\''+escH((brs.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"))+'\')" title="Удалить">🗑</button>':'')
+        +'</div>';
+      });
+      h+='<div style="margin-top:14px;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc;font-size:11px;color:var(--t2);line-height:1.5">'
+        +'💡 <b>Как это работает:</b><br>'
+        +'1. Вы задаёте бариста пароль здесь.<br>'
+        +'2. Передаёте пароль бариста.<br>'
+        +'3. Бариста пишет боту: <code>/login ВАШ_ПАРОЛЬ</code><br>'
+        +'4. После этого бариста получает доступ к приложению.<br>'
+        +'<br>Чтобы закрыть доступ — нажмите 🗑.'
+      +'</div>';
+    }
   } else if(settingsTab==='logs'){
     h+='<div class="refresh-hint" style="margin-top:0">Журнал последних действий — штрафы, выплаты, чаевые, изменения цен и имён.</div>';
     if(!LOGS||!LOGS.length){
@@ -2010,6 +2068,29 @@ function saveDisplayName(uid){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'rename_user',target:uid,name:name}))}catch(e){console.warn(e)}}
 }
 
+// ── Şifre yönetimi (owner) ──
+function setBaristaPassword(uid){
+  const el=document.getElementById('pw_'+uid);
+  if(!el)return;
+  const pwd=(el.value||'').trim();
+  if(pwd.length<3){toast('❌ Пароль слишком короткий (мин 3 символа)');return}
+  if(/\s/.test(pwd)){toast('❌ Пароль не должен содержать пробелы');return}
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(t){t.pw=1;t.auth=0}  // optimistik
+  toast('🔐 Пароль установлен. Передайте бариста.');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_password',target:uid,password:pwd}))}catch(e){console.warn(e)}}
+}
+
+function clearBaristaPassword(uid,nm){
+  if(!confirm('Удалить пароль для «'+(nm||'этого бариста')+'»?\nЕго доступ будет закрыт.'))return;
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(t){t.pw=0;t.auth=0}
+  toast('🗑 Пароль удалён');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'clear_password',target:uid}))}catch(e){console.warn(e)}}
+}
+
 // ── Tatlı kataloğu CRUD (owner) ──
 function saveDessert(id){
   const ic=(document.getElementById('dic_'+id)||{}).value||'🍮';
@@ -2022,6 +2103,7 @@ function saveDessert(id){
   if(d){d.icon=ic;d.label=lb;d.price=pr}
   const dl=DESSERT_LIST.find(function(x){return x.id===id});
   if(dl){dl.c=ic;dl.l=lb;dl.r=pr}
+  persistDesserts();  // localStorage'a yaz — app kapanırsa veri kaybolmasın
   toast('💾 Десерт сохранён');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
@@ -2035,6 +2117,7 @@ function deleteDessert(id){
   d.active=0;
   // DESSERT_LIST'ten de çıkar
   for(let i=DESSERT_LIST.length-1;i>=0;i--){if(DESSERT_LIST[i].id===id)DESSERT_LIST.splice(i,1)}
+  persistDesserts();  // localStorage'a yaz
   toast('🗑 Скрыт');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_delete',id:id}))}catch(e){console.warn(e)}}
   render();
@@ -2076,6 +2159,7 @@ function addNewDessert(){
   const newD={id:id,label:lb,icon:ic,price:pr,sort_order:50,active:1};
   DESSERT_CAT.push(newD);
   DESSERT_LIST.push({id:id,l:lb,c:ic,r:pr,active:true});
+  persistDesserts();  // localStorage'a yaz — app kapanırsa veri kaybolmasın
   // Inputları temizle
   ['ndIc','ndLb'].forEach(function(x){const el=document.getElementById(x);if(el)el.value=''});
   const pe=document.getElementById('ndPr');if(pe)pe.value='500';
