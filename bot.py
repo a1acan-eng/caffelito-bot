@@ -1971,7 +1971,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Только владелец.")
                 return
             target_id = int(data.get("target", 0) or 0)
-            new_name = (data.get("display_name") or "").strip()
+            new_name = (data.get("display_name") or data.get("name") or "").strip()
             target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
             if not target_row:
                 await update.message.reply_text("❌ Пользователь не найден.")
