@@ -184,6 +184,27 @@ def has_owner(db):
     return (row["c"] or 0) > 0
 
 
+async def refresh_webapp_keyboard(update, context, db, user, text="🔄 Приложение обновлено 👇"):
+    """
+    Vardiya başla/bit gibi state değişikliklerinden sonra ReplyKeyboard'u
+    TAZE URL ile yeniden gönder. Yoksa Telegram eski hash'i tutar ve mini app
+    eski veriyle açılır (örn. 'Начать смену' butonu hâlâ görünür).
+    """
+    try:
+        if not WEBAPP_URL:
+            return
+        if update.effective_chat.type != "private":
+            return
+        url = build_webapp_url(WEBAPP_URL, user.id, user.first_name, db)
+        kb = ReplyKeyboardMarkup(
+            [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=url))]],
+            resize_keyboard=True
+        )
+        await update.message.reply_text(text, reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"refresh_webapp_keyboard failed: {e}")
+
+
 def find_user(db, handle):
     """Find user by @username, name, or numeric id"""
     h = str(handle).lstrip("@").strip()
@@ -1709,6 +1730,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*\n\n"
                 f"Когда закончите — нажмите «Завершить смену» в приложении.",
                 parse_mode="Markdown")
+            # Klavye butonunu taze URL ile yenile (yoksa tekrar açınca eski state görünür)
+            await refresh_webapp_keyboard(update, context, db, user,
+                "🔄 Откройте приложение — теперь видна активная смена 👇")
             if group_id:
                 try:
                     from html import escape as esc_html
@@ -1754,6 +1778,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if note:
                 text += f"\n📝 {note}"
             await update.message.reply_text(text, parse_mode="Markdown")
+            # Klavye butonunu taze URL ile yenile (active=null, yeni vardiya başlatılabilsin)
+            await refresh_webapp_keyboard(update, context, db, user,
+                "🔄 Смена закрыта. Готово к следующей смене 👇")
             if group_id:
                 try:
                     from html import escape as esc_html
