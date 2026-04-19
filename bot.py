@@ -65,7 +65,8 @@ def get_db():
         date TEXT, period TEXT, created_at TEXT,
         start_time TEXT, end_time TEXT, note TEXT)""")
     # ── Migration: eski DB'de bu kolonlar yoksa ekle ──
-    for col, ddl in [("start_time", "TEXT"), ("end_time", "TEXT"), ("note", "TEXT")]:
+    for col, ddl in [("start_time", "TEXT"), ("end_time", "TEXT"), ("note", "TEXT"),
+                     ("desserts", "TEXT"), ("dessert_bonus", "INTEGER DEFAULT 0")]:
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {col} {ddl}")
         except sqlite3.OperationalError:
@@ -119,6 +120,26 @@ BONUS_RATES = {
     "dome300": 1000,
     "dome400": 1300,
 }
+
+# Tatlılar — her biri 500 сум sabit
+DESSERT_RATE = 500
+DESSERT_LIST = [
+    {"id": "cookie",      "label": "🍪 Печенье"},
+    {"id": "cheesecake",  "label": "🍰 Чизкейк"},
+    {"id": "brownie",     "label": "🍫 Брауни"},
+    {"id": "tiramisu",    "label": "🥮 Тирамису"},
+    {"id": "muffin",      "label": "🧁 Маффин"},
+    {"id": "croissant",   "label": "🥐 Круассан"},
+    {"id": "other_sweet", "label": "🍮 Другое"},
+]
+
+
+def calc_dessert_bonus(desserts):
+    """desserts={cookie:5,cheesecake:2,...} → toplam tatlı bonusu (her biri 500)."""
+    total = 0
+    for k, v in (desserts or {}).items():
+        total += DESSERT_RATE * int(v or 0)
+    return total
 
 FINE_PRESETS = {
     "clean": {"label": "🧹 Чистота", "amount": 30000},
@@ -315,42 +336,87 @@ def get_active_shift(db, user_id):
         "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
 
 
-def start_shift(db, user_id):
-    """Aktif vardiya yoksa yeni başlat. Varsa onu döner."""
+def _parse_user_time(s):
+    """
+    HTML'den gelen zamanı parse et. Kabul edilenler:
+      - ISO: '2026-04-19T12:32:00...' (tam tarih+saat)
+      - 'HH:MM' (sadece saat → BUGÜN için)
+    Geçersizse None döner.
+    """
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        # Tam ISO
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(TZ).replace(tzinfo=None) if "T" in s else None
+    except Exception:
+        pass
+    # HH:MM formatı → bugün
+    try:
+        if ":" in s and len(s) <= 5:
+            hh, mm = s.split(":")
+            now = datetime.now(TZ)
+            return now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0).replace(tzinfo=None)
+    except Exception:
+        pass
+    return None
+
+
+def start_shift(db, user_id, custom_start=None):
+    """
+    Aktif vardiya yoksa yeni başlat. Varsa onu döner.
+    custom_start: ISO string veya 'HH:MM' (telefon kapanmışsa geriye dönük başlatma).
+    """
     existing = get_active_shift(db, user_id)
     if existing:
         return existing
-    now = datetime.now(TZ)
-    period = now.strftime("%Y-%m")
+    now = datetime.now(TZ).replace(tzinfo=None)
+    start_dt = _parse_user_time(custom_start) or now
+    # Geleceğe izin verme — küçük tolerans
+    if start_dt > now + timedelta(minutes=2):
+        start_dt = now
+    period = start_dt.strftime("%Y-%m")
     cur = db.execute(
         "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, 0.0, json.dumps({}), 0, 0, 0,
-         now.strftime("%Y-%m-%d"), period, now.isoformat(),
-         now.isoformat(), None, ""))
+         start_dt.strftime("%Y-%m-%d"), period, now.isoformat(),
+         start_dt.isoformat(), None, ""))
     db.commit()
     return db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
 
 
-def end_shift(db, user_id, drinks, note=""):
-    """Aktif vardiyayı sonlandır. Saati start_time'dan hesapla."""
+def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
+    """
+    Aktif vardiyayı sonlandır.
+    desserts: {cookie:N, cheesecake:N, ...} — her biri 500 сум.
+    custom_end: ISO/'HH:MM' — barista uygulamayı geç açtıysa gerçek bitiş saati.
+    """
     active = get_active_shift(db, user_id)
     if not active:
         return None
-    now = datetime.now(TZ)
+    now = datetime.now(TZ).replace(tzinfo=None)
+    end_dt = _parse_user_time(custom_end) or now
     try:
         start = datetime.fromisoformat(active["start_time"])
     except Exception:
-        start = now
-    delta_h = (now - start).total_seconds() / 3600.0
+        start = end_dt
+    # Bitiş başlangıçtan önce olamaz
+    if end_dt < start:
+        end_dt = now
+    delta_h = (end_dt - start).total_seconds() / 3600.0
     hours = round(max(0.0, delta_h), 2)
-    bonus = calc_bonus(drinks, get_prices(db))
+    drinks_bonus = calc_bonus(drinks, get_prices(db))
+    dessert_bonus = calc_dessert_bonus(desserts)
+    bonus = drinks_bonus + dessert_bonus
     hourly_pay = int(hours * HOURLY_RATE)
     total = hourly_pay + bonus
     db.execute(
-        "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=? WHERE id=?",
-        (now.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
-         bonus, hourly_pay, total, note or "", active["id"]))
+        "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
+        "desserts=?, dessert_bonus=? WHERE id=?",
+        (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
+         bonus, hourly_pay, total, note or "",
+         json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, active["id"]))
     db.commit()
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
@@ -1722,12 +1788,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(
                     f"ℹ️ У вас уже есть открытая смена с {start_dt.strftime('%H:%M')}.")
                 return
-            sh = start_shift(db, user.id)
+            # Opsiyonel: barista geçmiş bir saat girdiyse (telefon kapanmıştı vs.)
+            custom_start = data.get("start_time") or data.get("custom_start")
+            sh = start_shift(db, user.id, custom_start=custom_start)
             start_dt = datetime.fromisoformat(sh["start_time"])
+            note_back = ""
+            if custom_start:
+                note_back = f"\n_(время указано вручную)_"
             await update.message.reply_text(
                 f"🟢 *Смена началась!*\n\n"
                 f"📅 {start_dt.strftime('%d.%m.%Y')}\n"
-                f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*\n\n"
+                f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*{note_back}\n\n"
                 f"Когда закончите — нажмите «Завершить смену» в приложении.",
                 parse_mode="Markdown")
             # Klavye butonunu taze URL ile yenile (yoksa tekrar açınca eski state görünür)
@@ -1751,8 +1822,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Нет активной смены. Сначала нажмите «Начать смену».")
                 return
             drinks = data.get("drinks", {}) or {}
+            desserts = data.get("desserts", {}) or {}
             note = (data.get("note") or "").strip()
-            sh = end_shift(db, user.id, drinks, note)
+            custom_end = data.get("end_time") or data.get("custom_end")
+            sh = end_shift(db, user.id, drinks, note, desserts=desserts, custom_end=custom_end)
             if not sh:
                 await update.message.reply_text("❌ Не удалось закрыть смену.")
                 return
@@ -1761,20 +1834,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             hours = sh["hours"] or 0
             hourly_pay = sh["hourly_pay"] or 0
             bonus = sh["bonus"] or 0
+            dessert_bonus = sh["dessert_bonus"] or 0
+            drinks_bonus = max(0, bonus - dessert_bonus)
             total = sh["total"] or 0
             cups = sum(int(v or 0) for v in drinks.values())
+            sweets = sum(int(v or 0) for v in desserts.values())
             period = sh["period"]
             s = calc_summary(db, user.id, period)
+            # DM cevabı: kişisel — saatlik dahil net
             text = (f"🔴 *Смена закрыта!*\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
-                    f"🥤 Напитков: *{cups}* шт\n"
-                    f"💰 Часы: {fmt_sum(hourly_pay)} + Бонус: {fmt_sum(bonus)}\n"
-                    f"💵 За смену: *{fmt_sum(total)}* сум\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 *Месяц {period}:*\n"
-                    f"Часы: {s['hours']:g}h | Смен: {s['shifts_count']}\n"
-                    f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*")
+                    f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
+            if sweets:
+                text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
+            text += (f"💵 Часы (12.000): {fmt_sum(hourly_pay)} _(в конце месяца)_\n"
+                     f"💎 За смену: *{fmt_sum(total)}* сум\n"
+                     f"━━━━━━━━━━━━━━━━━━\n"
+                     f"📊 *Месяц {period}:*\n"
+                     f"Часы: {s['hours']:g}h | Смен: {s['shifts_count']}\n"
+                     f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*")
             if note:
                 text += f"\n📝 {note}"
             await update.message.reply_text(text, parse_mode="Markdown")
@@ -1784,26 +1863,32 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if group_id:
                 try:
                     from html import escape as esc_html
+                    # Grup mesajı: SAATLIK GIZLI (ay sonu hesabı). Sadece satış sayıları + satış bonusu.
+                    sales_bonus = drinks_bonus + dessert_bonus
                     gtext = (f"🔴 <b>{esc_html(user.first_name)}</b> закрыл(а) смену\n"
                              f"━━━━━━━━━━━━━━━━━━━━\n"
                              f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
-                             f"🥤 {cups} шт · 💵 <b>{fmt_sum(total)} сум</b>")
+                             f"🥤 Напитки: <b>{cups}</b> шт")
+                    if sweets:
+                        gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"
+                    gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
                     if note:
                         gtext += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
-            # Sahiplere bildir
+            # Sahiplere bildir (TAM detay — owner zarplata için görür)
             try:
                 owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
                 for o in owners:
                     try:
-                        await context.bot.send_message(
-                            o["user_id"],
-                            f"📢 *{user.first_name}* закрыл(а) смену\n"
-                            f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')} ({hours:g}h)\n"
-                            f"🥤 {cups} шт · 💵 {fmt_sum(total)} сум",
-                            parse_mode="Markdown")
+                        otext = (f"📢 *{user.first_name}* закрыл(а) смену\n"
+                                 f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')} ({hours:g}h)\n"
+                                 f"🥤 {cups} шт · 🍰 {sweets} шт\n"
+                                 f"💰 Продажи: {fmt_sum(drinks_bonus + dessert_bonus)}\n"
+                                 f"💵 Часы: {fmt_sum(hourly_pay)}\n"
+                                 f"💎 Итого: *{fmt_sum(total)} сум*")
+                        await context.bot.send_message(o["user_id"], otext, parse_mode="Markdown")
                     except Exception:
                         pass
             except Exception as e:
