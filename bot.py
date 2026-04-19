@@ -94,6 +94,32 @@ def get_db():
         amount INTEGER,
         updated_by INTEGER, updated_by_name TEXT,
         updated_at TEXT)""")
+    # ─── Tatlı kataloğu (owner yönetir) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS desserts_catalog (
+        id TEXT PRIMARY KEY,
+        label TEXT,
+        icon TEXT,
+        price INTEGER DEFAULT 500,
+        sort_order INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        updated_by INTEGER,
+        updated_by_name TEXT,
+        updated_at TEXT)""")
+    # Tatlı kataloğu boşsa default seed
+    cnt = db.execute("SELECT COUNT(*) as c FROM desserts_catalog").fetchone()
+    if (cnt["c"] or 0) == 0:
+        defaults = [
+            ("cookie", "Печенье",   "🍪", 500, 1),
+            ("cheesecake","Чизкейк","🍰", 500, 2),
+            ("brownie", "Брауни",   "🍫", 500, 3),
+            ("tiramisu","Тирамису","🥮", 500, 4),
+            ("muffin",  "Маффин",  "🧁", 500, 5),
+            ("croissant","Круассан","🥐",500, 6),
+            ("other_sweet","Другое","🍮",500, 99),
+        ]
+        for d in defaults:
+            db.execute("INSERT OR IGNORE INTO desserts_catalog (id,label,icon,price,sort_order,active,updated_at) VALUES (?,?,?,?,?,1,?)",
+                       (d[0], d[1], d[2], d[3], d[4], datetime.now(TZ).isoformat()))
     # ─── Audit log ───
     db.execute("""CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,11 +160,28 @@ DESSERT_LIST = [
 ]
 
 
-def calc_dessert_bonus(desserts):
-    """desserts={cookie:5,cheesecake:2,...} → toplam tatlı bonusu (her biri 500)."""
+def get_dessert_catalog(db, only_active=True):
+    """Aktif tatlıların listesi: [{id,label,icon,price,sort_order,active}]"""
+    q = "SELECT id,label,icon,price,sort_order,active FROM desserts_catalog"
+    if only_active:
+        q += " WHERE active=1"
+    q += " ORDER BY sort_order, label"
+    return [dict(r) for r in db.execute(q).fetchall()]
+
+
+def get_dessert_prices(db):
+    """Hızlı erişim: {id: price}"""
+    return {r["id"]: int(r["price"] or 0) for r in db.execute(
+        "SELECT id, price FROM desserts_catalog").fetchall()}
+
+
+def calc_dessert_bonus(desserts, prices_map=None):
+    """desserts={cookie:5,cheesecake:2,...} → toplam tatlı bonusu (DB fiyatına göre)."""
     total = 0
+    pmap = prices_map or {}
     for k, v in (desserts or {}).items():
-        total += DESSERT_RATE * int(v or 0)
+        price = pmap.get(k, DESSERT_RATE)
+        total += int(price) * int(v or 0)
     return total
 
 FINE_PRESETS = {
@@ -407,7 +450,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     delta_h = (end_dt - start).total_seconds() / 3600.0
     hours = round(max(0.0, delta_h), 2)
     drinks_bonus = calc_bonus(drinks, get_prices(db))
-    dessert_bonus = calc_dessert_bonus(desserts)
+    dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
     bonus = drinks_bonus + dessert_bonus
     hourly_pay = int(hours * HOURLY_RATE)
     total = hourly_pay + bonus
@@ -441,12 +484,15 @@ def build_webapp_url(base_url, user_id, name, db):
         "fines_list": s["fines_list"][-30:],
         "active": s["active"],
     }
+    # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
+    desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
     parts = [
         f"uid={user_id}",
         f"role={role}",
         f"name={quote(show_name or '')}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
+        f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
         f"ts={int(datetime.now(TZ).timestamp())}",
     ]
     if role == "owner":
@@ -2153,6 +2199,71 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💰 Цена обновлена\n\n"
                 f"{drink_id}: {fmt_sum(old_amt)} → *{fmt_sum(amount)}* сум",
                 parse_mode="Markdown")
+
+        # ─── Tatlı kataloğu yönetimi (owner) ───
+        elif action == "dessert_save":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            did = (data.get("id") or "").strip().lower()
+            label = (data.get("label") or "").strip()
+            icon = (data.get("icon") or "🍮").strip()[:4]
+            try:
+                price = max(0, int(data.get("price", 500) or 0))
+            except Exception:
+                price = 500
+            try:
+                sort_order = int(data.get("sort_order", 50) or 50)
+            except Exception:
+                sort_order = 50
+            active = 1 if data.get("active", 1) else 0
+            if not did or not label:
+                await update.message.reply_text("❌ ID и название обязательны.")
+                return
+            # ID'de sadece harf/rakam/_
+            import re
+            if not re.match(r"^[a-z0-9_]+$", did):
+                await update.message.reply_text("❌ ID: только латинские буквы, цифры, _ (например: tiramisu)")
+                return
+            now_iso = datetime.now(TZ).isoformat()
+            db.execute(
+                "INSERT INTO desserts_catalog (id,label,icon,price,sort_order,active,updated_by,updated_by_name,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET label=excluded.label, icon=excluded.icon, "
+                "price=excluded.price, sort_order=excluded.sort_order, active=excluded.active, "
+                "updated_by=excluded.updated_by, updated_by_name=excluded.updated_by_name, "
+                "updated_at=excluded.updated_at",
+                (did, label, icon, price, sort_order, active, user.id, user.first_name, now_iso))
+            db.commit()
+            log_action(db, "dessert_save", user.id, user.first_name, None, None,
+                       {"id": did, "label": label, "price": price, "active": active})
+            await update.message.reply_text(
+                f"🍰 Десерт сохранён: *{icon} {label}* — {fmt_sum(price)} сум",
+                parse_mode="Markdown")
+            await refresh_webapp_keyboard(update, context, db, user,
+                "🔄 Каталог десертов обновлён 👇")
+
+        elif action == "dessert_delete":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            did = (data.get("id") or "").strip().lower()
+            if not did:
+                await update.message.reply_text("❌ ID обязателен.")
+                return
+            row = db.execute("SELECT label FROM desserts_catalog WHERE id=?", (did,)).fetchone()
+            if not row:
+                await update.message.reply_text("❌ Десерт не найден.")
+                return
+            db.execute("UPDATE desserts_catalog SET active=0, updated_at=? WHERE id=?",
+                       (datetime.now(TZ).isoformat(), did))
+            db.commit()
+            log_action(db, "dessert_delete", user.id, user.first_name, None, None, {"id": did})
+            await update.message.reply_text(f"🗑 Десерт «{row['label']}» скрыт.")
+            await refresh_webapp_keyboard(update, context, db, user,
+                "🔄 Каталог десертов обновлён 👇")
 
         # ─── Yeni: Display name ata ───
         elif action == "rename_user":
