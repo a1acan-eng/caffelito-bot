@@ -471,17 +471,9 @@ const DRINK_LIST=[
   {id:'dome300',l:'Купол 300',r:1000,c:'🧊'},
   {id:'dome400',l:'Купол 400',r:1300,c:'🧊'}
 ];
-// Tatlılar — her biri 500 сум sabit
-const DESSERT_RATE=500;
-const DESSERT_LIST=[
-  {id:'cookie',l:'Печенье',c:'🍪'},
-  {id:'cheesecake',l:'Чизкейк',c:'🍰'},
-  {id:'brownie',l:'Брауни',c:'🍫'},
-  {id:'tiramisu',l:'Тирамису',c:'🥮'},
-  {id:'muffin',l:'Маффин',c:'🧁'},
-  {id:'croissant',l:'Круассан',c:'🥐'},
-  {id:'other_sweet',l:'Другое',c:'🍮'}
-];
+// Tatlılar — kataloğu owner Settings'ten yönetir
+const DESSERT_RATE=500;  // default fallback
+let DESSERT_LIST=[];     // bot'tan gelir (aşağıda hash okunduktan sonra doldurulur)
 const FINE_PRESETS=[
   {id:'clean',l:'🧹 Чистота',amt:30000,s:'каждое нарушение'},
   {id:'insp_70',l:'🏢 Проверка 70-80%',amt:1000000,s:'делится на всех'},
@@ -508,6 +500,25 @@ let PRICES={};
 try{PRICES=JSON.parse(decodeURIComponent(HP.get('prices')||'{}'))}catch(e){PRICES={}}
 // Default fiyatları override et
 DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
+// Bot'tan gelen tatlı kataloğu — owner Settings'ten yönetir
+let DESSERT_CAT=[];
+try{DESSERT_CAT=JSON.parse(decodeURIComponent(HP.get('desserts')||'[]'))}catch(e){DESSERT_CAT=[]}
+// HTML kodunun beklediği format: {id,l,c,r}
+DESSERT_LIST=DESSERT_CAT.filter(function(d){return d.active!==0}).map(function(d){
+  return {id:d.id,l:d.label,c:d.icon||'🍮',r:parseInt(d.price)||DESSERT_RATE,active:d.active!==0};
+});
+// Default fallback (eski bot ya da hiç tatlı yoksa)
+if(!DESSERT_LIST.length){
+  DESSERT_LIST=[
+    {id:'cookie',l:'Печенье',c:'🍪',r:500,active:true},
+    {id:'cheesecake',l:'Чизкейк',c:'🍰',r:500,active:true},
+    {id:'brownie',l:'Брауни',c:'🍫',r:500,active:true},
+    {id:'tiramisu',l:'Тирамису',c:'🥮',r:500,active:true},
+    {id:'muffin',l:'Маффин',c:'🧁',r:500,active:true},
+    {id:'croissant',l:'Круассан',c:'🥐',r:500,active:true},
+    {id:'other_sweet',l:'Другое',c:'🍮',r:500,active:true}
+  ];
+}
 
 // Bot'tan açıldıysa direkt «Смена» açılsın; aksi halde «Заказ»
 if(!MY_UID)tab='order';
@@ -805,7 +816,7 @@ function rShift(m,b){
       const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
       const tm=sh.start_time?(fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
       h+='<div class="hist">'
-        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+(sh.hours%1===0?sh.hours:Number(sh.hours).toFixed(2))+'h · '+fmt(sh.total||0)+' сум</div></div>'
+        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+fmtH(sh.hours||0)+' · '+fmt(sh.total||0)+' сум</div></div>'
         +'<div class="hist-r">+'+fmt(sh.total||0)+'</div>'
       +'</div>';
     });
@@ -848,6 +859,22 @@ function liveHours(startIso){
     const now=gT();
     return Math.max(0,(now.getTime()-s.getTime())/3600000);
   }catch(e){return 0}
+}
+
+// Saatleri okunabilir biçimde göster:
+//   0.02h → "1м"
+//   0.5h  → "30м"
+//   1.5h  → "1ч 30м"
+//   8h    → "8ч"
+function fmtH(h){
+  const n=Number(h)||0;
+  if(n<=0)return '0м';
+  const totalMin=Math.round(n*60);
+  const hh=Math.floor(totalMin/60);
+  const mm=totalMin%60;
+  if(hh===0)return mm+'м';
+  if(mm===0)return hh+'ч';
+  return hh+'ч '+mm+'м';
 }
 function fmtTime(iso){
   if(!iso)return '--:--';
@@ -1065,7 +1092,7 @@ function rMShiftEnd(m,b){
     +'<div class="det-times">'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+(liveH%1===0?liveH:liveH.toFixed(2))+'h</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
     +'</div>'
   +'</div>';
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
@@ -1091,13 +1118,14 @@ function rMShiftEnd(m,b){
       +'</div>'
     +'</div>';
   });
-  // Tatlılar (her biri 500 сум sabit)
-  h+='<div class="sec">🍰 Десерты за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(500 сум за шт)</span></div>';
+  // Tatlılar (kataloğu owner Settings'ten yönetir)
+  h+='<div class="sec">🍰 Десерты за смену <span style="font-weight:500;color:var(--t3);font-size:10px">'+(MY_ROLE==='owner'?'(каталог в Настройках)':'')+'</span></div>';
   DESSERT_LIST.forEach(function(d){
     const q=parseInt(endDraft.desserts[d.id])||0;
-    const sub=q*DESSERT_RATE;
+    const rate=parseInt(d.r)||DESSERT_RATE;
+    const sub=q*rate;
     h+='<div class="dr-item '+(q?'has':'')+'">'
-      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(DESSERT_RATE)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
+      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(rate)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
       +'<div class="qty-box">'
         +'<button class="qb m" onclick="dqDes(\''+d.id+'\',-1)">&minus;</button>'
         +'<span class="qv '+(q?'':'z')+'" onclick="dqDesManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'·')+'</span>'
@@ -1128,7 +1156,7 @@ function rMShiftEnd(m,b){
       if(endDraft.endTime){clearInterval(window._endTimer);return}
       const lh=liveHours(active.start_time);
       en.textContent=fmtTime(new Date().toISOString());
-      const ed=document.getElementById('seDur');if(ed)ed.textContent=(lh%1===0?lh:lh.toFixed(2))+'h';
+      const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(lh);
       recalcEnd();
     },1000);
   }
@@ -1182,7 +1210,7 @@ function recalcEnd(){
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
   let desBonus=0;
-  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*DESSERT_RATE});
+  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+drinkBonus+desBonus;
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
@@ -1190,7 +1218,7 @@ function recalcEnd(){
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
   const eTt=document.getElementById('seTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
   // Saatleri de yenile (manuel saat değiştiyse)
-  const ed=document.getElementById('seDur');if(ed)ed.textContent=(liveH%1===0?liveH:liveH.toFixed(2))+'h';
+  const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(liveH);
   if(endDraft.endTime){
     const en=document.getElementById('seNow');if(en)en.textContent=fmtTime(effEnd.toISOString());
   }
@@ -1205,7 +1233,7 @@ function endShiftSave(){
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
   let desBonus=0;
-  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*DESSERT_RATE});
+  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
   const bonus=drinkBonus+desBonus;
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+bonus;
@@ -1269,7 +1297,7 @@ function rMShiftDetail(m,b){
     +'<div class="det-times">'
       +'<div class="det-time-box"><div class="det-time-l">Пришли</div><div class="det-time-v">'+fmtTime(sh.start_time)+'</div></div>'
       +'<div class="det-time-box"><div class="det-time-l">Ушли</div><div class="det-time-v">'+fmtTime(sh.end_time)+'</div></div>'
-      +'<div class="det-time-box"><div class="det-time-l">Часы</div><div class="det-time-v">'+(Number(sh.hours||0).toFixed(2))+'h</div></div>'
+      +'<div class="det-time-box"><div class="det-time-l">Часы</div><div class="det-time-v">'+fmtH(sh.hours||0)+'</div></div>'
     +'</div>'
   +'</div>';
 
@@ -1294,7 +1322,8 @@ function rMShiftDetail(m,b){
     DESSERT_LIST.forEach(function(d){
       const q=parseInt(desserts[d.id])||0;
       if(!q)return;
-      h+='<div class="det-row"><span>'+d.c+' '+d.l+' × '+q+'</span><span>+'+fmt(q*DESSERT_RATE)+'</span></div>';
+      const rate=parseInt(d.r)||DESSERT_RATE;
+      h+='<div class="det-row"><span>'+d.c+' '+d.l+' × '+q+'</span><span>+'+fmt(q*rate)+'</span></div>';
     });
     h+='</div>';
   }
@@ -1302,7 +1331,7 @@ function rMShiftDetail(m,b){
   // Hesap
   h+='<div class="det-card">'
     +'<div class="det-h">💰 Расчёт</div>'
-    +'<div class="det-row"><span>Часы '+(Number(sh.hours||0).toFixed(2))+'h × 12.000</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
+    +'<div class="det-row"><span>Часы '+fmtH(sh.hours||0)+' × 12.000</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
     +'<div class="det-row"><span>Бонус — напитки</span><span>+'+fmt(drinkBonus)+'</span></div>';
   if(desBonus>0)h+='<div class="det-row"><span>Бонус — десерты</span><span>+'+fmt(desBonus)+'</span></div>';
   h+='<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
@@ -1363,7 +1392,7 @@ function rMActiveBaristas(m,b){
     h+='<div class="hist '+(isOpen?'':'')+'" style="'+(isOpen?'background:#ecfdf5;border-color:#6ee7b7':'')+'">'
       +'<div class="hist-l">'
         +'<div class="hist-d">'+(r._r==='owner'?'👑 ':'')+escH(r._n)+' · '+day+'</div>'
-        +'<div class="hist-m">'+fmtTime(r.start_time)+(isOpen?' → <span style="color:#059669;font-weight:700">в смене</span>':' → '+fmtTime(r.end_time)+' · '+(Number(r.hours||0).toFixed(2))+'h'+(cups?' · '+cups+' шт':''))+'</div>'
+        +'<div class="hist-m">'+fmtTime(r.start_time)+(isOpen?' → <span style="color:#059669;font-weight:700">в смене</span>':' → '+fmtTime(r.end_time)+' · '+fmtH(r.hours||0)+(cups?' · '+cups+' шт':''))+'</div>'
       +'</div>'
       +'<div class="hist-r">'+(isOpen?'<span style="color:#059669">●</span>':'+'+fmt(r.total||0))+'</div>'
     +'</div>';
@@ -1618,7 +1647,7 @@ function rMBaristas(m,b){
           +'</div>'
           +'<div class="bcard-net">'+fmt(brs.net||0)+'</div>'
         +'</div>'
-        +'<div class="bcard-stat"><span>Часы</span><span>'+(Number(brs.h||0).toFixed(2).replace(/\.00$/,''))+'h × 12k = '+fmt(brs.hp||0)+'</span></div>'
+        +'<div class="bcard-stat"><span>Часы</span><span>'+fmtH(brs.h||0)+' × 12k = '+fmt(brs.hp||0)+'</span></div>'
         +'<div class="bcard-stat"><span>Бонус</span><span>+'+fmt(brs.b||0)+'</span></div>'
         +'<div class="bcard-stat"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(brs.f||0)+'</span></div>'
         +(brs.paid?'<div class="bcard-stat"><span>Выплачено</span><span style="color:var(--t3)">-'+fmt(brs.paid)+'</span></div>':'')
@@ -1629,7 +1658,7 @@ function rMBaristas(m,b){
         brs.recent.slice(0,3).forEach(function(r){
           const day=String(new Date(r.start_time).getDate()).padStart(2,'0')+'.'+String(new Date(r.start_time).getMonth()+1).padStart(2,'0');
           const open=!r.end_time;
-          h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span>'+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):(Number(r.hours||0).toFixed(2)+'h'))+'</span></div>';
+          h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span>'+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</span></div>';
         });
         h+='</div>';
       }
@@ -1856,12 +1885,14 @@ function saveTips(){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  h+='<div class="sec">⚙️ Настройки · '+(settingsTab==='prices'?'Цены':(settingsTab==='names'?'Имена':'Логи'))+'</div>';
-  // Mini tabs (3 alt sekme — yeni sayfa açmıyoruz)
+  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',logs:'Логи'}[settingsTab]||'';
+  h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
+  // Mini tabs (4 alt sekme — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs">'
-    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">💰 Цены</div></div></div>'
-    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">📝 Имена</div></div></div>'
-    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">📋 Логи</div></div></div>'
+    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
+    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'desserts\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
+    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
+    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
   +'</div>';
 
   if(settingsTab==='prices'){
@@ -1876,6 +1907,39 @@ function rMSettings(m,b){
         +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="savePrice(\''+d.id+'\')">💾</button>'
       +'</div>';
     });
+  } else if(settingsTab==='desserts'){
+    h+='<div class="refresh-hint" style="margin-top:0">Каталог десертов — добавляйте, редактируйте цены, скрывайте позиции. Изменения сразу применяются для всех баристов.</div>';
+    // Mevcut tatlılar (DESSERT_CAT — owner için tüm tatlılar geliyor, aktif/pasif dahil)
+    if(!DESSERT_CAT||!DESSERT_CAT.length){
+      h+='<div class="empty-mini">Десертов пока нет.</div>';
+    } else {
+      DESSERT_CAT.forEach(function(d){
+        const active=d.active!==0;
+        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px;'+(active?'':'opacity:.55')+'">'
+          +'<div class="set-row-l" style="min-width:110px">'
+            +'<div class="set-row-t">'+(d.icon||'🍮')+' '+escH(d.label||'')+'</div>'
+            +'<div class="set-row-s">id: '+escH(d.id)+(active?'':' · скрыт')+'</div>'
+          +'</div>'
+          +'<input class="set-input" type="text" maxlength="2" id="dic_'+d.id+'" value="'+escH(d.icon||'🍮')+'" style="width:48px;text-align:center;font-size:18px" title="Эмодзи">'
+          +'<input class="set-input wide" type="text" id="dlb_'+d.id+'" value="'+escH(d.label||'')+'" placeholder="название">'
+          +'<input class="set-input" type="number" inputmode="numeric" min="0" id="dpr_'+d.id+'" value="'+(d.price||0)+'" style="width:80px" title="Цена">'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDessert(\''+d.id+'\')">💾</button>'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="deleteDessert(\''+d.id+'\')" title="Скрыть">🗑</button>'
+        +'</div>';
+      });
+    }
+    // Yeni tatlı ekleme formu
+    h+='<div style="margin-top:14px;padding:12px;border:2px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
+      +'<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--t1)">➕ Добавить новый десерт</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
+        +'<input class="set-input" type="text" id="ndId" placeholder="id (eng)" style="width:100px;font-size:12px">'
+        +'<input class="set-input" type="text" id="ndIc" placeholder="🍰" maxlength="2" style="width:48px;text-align:center;font-size:18px">'
+        +'<input class="set-input wide" type="text" id="ndLb" placeholder="название" style="flex:1;min-width:120px">'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" id="ndPr" placeholder="цена" value="500" style="width:80px">'
+        +'<button class="add-btn" onclick="addNewDessert()" style="padding:8px 12px">➕ Добавить</button>'
+      +'</div>'
+      +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id — латиницей без пробелов, например: tiramisu, cookie_choco</div>'
+    +'</div>';
   } else if(settingsTab==='names'){
     h+='<div class="refresh-hint" style="margin-top:0">Назначьте отображаемое имя для каждого бариста — оно будет показано в интерфейсе.</div>';
     if(!BARISTAS.length){
@@ -1945,6 +2009,57 @@ function saveDisplayName(uid){
   toast('📝 Имя сохранено');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'rename_user',target:uid,name:name}))}catch(e){console.warn(e)}}
+}
+
+// ── Tatlı kataloğu CRUD (owner) ──
+function saveDessert(id){
+  const ic=(document.getElementById('dic_'+id)||{}).value||'🍮';
+  const lb=((document.getElementById('dlb_'+id)||{}).value||'').trim();
+  const pr=parseInt((document.getElementById('dpr_'+id)||{}).value)||0;
+  if(!lb){toast('❌ Название обязательно');return}
+  if(pr<0){toast('❌ Неверная цена');return}
+  // Optimistik güncelle
+  const d=DESSERT_CAT.find(function(x){return x.id===id});
+  if(d){d.icon=ic;d.label=lb;d.price=pr}
+  const dl=DESSERT_LIST.find(function(x){return x.id===id});
+  if(dl){dl.c=ic;dl.l=lb;dl.r=pr}
+  toast('💾 Десерт сохранён');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
+  render();
+}
+
+function deleteDessert(id){
+  const d=DESSERT_CAT.find(function(x){return x.id===id});
+  if(!d)return;
+  if(!confirm('Скрыть десерт «'+(d.label||id)+'»?\nОн больше не будет показан баристам.'))return;
+  d.active=0;
+  // DESSERT_LIST'ten de çıkar
+  for(let i=DESSERT_LIST.length-1;i>=0;i--){if(DESSERT_LIST[i].id===id)DESSERT_LIST.splice(i,1)}
+  toast('🗑 Скрыт');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_delete',id:id}))}catch(e){console.warn(e)}}
+  render();
+}
+
+function addNewDessert(){
+  const id=((document.getElementById('ndId')||{}).value||'').trim().toLowerCase();
+  const ic=((document.getElementById('ndIc')||{}).value||'🍮').trim();
+  const lb=((document.getElementById('ndLb')||{}).value||'').trim();
+  const pr=parseInt((document.getElementById('ndPr')||{}).value)||500;
+  if(!id||!lb){toast('❌ Заполните id и название');return}
+  if(!/^[a-z0-9_]+$/.test(id)){toast('❌ id: только латинские буквы, цифры и _');return}
+  if(DESSERT_CAT.some(function(x){return x.id===id})){toast('❌ Такой id уже есть');return}
+  // Optimistik
+  const newD={id:id,label:lb,icon:ic,price:pr,sort_order:50,active:1};
+  DESSERT_CAT.push(newD);
+  DESSERT_LIST.push({id:id,l:lb,c:ic,r:pr,active:true});
+  // Inputları temizle
+  ['ndId','ndIc','ndLb'].forEach(function(x){const el=document.getElementById(x);if(el)el.value=''});
+  const pe=document.getElementById('ndPr');if(pe)pe.value='500';
+  toast('➕ Добавлен');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
+  render();
 }
 
 render();
