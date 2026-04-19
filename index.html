@@ -13,7 +13,9 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .hdr{position:sticky;top:0;z-index:100;background:rgba(250,248,244,.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border)}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
 .brand{display:flex;align-items:center;gap:10px}
-.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a}
+.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .2s ease}
+.brand-logo img{width:100%;height:100%;object-fit:cover;display:block}
+.brand-logo:hover{transform:scale(1.06)}
 .brand-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
 .brand-name .caffe{color:var(--yellow)}
 .brand-name .lito{color:var(--t1)}
@@ -277,7 +279,7 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 <div class="hdr">
   <div class="hdr-top">
     <div class="brand">
-      <div class="brand-logo">C</div>
+      <div class="brand-logo"><img src="nero.jpg" alt="NERO" onerror="this.parentNode.innerHTML='C'"></div>
       <div class="brand-name"><span class="caffe">Caffe</span><span class="lito">lito</span></div>
     </div>
     <div class="clock-box">
