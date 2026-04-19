@@ -471,6 +471,17 @@ const DRINK_LIST=[
   {id:'dome300',l:'Купол 300',r:1000,c:'🧊'},
   {id:'dome400',l:'Купол 400',r:1300,c:'🧊'}
 ];
+// Tatlılar — her biri 500 сум sabit
+const DESSERT_RATE=500;
+const DESSERT_LIST=[
+  {id:'cookie',l:'Печенье',c:'🍪'},
+  {id:'cheesecake',l:'Чизкейк',c:'🍰'},
+  {id:'brownie',l:'Брауни',c:'🍫'},
+  {id:'tiramisu',l:'Тирамису',c:'🥮'},
+  {id:'muffin',l:'Маффин',c:'🧁'},
+  {id:'croissant',l:'Круассан',c:'🥐'},
+  {id:'other_sweet',l:'Другое',c:'🍮'}
+];
 const FINE_PRESETS=[
   {id:'clean',l:'🧹 Чистота',amt:30000,s:'каждое нарушение'},
   {id:'insp_70',l:'🏢 Проверка 70-80%',amt:1000000,s:'делится на всех'},
@@ -504,7 +515,7 @@ if(!MY_UID)tab='order';
 
 let mView='main'; // main | shiftEnd | shift | fine | baristas | transfer | pay | shiftDetail | activeBaristas | tips | settings
 let shiftDraft={hours:'',drinks:{},note:''};
-let endDraft={drinks:{},note:''};         // Vardiya bitirme taslağı
+let endDraft={drinks:{},desserts:{},note:'',endTime:''};   // Vardiya bitirme taslağı (endTime boşsa ŞİMDİ)
 let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};
 let payTarget=0;
 let detailShift=null;                      // Tıklanan vardiya kaydı
@@ -747,6 +758,14 @@ function rShift(m,b){
   } else {
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
     h+='<div class="refresh-hint" style="margin-top:10px">Нажмите «Начать смену» как только пришли. Время прихода фиксируется автоматически.</div>';
+    // Manuel saat girişi — telefon kapanmışsa veya unuttuysa
+    h+='<div style="margin-top:14px;padding:12px;border:1px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
+      +'<div style="font-size:12px;color:var(--t2);margin-bottom:8px">⏰ <b>Забыли начать вовремя?</b> Укажите фактическое время прихода:</div>'
+      +'<div style="display:flex;gap:8px;align-items:center">'
+        +'<input type="time" id="cstStart" style="flex:1;padding:10px;border:1px solid #cbd5e1;border-radius:10px;font-size:15px;font-family:inherit">'
+        +'<button onclick="startShiftCustomTime()" style="padding:10px 14px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">Начать</button>'
+      +'</div>'
+    +'</div>';
   }
 
   // Şu an çalışan diğer baristalar
@@ -974,7 +993,7 @@ function rMMain(m,b){
 }
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
-function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},note:''};render()}
+function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:''};render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
 function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};render()}
 function openTips(){mView='tips';tipDraft={total:'',distributions:{},note:'',mode:'equal'};render()}
@@ -1006,21 +1025,56 @@ function startShiftNow(){
   render();
 }
 
+// ── Vardiyayı geriye dönük başlat (HH:MM girişi) ──
+function startShiftCustomTime(){
+  const inp=document.getElementById('cstStart');
+  if(!inp||!inp.value){toast('Укажите время');return}
+  const hhmm=inp.value; // 'HH:MM'
+  // Bugün için datetime oluştur
+  const now=new Date();
+  const [hh,mm]=hhmm.split(':').map(function(x){return parseInt(x)||0});
+  const customDt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+  // Geleceğe izin verme
+  if(customDt-now>2*60*1000){toast('Время не может быть в будущем');return}
+  // 12 saatten eski izin verme (yanlışlıkla)
+  if(now-customDt>12*60*60*1000){
+    if(!confirm('Указано время более 12 часов назад. Продолжить?'))return;
+  }
+  if(!confirm('Начать смену с '+hhmm+'?\nВремя прихода будет указано вручную.'))return;
+  const customIso=customDt.toISOString();
+  SUMMARY.active={start_time:customIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
+  toast('🟢 Смена началась с '+hhmm);
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',start_time:customIso}))}catch(e){console.warn(e)}}
+  render();
+}
+
 // ── Vardiya BITIR ekranı (geliş zamanı zaten kayıtlı, sadece bardak+not) ──
 function rMShiftEnd(m,b){
   const active=(SUMMARY||{}).active;
   if(!active){mView='main';render();return}
   const startStr=fmtTime(active.start_time);
   const dayStr=fmtDay(active.start_time);
-  const liveH=liveHours(active.start_time);
+  // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">🔴 Завершить смену · '+dayStr+'</div>';
   // Süre özeti
   h+='<div class="sf-card" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:#6ee7b7">'
     +'<div class="det-times">'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Сейчас</div><div class="det-time-v" id="seNow">'+fmtTime(new Date().toISOString())+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+(liveH%1===0?liveH:liveH.toFixed(2))+'h</div></div>'
+    +'</div>'
+  +'</div>';
+  // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
+  const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
+  h+='<div style="margin:8px 0 4px;padding:10px 12px;border:1px dashed #cbd5e1;border-radius:12px;background:#fefce8">'
+    +'<div style="font-size:11px;color:var(--t2);margin-bottom:6px">⏰ Если забыли закрыть смену вовремя — укажите фактическое время ухода:</div>'
+    +'<div style="display:flex;gap:8px;align-items:center">'
+      +'<input type="time" id="cstEnd" value="'+curHHMM+'" oninput="setEndTime(this.value)" style="flex:1;padding:9px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;font-family:inherit">'
+      +(endDraft.endTime?'<button onclick="endDraft.endTime=\'\';render()" style="padding:9px 12px;background:#ef4444;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">⟲ Сейчас</button>':'<span style="font-size:11px;color:var(--t3)">по умолчанию</span>')
     +'</div>'
   +'</div>';
   // İçecekler
@@ -1037,13 +1091,28 @@ function rMShiftEnd(m,b){
       +'</div>'
     +'</div>';
   });
+  // Tatlılar (her biri 500 сум sabit)
+  h+='<div class="sec">🍰 Десерты за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(500 сум за шт)</span></div>';
+  DESSERT_LIST.forEach(function(d){
+    const q=parseInt(endDraft.desserts[d.id])||0;
+    const sub=q*DESSERT_RATE;
+    h+='<div class="dr-item '+(q?'has':'')+'">'
+      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(DESSERT_RATE)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
+      +'<div class="qty-box">'
+        +'<button class="qb m" onclick="dqDes(\''+d.id+'\',-1)">&minus;</button>'
+        +'<span class="qv '+(q?'':'z')+'" onclick="dqDesManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'·')+'</span>'
+        +'<button class="qb p" onclick="dqDes(\''+d.id+'\',1)">+</button>'
+      +'</div>'
+    +'</div>';
+  });
   // Not
   h+='<div class="sec">📝 Заметка (необязательно)</div>'
     +'<textarea class="sf-note" rows="2" placeholder="например: вечерняя смена, замена" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
   // Toplam
   h+='<div class="sf-total">'
-    +'<div class="sf-tot-row"><span>Часы × 12.000</span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
-    +'<div class="sf-tot-row"><span>Бонус (напитки)</span><span id="seBonus">0</span></div>'
+    +'<div class="sf-tot-row"><span>Часы × 12.000 <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
+    +'<div class="sf-tot-row"><span>Бонус — напитки</span><span id="seBonus">0</span></div>'
+    +'<div class="sf-tot-row"><span>Бонус — десерты</span><span id="seDesBonus">0</span></div>'
     +'<div class="sf-tot-big"><span>ИТОГО</span><span id="seTotal">'+fmt(Math.round(liveH*HOURLY_RATE))+' сум</span></div>'
   +'</div>';
   h+='<div class="footer">XSYN</div>';
@@ -1051,15 +1120,44 @@ function rMShiftEnd(m,b){
   b.style.display='block';
   b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену</button>';
   recalcEnd();
-  // Saniyelik canlı güncelleme
+  // Saniyelik canlı güncelleme — sadece manuel saat YOKSA çalışsın
   if(window._endTimer)clearInterval(window._endTimer);
-  window._endTimer=setInterval(function(){
-    const en=document.getElementById('seNow');if(!en){clearInterval(window._endTimer);return}
-    const lh=liveHours(active.start_time);
-    en.textContent=fmtTime(new Date().toISOString());
-    const ed=document.getElementById('seDur');if(ed)ed.textContent=(lh%1===0?lh:lh.toFixed(2))+'h';
-    recalcEnd();
-  },1000);
+  if(!endDraft.endTime){
+    window._endTimer=setInterval(function(){
+      const en=document.getElementById('seNow');if(!en){clearInterval(window._endTimer);return}
+      if(endDraft.endTime){clearInterval(window._endTimer);return}
+      const lh=liveHours(active.start_time);
+      en.textContent=fmtTime(new Date().toISOString());
+      const ed=document.getElementById('seDur');if(ed)ed.textContent=(lh%1===0?lh:lh.toFixed(2))+'h';
+      recalcEnd();
+    },1000);
+  }
+}
+
+// Manuel bitiş saati — input değiştiğinde
+function setEndTime(hhmm){
+  if(!hhmm){endDraft.endTime='';render();return}
+  const [hh,mm]=hhmm.split(':').map(function(x){return parseInt(x)||0});
+  const now=new Date();
+  const dt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+  endDraft.endTime=dt.toISOString();
+  recalcEnd();
+}
+
+// Tatlılar için ± ve manuel giriş
+function dqDes(id,d){
+  endDraft.desserts[id]=Math.max(0,(parseInt(endDraft.desserts[id])||0)+d);
+  if(!endDraft.desserts[id])delete endDraft.desserts[id];
+  if(tg)tg.HapticFeedback?.impactOccurred('light');
+  render();
+}
+function dqDesManual(id){
+  const cur=parseInt(endDraft.desserts[id])||0;
+  const v=prompt('Сколько штук?',cur||'');
+  if(v===null)return;
+  const n=Math.max(0,parseInt(v)||0);
+  if(n===0)delete endDraft.desserts[id];else endDraft.desserts[id]=n;
+  render();
 }
 
 function dqEnd(id,d){
@@ -1078,32 +1176,54 @@ function dqEndManual(id){
 }
 function recalcEnd(){
   const active=(SUMMARY||{}).active;if(!active)return;
-  const liveH=liveHours(active.start_time);
-  let bonus=0;
-  DRINK_LIST.forEach(function(d){bonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
+  let drinkBonus=0;
+  DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  let desBonus=0;
+  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*DESSERT_RATE});
   const hourly=Math.round(liveH*HOURLY_RATE);
-  const total=hourly+bonus;
+  const total=hourly+drinkBonus+desBonus;
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
-  const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(bonus);
+  const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
+  const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
   const eTt=document.getElementById('seTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
+  // Saatleri de yenile (manuel saat değiştiyse)
+  const ed=document.getElementById('seDur');if(ed)ed.textContent=(liveH%1===0?liveH:liveH.toFixed(2))+'h';
+  if(endDraft.endTime){
+    const en=document.getElementById('seNow');if(en)en.textContent=fmtTime(effEnd.toISOString());
+  }
 }
 
 function endShiftSave(){
   const active=(SUMMARY||{}).active;
   if(!active){toast('Нет активной смены');return}
-  const liveH=liveHours(active.start_time);
-  let bonus=0;
-  DRINK_LIST.forEach(function(d){bonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
+  let drinkBonus=0;
+  DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  let desBonus=0;
+  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*DESSERT_RATE});
+  const bonus=drinkBonus+desBonus;
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+bonus;
-  const payload={action:'shift_end',drinks:endDraft.drinks,note:endDraft.note};
+  const payload={
+    action:'shift_end',
+    drinks:endDraft.drinks,
+    desserts:endDraft.desserts,
+    note:endDraft.note
+  };
+  if(endDraft.endTime)payload.end_time=endDraft.endTime;
   // Optimistik güncelleme
   const finishedShift={
     start_time:active.start_time,
-    end_time:new Date().toISOString(),
+    end_time:effEnd.toISOString(),
     hours:Math.round(liveH*100)/100,
     drinks:JSON.stringify(endDraft.drinks),
-    bonus:bonus,hourly_pay:hourly,total:total,
+    desserts:JSON.stringify(endDraft.desserts),
+    bonus:bonus,dessert_bonus:desBonus,hourly_pay:hourly,total:total,
     note:endDraft.note,
     created_at:active.start_time
   };
@@ -1120,11 +1240,11 @@ function endShiftSave(){
   SUMMARY.active=null;
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
   if(window._actTimer){clearInterval(window._actTimer);window._actTimer=null}
-  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,note:endDraft.note,total:total});
+  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,desserts:endDraft.desserts,note:endDraft.note,total:total});
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  endDraft={drinks:{},note:''};
+  endDraft={drinks:{},desserts:{},note:'',endTime:''};
   mView='main';
   render();
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
@@ -1135,7 +1255,11 @@ function rMShiftDetail(m,b){
   const sh=detailShift;
   if(!sh){mView='main';render();return}
   let drinks={};try{drinks=typeof sh.drinks==='string'?JSON.parse(sh.drinks):(sh.drinks||{})}catch(e){drinks={}}
+  let desserts={};try{desserts=typeof sh.desserts==='string'?JSON.parse(sh.desserts):(sh.desserts||{})}catch(e){desserts={}}
   const cups=Object.values(drinks).reduce(function(a,v){return a+(parseInt(v)||0)},0);
+  const sweets=Object.values(desserts).reduce(function(a,v){return a+(parseInt(v)||0)},0);
+  const desBonus=parseInt(sh.dessert_bonus)||(sweets*DESSERT_RATE);
+  const drinkBonus=Math.max(0,(parseInt(sh.bonus)||0)-desBonus);
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">📊 Детали смены · '+fmtDay(sh.start_time||sh.created_at)+'</div>';
 
@@ -1163,12 +1287,25 @@ function rMShiftDetail(m,b){
   }
   h+='</div>';
 
+  // Tatlılar
+  if(sweets>0){
+    h+='<div class="det-card">'
+      +'<div class="det-h">🍰 Десерты ('+sweets+' шт)</div>';
+    DESSERT_LIST.forEach(function(d){
+      const q=parseInt(desserts[d.id])||0;
+      if(!q)return;
+      h+='<div class="det-row"><span>'+d.c+' '+d.l+' × '+q+'</span><span>+'+fmt(q*DESSERT_RATE)+'</span></div>';
+    });
+    h+='</div>';
+  }
+
   // Hesap
   h+='<div class="det-card">'
     +'<div class="det-h">💰 Расчёт</div>'
     +'<div class="det-row"><span>Часы '+(Number(sh.hours||0).toFixed(2))+'h × 12.000</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
-    +'<div class="det-row"><span>Бонус (напитки)</span><span>+'+fmt(sh.bonus||0)+'</span></div>'
-    +'<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
+    +'<div class="det-row"><span>Бонус — напитки</span><span>+'+fmt(drinkBonus)+'</span></div>';
+  if(desBonus>0)h+='<div class="det-row"><span>Бонус — десерты</span><span>+'+fmt(desBonus)+'</span></div>';
+  h+='<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
   +'</div>';
 
   // Not
