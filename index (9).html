@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Caffelito</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{--bg:#faf8f4;--card:#fff;--card2:#f5f2ec;--card3:#ece8e0;--border:rgba(0,0,0,.06);--border2:rgba(0,0,0,.1);--t1:#1a1a1a;--t2:#6b6356;--t3:#a69e92;--gold:#d4a020;--gold2:#c4941a;--gold-bg:rgba(212,160,32,.08);--gold-border:rgba(212,160,32,.2);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.15);--yellow-border:rgba(245,212,75,.4);--green:#16a34a;--green-bg:rgba(22,163,74,.06);--green-border:rgba(22,163,74,.15);--red:#dc2626;--red-bg:rgba(220,38,38,.06);--r:14px;--r2:10px}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased}
+.hdr{position:sticky;top:0;z-index:100;background:rgba(250,248,244,.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border)}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a}
+.brand-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
+.brand-name .caffe{color:var(--yellow)}
+.brand-name .lito{color:var(--t1)}
+.clock-box{display:flex;align-items:center;gap:10px}
+.clock-wrap{text-align:right}
+.clock{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:.5px}
+.clock-day{font-size:10px;color:var(--t2);font-weight:500}
+.icon-btn{width:34px;height:34px;border-radius:9px;border:1px solid var(--border2);background:var(--card);color:var(--t2);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.icon-btn.on{background:var(--yellow);border-color:var(--gold-border);color:var(--t1)}
+.tabs{display:flex;padding:0 16px;gap:2px}
+.tab{flex:1;padding:10px 4px 12px;text-align:center;font-size:11px;font-weight:700;color:var(--t3);border-bottom:2.5px solid transparent;cursor:pointer;transition:all .2s;letter-spacing:.3px}
+.tab.on{color:var(--gold2);border-bottom-color:var(--gold)}
+.wrap{padding:14px 18px}
+.alert{background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;font-size:12px;font-weight:500;line-height:1.5}
+.alert b{font-weight:700}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px 18px;margin-bottom:8px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:space-between}
+.card:active{transform:scale(.985);background:var(--card2)}
+.card.today-card{background:var(--yellow-bg);border:2px solid var(--gold);box-shadow:0 4px 16px rgba(212,160,32,.15)}
+.card.today-card .card-title{color:var(--gold2)}
+.card-left{display:flex;align-items:center;gap:13px;flex:1;min-width:0}
+.card-icon{width:40px;height:40px;border-radius:10px;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.card-icon.today-icon{background:var(--yellow);font-size:20px}
+.card-info{min-width:0}
+.card-title{font-size:14px;font-weight:700}
+.card-sub{font-size:11px;color:var(--t3);margin-top:2px;font-weight:500}
+.card-right{display:flex;align-items:center;gap:8px}
+.badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px}
+.badge-gold{background:var(--gold-bg);color:var(--gold2);border:1px solid var(--gold-border)}
+.badge-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border)}
+.badge-today{background:#fef3c7;color:#92400e;font-size:10px;padding:3px 7px;border-radius:6px}
+.badge-week{background:#dbeafe;color:#1e40af;font-size:10px;padding:3px 7px;border-radius:6px}
+.badge-month{background:#ede9fe;color:#5b21b6;font-size:10px;padding:3px 7px;border-radius:6px}
+.badge-today-big{background:var(--yellow);color:var(--t1);font-size:10px;font-weight:800;padding:3px 10px;border-radius:6px;border:1px solid var(--gold)}
+.arrow{color:var(--t3);font-size:18px;font-weight:300}
+.item{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;margin-bottom:5px;transition:all .15s}
+.item.has{border-color:var(--gold-border);background:var(--yellow-bg)}
+.item-left{flex:1;min-width:0;padding-right:10px}
+.item-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item-note{font-size:10px;color:var(--t3);margin-top:2px;font-style:italic}
+.qty-box{display:flex;align-items:center;gap:3px}
+.qb{width:34px;height:34px;border-radius:9px;border:none;font-size:18px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .12s}
+.qb:active{transform:scale(.88)}.qb.m{background:var(--card2);color:var(--t2)}.qb.p{background:var(--yellow);color:var(--t1)}
+.qv{min-width:30px;text-align:center;font-size:15px;font-weight:800;color:var(--gold2)}.qv.z{color:var(--t3);font-weight:500;font-size:13px}
+.task{display:flex;align-items:flex-start;gap:13px;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:13px 15px;margin-bottom:5px;cursor:pointer;transition:all .15s}
+.task:active{background:var(--card2)}.task.done{background:var(--green-bg);border-color:var(--green-border)}
+.chk{width:22px;height:22px;border-radius:7px;border:2px solid var(--card3);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;font-size:12px;font-weight:700;transition:all .2s}
+.task.done .chk{background:var(--green);border-color:var(--green);color:#fff}
+.task-body{flex:1;min-width:0}
+.task-t{font-size:13px;font-weight:600;line-height:1.35}.task.done .task-t{color:var(--t3);text-decoration:line-through}
+.task-d{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.45}.task.done .task-d{opacity:.3}
+.prog{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:13px 16px;margin-bottom:12px}
+.prog-top{display:flex;justify-content:space-between;margin-bottom:8px}
+.prog-label{font-size:13px;font-weight:600}.prog-num{font-size:13px;font-weight:700;color:var(--gold2)}
+.pbar{height:5px;background:var(--card3);border-radius:3px;overflow:hidden}
+.pfill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--gold2),var(--yellow));transition:width .4s}.pfill.ok{background:linear-gradient(90deg,var(--green),#4ade80)}
+.back{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;font-size:12px;font-weight:600;border-radius:9px;background:var(--card);border:1px solid var(--border);color:var(--t2);cursor:pointer;margin-bottom:12px;font-family:inherit}
+.bottom{position:fixed;bottom:0;left:0;right:0;padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 25%);z-index:100}
+.mbtn{width:100%;padding:15px;border-radius:var(--r);border:none;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;background:var(--yellow);color:var(--t1);box-shadow:0 4px 20px rgba(212,160,32,.2)}
+.mbtn:active{transform:scale(.98)}.mbtn:disabled{opacity:.2;cursor:not-allowed;box-shadow:none}
+.mbtn.grn{background:var(--green);color:#fff;box-shadow:0 4px 20px rgba(22,163,74,.2)}
+.add-row{display:flex;gap:7px;margin-bottom:12px}
+.add-inp{flex:1;padding:11px 14px;border-radius:var(--r2);border:1px solid var(--border2);background:var(--card);color:var(--t1);font-family:inherit;font-size:13px;font-weight:500;outline:none}
+.add-inp:focus{border-color:var(--gold)}.add-inp::placeholder{color:var(--t3)}
+.add-btn{padding:11px 16px;border-radius:var(--r2);border:none;background:var(--yellow);color:var(--t1);font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
+.xbtn{width:26px;height:26px;border-radius:6px;border:1px solid rgba(220,38,38,.15);background:var(--red-bg);color:var(--red);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.mvbtn{width:26px;height:26px;border-radius:6px;border:1px solid var(--border2);background:var(--card2);color:var(--t2);font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.edit-btns{display:flex;gap:3px;margin-left:6px}
+.rcard{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;margin-bottom:10px}
+.rcard h3{font-size:13px;font-weight:700;color:var(--gold2);margin-bottom:10px}
+.rtime{font-size:11px;color:var(--t3);margin-bottom:8px}
+.rline{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;font-weight:500;border-bottom:1px solid var(--border)}.rline:last-child{border-bottom:none}.rline span:last-child{font-weight:700}
+.empty{text-align:center;padding:50px 20px}.empty p{color:var(--t3);font-size:14px;margin-top:12px}
+.sec{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:1.5px;margin:16px 0 8px}
+.sec.sec-today{color:var(--gold2);font-size:11px}
+.footer{text-align:center;padding:20px;font-size:10px;font-weight:600;color:var(--card3);letter-spacing:3px;margin-top:20px}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-120px);background:var(--green);color:#fff;padding:12px 24px;border-radius:12px;font-size:13px;font-weight:700;z-index:300;transition:transform .35s;box-shadow:0 8px 32px rgba(0,0,0,.15)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.ord-preview{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:10px 14px;margin-bottom:8px;max-height:130px;overflow-y:auto}
+.ord-preview-title{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.ord-line{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px}
+.ord-line:last-child{border-bottom:none}
+.ord-line-name{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-right:8px}
+.ord-line-qty{font-weight:800;color:var(--gold2);flex-shrink:0}
+/* ─── Зарплата (Salary) ─── */
+.sal-card{background:linear-gradient(135deg,#fef3c7,#fef9c3 50%,#fde68a);border-radius:18px;padding:22px 20px;margin-bottom:14px;border:1px solid var(--gold-border);box-shadow:0 4px 24px rgba(212,160,32,.15);position:relative;overflow:hidden}
+.sal-card::before{content:'';position:absolute;top:-30px;right:-30px;width:140px;height:140px;background:radial-gradient(circle,rgba(212,160,32,.2),transparent 70%);border-radius:50%}
+.sal-period{font-size:11px;font-weight:800;color:var(--gold2);text-transform:uppercase;letter-spacing:1.8px;opacity:.9;position:relative;z-index:1}
+.sal-amount{font-size:36px;font-weight:800;color:var(--t1);line-height:1;margin:8px 0 2px;font-variant-numeric:tabular-nums;position:relative;z-index:1;letter-spacing:-1px}
+.sal-amount-sub{font-size:11px;font-weight:600;color:var(--t2);opacity:.75;margin-bottom:16px;position:relative;z-index:1}
+.sal-stats{display:flex;gap:6px;margin-top:12px;position:relative;z-index:1}
+.sal-stat{flex:1;background:rgba(255,255,255,.65);border-radius:10px;padding:9px 6px;text-align:center;backdrop-filter:blur(8px)}
+.sal-stat-v{font-size:14px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums}
+.sal-stat-v.red{color:var(--red)}
+.sal-stat-l{font-size:9px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;opacity:.85}
+.sal-cta{width:100%;padding:15px;border-radius:12px;border:none;background:linear-gradient(135deg,#f5d44b,#d4a020);color:#1a1a1a;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:9px;margin-bottom:14px;box-shadow:0 4px 16px rgba(212,160,32,.28);letter-spacing:.3px}
+.sal-cta:active{transform:scale(.98)}
+.sal-cta-i{width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;line-height:1}
+.own-panel{background:linear-gradient(135deg,#1a1a1a,#2d2d2d);color:#fff;border-radius:14px;padding:14px 16px;margin-bottom:14px;box-shadow:0 4px 16px rgba(0,0,0,.12)}
+.own-title{font-size:11px;font-weight:800;color:var(--yellow);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.own-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.own-btn{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px 10px;cursor:pointer;text-align:center;transition:all .15s;position:relative;color:#fff;font-family:inherit}
+.own-btn:active{background:rgba(255,255,255,.12);transform:scale(.97)}
+.own-btn-i{font-size:22px;margin-bottom:4px;line-height:1}
+.own-btn-t{font-size:12px;font-weight:700}
+.own-btn-s{position:absolute;top:6px;right:8px;font-size:10px;font-weight:800;color:#1a1a1a;background:var(--yellow);padding:1px 7px;border-radius:8px}
+.hist{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin-bottom:5px}
+.hist.fine{background:var(--red-bg);border-color:rgba(220,38,38,.12)}
+.hist.paid{background:rgba(0,0,0,.03);opacity:.75}
+.hist-l{flex:1;min-width:0;padding-right:8px}
+.hist-d{font-size:13px;font-weight:700;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-m{font-size:11px;color:var(--t3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-r{font-size:14px;font-weight:800;color:var(--gold2);font-variant-numeric:tabular-nums;flex-shrink:0}
+.hist-r.red{color:var(--red)}
+.hist-r.grey{color:var(--t3)}
+.empty-mini{text-align:center;padding:18px 12px;color:var(--t3);font-size:12px;font-weight:500;background:var(--card);border:1px dashed var(--border2);border-radius:10px;margin-bottom:8px}
+.sf-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.sf-label{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.sf-hours{width:100%;padding:14px;border:1.5px solid var(--border2);border-radius:10px;font-family:inherit;font-size:24px;font-weight:800;text-align:center;outline:none;color:var(--t1);background:#fff;-moz-appearance:textfield}
+.sf-hours::-webkit-outer-spin-button,.sf-hours::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.sf-hours:focus{border-color:var(--gold)}
+.sf-hint{font-size:11px;color:var(--t3);text-align:center;margin-top:6px;font-weight:600}
+.dr-item{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin-bottom:5px;transition:all .15s}
+.dr-item.has{border-color:var(--gold-border);background:var(--yellow-bg)}
+.dr-l{flex:1;padding-right:8px;min-width:0}
+.dr-n{font-size:13px;font-weight:700;color:var(--t1)}
+.dr-s{font-size:10px;color:var(--t3);margin-top:1px;font-weight:500}
+.sf-note{width:100%;padding:10px 12px;border:1px solid var(--border2);border-radius:10px;font-family:inherit;font-size:13px;background:var(--card);color:var(--t1);outline:none;resize:vertical;margin-bottom:12px;font-weight:500}
+.sf-note:focus{border-color:var(--gold)}
+.sf-total{background:linear-gradient(135deg,var(--card2),var(--card3));border-radius:12px;padding:14px 16px;margin:14px 0 8px}
+.sf-tot-row{display:flex;justify-content:space-between;font-size:12px;font-weight:600;color:var(--t2);padding:3px 0;font-variant-numeric:tabular-nums}
+.sf-tot-big{display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:var(--t1);margin-top:8px;padding-top:10px;border-top:1.5px solid rgba(0,0,0,.08);font-variant-numeric:tabular-nums}
+.sf-tot-big span:last-child{color:var(--gold2)}
+.bcard{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:8px}
+.bcard.me{border-color:var(--gold-border);background:var(--yellow-bg)}
+.bcard-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;gap:10px}
+.bcard-l{flex:1;min-width:0}
+.bcard-name{font-size:14px;font-weight:800;color:var(--t1);display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bcard-name .crown{color:var(--gold2)}
+.bcard-uname{font-size:10px;color:var(--t3);font-weight:500;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bcard-net{font-size:18px;font-weight:800;color:var(--gold2);font-variant-numeric:tabular-nums;flex-shrink:0}
+.bcard-stat{display:flex;justify-content:space-between;padding:3px 0;font-size:11px;color:var(--t2)}
+.bcard-stat span:last-child{font-weight:700;color:var(--t1);font-variant-numeric:tabular-nums}
+.bcard-actions{display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.bcard-act{flex:1;padding:9px;border-radius:8px;border:1px solid var(--border2);background:var(--card2);color:var(--t1);font-family:inherit;font-size:11px;font-weight:700;cursor:pointer}
+.bcard-act:active{transform:scale(.97)}
+.bcard-act.fine{background:var(--red-bg);color:var(--red);border-color:rgba(220,38,38,.15)}
+.bcard-act.pay{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
+.opt{display:flex;align-items:center;gap:10px;background:var(--card);border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:5px;cursor:pointer;transition:all .15s}
+.opt.on{border-color:var(--gold);background:var(--yellow-bg)}
+.opt-r{width:18px;height:18px;border-radius:50%;border:2px solid var(--card3);flex-shrink:0;display:flex;align-items:center;justify-content:center;background:#fff}
+.opt.on .opt-r{border-color:var(--gold);background:var(--gold)}
+.opt.on .opt-r::after{content:'';width:8px;height:8px;border-radius:50%;background:#fff}
+.opt-l{flex:1;min-width:0;padding-right:6px}
+.opt-t{font-size:13px;font-weight:700;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opt-s{font-size:10px;color:var(--t3);margin-top:1px;font-weight:500}
+.opt-amt{font-size:12px;font-weight:800;color:var(--gold2);font-variant-numeric:tabular-nums;flex-shrink:0}
+.role-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px}
+.role-pill.owner{background:linear-gradient(135deg,var(--yellow),var(--gold));color:#1a1a1a;box-shadow:0 2px 8px rgba(212,160,32,.25)}
+.role-pill.barista{background:var(--card2);color:var(--t2);border:1px solid var(--border)}
+.no-owner-card{background:linear-gradient(135deg,#fef3c7,#fde68a);border:1px solid var(--gold);border-radius:14px;padding:18px;margin-bottom:14px;text-align:center}
+.no-owner-card .ic{font-size:36px;margin-bottom:8px}
+.no-owner-card .t{font-size:14px;font-weight:800;color:var(--t1);margin-bottom:4px}
+.no-owner-card .s{font-size:11px;color:var(--t2);font-weight:500;line-height:1.5}
+.refresh-hint{background:var(--gold-bg);border:1px solid var(--gold-border);border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:11px;color:var(--gold2);font-weight:600;text-align:center;line-height:1.4}
+/* ─── Aktif vardiya kartı (Активная смена) ─── */
+.act-card{background:linear-gradient(135deg,#10b981,#059669);color:#fff;border-radius:18px;padding:18px 18px 14px;margin-bottom:14px;box-shadow:0 6px 22px rgba(16,185,129,.32);position:relative;overflow:hidden}
+.act-card::before{content:'';position:absolute;top:-30px;right:-20px;width:120px;height:120px;background:radial-gradient(circle,rgba(255,255,255,.18),transparent 70%);border-radius:50%}
+.act-pulse{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;background:rgba(255,255,255,.2);padding:4px 10px;border-radius:20px;position:relative;z-index:1}
+.act-dot{width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 0 #fff;animation:pulse 1.4s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.7)}70%{box-shadow:0 0 0 10px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.act-time{font-size:30px;font-weight:800;margin:6px 0 2px;font-variant-numeric:tabular-nums;letter-spacing:-.5px;position:relative;z-index:1}
+.act-sub{font-size:11px;font-weight:600;opacity:.92;position:relative;z-index:1}
+.act-row{display:flex;justify-content:space-between;margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.18);font-size:12px;font-weight:600;position:relative;z-index:1}
+.act-row b{font-size:14px;font-weight:800}
+.btn-end{width:100%;margin-top:12px;padding:13px;border:none;border-radius:11px;background:#fff;color:#059669;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;position:relative;z-index:1}
+.btn-end:active{transform:scale(.98)}
+.btn-start{width:100%;padding:18px;border:none;border-radius:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-family:inherit;font-size:15px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:14px;box-shadow:0 6px 18px rgba(16,185,129,.32);letter-spacing:.3px}
+.btn-start:active{transform:scale(.99)}
+.btn-start .ic{width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;font-size:14px}
+.sec-link{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px}
+.sec-link a{color:var(--gold2);font-weight:700;text-transform:none;letter-spacing:0;font-size:12px;cursor:pointer}
+.hist.click{cursor:pointer;transition:all .12s}
+.hist.click:active{transform:scale(.98);background:var(--card2)}
+.hist-arr{font-size:18px;color:var(--t3);margin-left:6px;flex-shrink:0}
+/* Bardak sayısı tıklanabilir */
+.qty-box{display:flex;align-items:center;gap:0;background:var(--card2);border-radius:10px;padding:0;border:1px solid var(--border)}
+.qb{width:34px;height:34px;border:none;background:transparent;color:var(--t1);font-family:inherit;font-size:18px;font-weight:800;cursor:pointer;border-radius:8px;display:flex;align-items:center;justify-content:center;line-height:1}
+.qb:active{background:rgba(0,0,0,.06);transform:scale(.92)}
+.qb.m{color:var(--red)}
+.qb.p{color:var(--green)}
+.qv{min-width:34px;text-align:center;font-size:15px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums;cursor:pointer;padding:6px 4px;border-radius:6px;user-select:none}
+.qv:active{background:rgba(0,0,0,.08)}
+.qv.z{color:var(--t3);font-weight:600}
+.qv.editing{background:#fff;border:1.5px solid var(--gold);outline:none;width:50px}
+/* Vardiya detay */
+.det-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
+.det-h{font-size:11px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px}
+.det-times{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+.det-time-box{background:var(--card2);border-radius:10px;padding:10px 8px;text-align:center}
+.det-time-l{font-size:9px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:.6px}
+.det-time-v{font-size:15px;font-weight:800;color:var(--t1);margin-top:3px;font-variant-numeric:tabular-nums}
+.det-row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;font-weight:600;color:var(--t2);border-bottom:1px solid var(--border)}
+.det-row:last-child{border-bottom:none}
+.det-row span:last-child{color:var(--t1);font-weight:700;font-variant-numeric:tabular-nums}
+.det-total{display:flex;justify-content:space-between;margin-top:10px;padding-top:12px;border-top:1.5px solid var(--gold-border);font-size:18px;font-weight:800;color:var(--t1)}
+.det-total span:last-child{color:var(--gold2)}
+/* Owner: aktif baristalar */
+.act-mini{display:flex;align-items:center;gap:10px;background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #6ee7b7;border-radius:10px;padding:10px 12px;margin-bottom:6px}
+.act-mini-dot{width:8px;height:8px;border-radius:50%;background:#10b981;flex-shrink:0;animation:pulse 1.4s infinite}
+.act-mini-l{flex:1;min-width:0}
+.act-mini-n{font-size:13px;font-weight:800;color:#065f46;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-mini-t{font-size:10px;font-weight:600;color:#047857;margin-top:1px}
+.act-mini-r{font-size:14px;font-weight:800;color:#065f46;font-variant-numeric:tabular-nums}
+/* ─── Bahşiş kartı ─── */
+.tip-card{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #6ee7b7;border-radius:12px;padding:11px 14px;margin-bottom:12px;gap:10px}
+.tip-l{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.tip-i{font-size:22px;flex-shrink:0}
+.tip-t{font-size:11px;font-weight:700;color:#047857;text-transform:uppercase;letter-spacing:.5px}
+.tip-v{font-size:15px;font-weight:800;color:#065f46;font-variant-numeric:tabular-nums;margin-top:2px}
+.tip-btn{padding:8px 12px;border:none;border-radius:9px;background:#10b981;color:#fff;font-family:inherit;font-size:11px;font-weight:800;cursor:pointer;flex-shrink:0;letter-spacing:.3px}
+.tip-btn:active{transform:scale(.96)}
+/* ─── İstatistik kutuları ─── */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:14px}
+.stat-box{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:9px 6px;text-align:center}
+.stat-l{font-size:9px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:.6px}
+.stat-v{font-size:13px;font-weight:800;color:var(--t1);margin:3px 0 1px;font-variant-numeric:tabular-nums}
+.stat-s{font-size:9px;color:var(--t3);font-weight:600}
+/* ─── Settings tabs ─── */
+.set-tabs{display:flex;gap:4px;background:var(--card2);padding:4px;border-radius:10px;margin-bottom:12px}
+.set-tab{flex:1;padding:8px 6px;text-align:center;font-size:11px;font-weight:700;color:var(--t2);border-radius:7px;cursor:pointer;transition:all .15s}
+.set-tab.on{background:#fff;color:var(--t1);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.set-row{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:5px;gap:10px}
+.set-row-l{flex:1;min-width:0}
+.set-row-t{font-size:13px;font-weight:700;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.set-row-s{font-size:10px;color:var(--t3);margin-top:1px;font-weight:500}
+.set-input{padding:7px 9px;border:1px solid var(--border2);border-radius:7px;font-family:inherit;font-size:12px;font-weight:700;width:90px;text-align:right;outline:none;color:var(--t1);background:#fff;font-variant-numeric:tabular-nums}
+.set-input:focus{border-color:var(--gold)}
+.set-input.wide{width:140px;text-align:left}
+.set-save{padding:7px 11px;border:none;border-radius:7px;background:var(--gold);color:#1a1a1a;font-family:inherit;font-size:11px;font-weight:800;cursor:pointer;flex-shrink:0}
+.set-save:active{transform:scale(.95)}
+.log-row{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 11px;margin-bottom:4px;font-size:11px;line-height:1.4}
+.log-h{display:flex;justify-content:space-between;font-weight:700;color:var(--t1)}
+.log-h-r{font-size:10px;color:var(--t3);font-weight:600}
+.log-d{color:var(--t2);font-size:10px;margin-top:2px}
+/* Multi-select chip */
+.opt.multi .opt-r{border-radius:5px}
+.opt.multi.on .opt-r::after{content:'\2713';color:#fff;font-size:11px;background:transparent;width:auto;height:auto;font-weight:800;display:flex;align-items:center;justify-content:center}
+.split-toggle{display:flex;align-items:center;justify-content:space-between;background:#fef3c7;border:1px solid var(--gold-border);border-radius:10px;padding:10px 14px;margin-bottom:8px;cursor:pointer}
+.split-toggle.on{background:linear-gradient(135deg,#f5d44b,#d4a020)}
+.split-toggle-t{font-size:12px;font-weight:700;color:var(--t1)}
+.split-toggle-s{font-size:10px;color:var(--t2);margin-top:2px}
+.tg-sw{width:38px;height:22px;background:#d4d4d4;border-radius:11px;position:relative;flex-shrink:0;transition:all .2s}
+.tg-sw.on{background:#10b981}
+.tg-sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:all .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.tg-sw.on::after{left:18px}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.wrap>*{animation:fadeIn .25s ease both}.wrap>*:nth-child(2){animation-delay:.03s}.wrap>*:nth-child(3){animation-delay:.06s}.wrap>*:nth-child(n+4){animation-delay:.09s}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="hdr-top">
+    <div class="brand">
+      <div class="brand-logo">C</div>
+      <div class="brand-name"><span class="caffe">Caffe</span><span class="lito">lito</span></div>
+    </div>
+    <div class="clock-box">
+      <div class="clock-wrap">
+        <div class="clock" id="clk">--:--:--</div>
+        <div class="clock-day" id="day">---</div>
+      </div>
+      <button class="icon-btn" id="eBtn" onclick="toggleEdit()">&#9998;</button>
+    </div>
+  </div>
+  <div class="tabs" id="tabsEl"></div>
+</div>
+<div class="wrap" id="main"></div>
+<div class="bottom" id="bot" style="display:none"></div>
+<div class="toast" id="toast"></div>
+<script>
+const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();tg.setHeaderColor('#faf8f4');tg.setBackgroundColor('#faf8f4')}
+const DR=['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
+const MO=['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+function gT(){
+  // Toshkent vaqti UTC+5 — qurilma vaqt mintaqasidan qat'iy nazar to'g'ri ishlaydi
+  const n=new Date();
+  const utc=n.getTime()+n.getTimezoneOffset()*60000;
+  return new Date(utc+5*3600000);
+}
+
+// Canlı saat — saniyeli, her saniye güncellenir
+function uC(){
+  const t=gT();
+  document.getElementById('clk').textContent=String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0')+':'+String(t.getSeconds()).padStart(2,'0');
+  document.getElementById('day').textContent=DR[t.getDay()]+', '+t.getDate()+' '+MO[t.getMonth()];
+}
+uC();setInterval(uC,1000);
+
+const DP_VER='5';
+const DP={
+  "Кофе":{icon:"&#9749;",items:[
+    {id:"esp_mix",n:"Кофе эспрессо смесь (1 кг)"},
+    {id:"eth_250",n:"Кофе Эфиопия (250 гр)"},
+    {id:"brz_250",n:"Кофе Бразилия (250 гр)"},
+    {id:"col_250",n:"Кофе Колумбия (250 гр)"},
+    {id:"crm_250",n:"Кофе Крема (250 гр)"},
+    {id:"drip_crm",n:"Дрип Крема (1 уп)",note:"внутри 5 шт."},
+    {id:"drip_col",n:"Дрип Колумбия (1 уп)",note:"внутри 5 шт."},
+    {id:"drip_eth",n:"Дрип Эфиопия (1 уп)",note:"внутри 5 шт."},
+    {id:"drip_rwa",n:"Дрип Rwanda (1 уп)",note:"внутри 5 шт."},
+    {id:"drip_bur",n:"Дрип Burundi Baho Ana (1 уп)",note:"внутри 5 шт."}
+  ]},
+  "Расходники":{icon:"&#128722;",items:[
+    {id:"napkins",n:"Салфетки (1 пачка)"},
+    {id:"straw_fl",n:"Трубочки плоские (4000 шт)"},
+    {id:"straw_go",n:"Трубочки гофрированные (500 шт)"},
+    {id:"straw_cl",n:"Трубочки для холодных напитков (400 шт)"},
+    {id:"trash_bg",n:"Мусорный пакет (10 шт)"},
+    {id:"cloth_fn",n:"Тряпка для форсунки (1 шт)"},
+    {id:"cloth_cl",n:"Тряпка для уборки (1 шт)"},
+    {id:"cloth_dl",n:"Тряпка дельфин (1 шт)"},
+    {id:"soap_dsh",n:"Гель мыло для посуды (1 л)"},
+    {id:"soap_hnd",n:"Гель мыло для рук (1 л)"},
+    {id:"gloves",n:"Перчатки одноразовые (1 уп)"},
+    {id:"napkin_z",n:"Салфетки бумажные Z (1 уп)"},
+    {id:"chem_eq",n:"Химия для чистки оборудования (1 кг)"},
+    {id:"nitrogen",n:"Баллон с азотом (1 уп)"}
+  ]},
+  "Бакалея и чай":{icon:"&#127978;",items:[
+    {id:"kararo",n:"Смесь Караро (1 уп)",note:"для горячего шоколада — 500 гр"},
+    {id:"cinnamon",n:"Корица (100 гр)"},
+    {id:"sugar",n:"Сахар (2 кг)"},
+    {id:"sweetener",n:"Сахарозаменитель (1 шт)"},
+    {id:"matcha",n:"Чай матча (200 гр)"},
+    {id:"tea_blk",n:"Чай чёрный (1 уп)"},
+    {id:"tea_grn",n:"Чай зелёный (1 уп)"},
+    {id:"tea_sag",n:"Чай Саган Дайля (1 уп)",note:"горная трава"},
+    {id:"tea_jas",n:"Чай Жасминовый (1 уп)"}
+  ]},
+  "Стаканы и упаковка":{icon:"&#129380;",items:[
+    {id:"cup_100",n:"Стакан 100 (1 уп)",note:"100 шт"},
+    {id:"cup_200",n:"Стакан 200 (1 уп)",note:"30 шт"},
+    {id:"cup_300",n:"Стакан 300 (1 уп)",note:"35 шт"},
+    {id:"cup_400",n:"Стакан 400 (1 уп)",note:"25 шт"},
+    {id:"cup_500",n:"Стакан 500 (1 уп)",note:"15 шт"},
+    {id:"dome_400",n:"Купол 400 (1 уп)",note:"50 шт"},
+    {id:"dome_300",n:"Купол 300 (1 уп)",note:"100 шт"},
+    {id:"lid_big",n:"Крышка на больших (1 уп)"},
+    {id:"lid_sml",n:"Крышка на маленьких (1 уп)"},
+    {id:"lid_d400",n:"Крышка Купол 400 (1 уп)"},
+    {id:"lid_d300",n:"Крышка Купол 300 (1 уп)"},
+    {id:"mark_tape",n:"Лента маркировочная (1 уп)"},
+    {id:"chek_tape",n:"Чековая лента для терминала (1 уп)"},
+    {id:"bag_brand",n:"Пакет бренд Кафелито (1 уп)",note:"50 шт"},
+    {id:"bag_kr_big",n:"Пакет крафтовый большой (1 уп)",note:"для выпечки"},
+    {id:"bag_kr_sml",n:"Пакет крафтовый маленький (1 уп)",note:"для выпечки"},
+    {id:"holder_2",n:"Держатель для стаканов на 2 (1 уп)"},
+    {id:"holder_4",n:"Держатель для стаканов на 4 (1 уп)"}
+  ]},
+  "Молоко и напитки":{icon:"&#129371;",items:[
+    {id:"milk_32",n:"Молоко 3.2% (1 уп)",note:"12 литров"},
+    {id:"milk_alm",n:"Молоко Миндальное (1 л)"},
+    {id:"milk_ban",n:"Молоко Банановое (1 л)"},
+    {id:"milk_coc",n:"Молоко Кокосовое (1 л)"},
+    {id:"milk_lf",n:"Молоко Безлактозное (1 л)"},
+    {id:"cream_11",n:"Сливки 11% (1 уп)",note:"27 шт (200 мл) — для Раф'а"},
+    {id:"cream_27",n:"Сливки 27% (1 л)",note:"взбитые сливки"},
+    {id:"juice_or",n:"Сок апельсиновый (1 уп)",note:"27 шт (200 мл) — для Бамбл'а"}
+  ]},
+  "Сиропы и топпинги":{icon:"&#127855;",items:[
+    {id:"syr_van",n:"Сироп Ваниль (1 л)"},
+    {id:"syr_car",n:"Сироп Карамельный (1 л)"},
+    {id:"syr_scar",n:"Сироп Соленая Карамель (1 л)"},
+    {id:"syr_hoz",n:"Сироп Лесной Орех (1 л)"},
+    {id:"syr_alm",n:"Сироп Миндальный (1 л)"},
+    {id:"syr_str",n:"Сироп Клубничный (1 л)"},
+    {id:"syr_coc",n:"Сироп Кокосовый (1 л)"},
+    {id:"syr_mnt",n:"Сироп Мятный (1 л)"},
+    {id:"syr_cho",n:"Сироп Шоколадный (1 л)"},
+    {id:"syr_iri",n:"Сироп Irish (1 л)"},
+    {id:"syr_mpc",n:"Сироп Миндальное печенье (1 л)"},
+    {id:"top_cho",n:"Топинг Шоколадный (1 л)"},
+    {id:"pur_yag",n:"Пюре Ягодное (1 кг)"},
+    {id:"pur_imb",n:"Пюре Имбирное (1 кг)"},
+    {id:"pur_obl",n:"Пюре Облепиховое (1 кг)"},
+    {id:"schwep",n:"Швепс Индиан Тоник (850 мл)"},
+    {id:"lemon",n:"Лимон (1 кг)"},
+    {id:"lime",n:"Лайм (1 кг)"},
+    {id:"mint",n:"Мята (100 гр)"},
+    {id:"honey",n:"Мёд (1 кг)"},
+    {id:"water_s",n:"Вода без газа (0.33 л)"},
+    {id:"water_g",n:"Вода с газом (0.5 л)"}
+  ]},
+  "Сладости":{icon:"&#127846;",items:[
+    {id:"shoko_b",n:"Шокоболс (1 уп)",note:"Chocolate Balls"},
+    {id:"kukis_cl",n:"Кукис Классическое (1 уп)",note:"10 шт"},
+    {id:"kukis_br",n:"Кукис Брауни (1 уп)",note:"10 шт"},
+    {id:"wafl_st",n:"Вафля Струп (1 уп)",note:"20 шт"},
+    {id:"wafl_w30",n:"Вафля Wafers 30 гр (1 уп)",note:"20 шт"},
+    {id:"wafl_w125",n:"Вафля Wafers 125 гр (1 уп)",note:"10 шт"},
+    {id:"ice_pl",n:"Мороженое Пломбир (1 уп)",note:"80 гр"},
+    {id:"ice_ch",n:"Мороженое Шоколад (1 уп)",note:"80 гр"},
+    {id:"ice_st",n:"Мороженое Клубника (1 уп)",note:"80 гр"},
+    {id:"ice_sc",n:"Мороженое Соленая Карамель (1 уп)",note:"80 гр"},
+    {id:"mini_pops",n:"Мини Попс (1 уп)",note:"10 шт"}
+  ]},
+  "Кухня":{icon:"🥪",items:[
+    {id:"sandwich1",n:"Мясной микс",note:"Сэндвич"},
+    {id:"sandwich2",n:"Колбасный микс",note:"Сэндвич"},
+    {id:"sandwich3",n:"Индейка",note:"Сэндвич"},
+    {id:"sandwich4",n:"Тунец",note:"Сэндвич"},
+    {id:"chiabatta1",n:"Гурман",note:"Чиабатта"},
+    {id:"chiabatta2",n:"Пиканте",note:"Чиабатта"},
+    {id:"chscake",n:"Чизкейк Сан Себастьян",note:"Творожно-сливочный"},
+    {id:"kruvas",n:"Круассан",note:"Классический"},
+    {id:"hazel",n:"Начинка Фундук",note:"Для круассана"},
+    {id:"pist",n:"Начинка Фисташка",note:"Для круассана"},
+    {id:"yagod",n:"Начинка Ягоды",note:"Для круассана"},
+    {id:"ice",n:"Лёд"}
+  ]}
+};
+
+const DT={zadachi:{"Открытие":[{t:"Машина включена",d:"Группы и мармит горячие"},{t:"Гриндер настроен",d:"23-28 сек, 8-9 атм"},{t:"Холодильник",d:"2-4°C, маркировка"},{t:"Стаканы/крышки",d:"Все размеры"},{t:"Касса открыта",d:"Деньги, Poster"},{t:"Бойлер 94°C",d:""},{t:"Заготовки",d:"ДДММЧЧ, сроки"},{t:"Зона TO GO",d:"Мешалки, трубочки, салфетки"}],"Днём":[{t:"Стоки записаны",d:"Что заканчивается"},{t:"Мусор вынесен",d:""},{t:"Стойка в порядке",d:""},{t:"Зона гостя",d:"Столы протёрты"},{t:"Холдеры промыты",d:"Каждые 3ч"},{t:"Форсунки",d:"После каждого использования"},{t:"Питчеры",d:"Мыть сразу"}],"Закрытие":[{t:"Бэкфлеш",d:"Слепой фильтр + химия"},{t:"Холдеры замочены",d:"15 мин"},{t:"Группы",d:"Щётка"},{t:"Гриндер",d:"Колба помыта"},{t:"Холодильник",d:"Маркировка"},{t:"Стойка и пол",d:"Дезинфекция"},{t:"Мусор",d:""},{t:"Касса",d:"Деньги, смена"},{t:"Дверь",d:"Замок, электричество"}]},
+uborka:{"Ежедневно":[{t:"Раковина",d:"Моющим средством, насухо, краны без разводов"},{t:"Витрина с выпечкой",d:"Мокрой тряпкой, насухо, без крошек"},{t:"Батч брю и термос",d:"Тряпкой, насухо. Термос ополоскать изнутри, помпу отдельно"},{t:"Зоны кассы, гости, поверхности",d:"Протирать, пополнять салфетки и трубочки"},{t:"Кофемашина",d:"Мокрой тряпкой, насухо. Мармит и сетки влажной тряпкой"},{t:"Светильники",d:"От пыли влажной тряпкой"},{t:"Продукция",d:"Выкладка на стеллажах, витрине, зоне выдачи"},{t:"Бункер кофемолки",d:"Мягкой губкой с моющим, промыть, насухо"},{t:"Передача смены",d:"Бар чистый, молоко/сливки/заготовки, мусор вынесен"}],
+"ПН Понедельник":[{t:"Стеллажи с полками",d:"Всё вытащить, протереть/помыть тару и полки, поставить обратно"},{t:"Стены",d:"За кофемолкой, блендером, вокруг машины, раковины. Магнит, ножи, ложки помыть"}],
+"ВТ Вторник":[{t:"Витринный холодильник",d:"Вытащить всё, протереть полки и холодильник, насухо, стекло без разводов"}],
+"СР Среда":[{t:"Мусорные вёдра",d:"Внутри и снаружи с химией, губку утилизировать"},{t:"Ледогенератор",d:"Помыть, протереть от грязи, насухо"},{t:"Организер для гостей",d:"Вытащить, помыть с мылом, насухо, расставить"}],
+"ЧТ Четверг":[{t:"Блендер и шейкер",d:"С лимонной кислотой"},{t:"Резиновый коврик",d:"С химией"},{t:"Бутылки сиропов",d:"Отмыть от сладких следов, промыть помпы и гейзеры"}],
+"ПТ Пятница":[{t:"Стеллажи с полками",d:"Всё вытащить, протереть/помыть, обратно (как ПН)"},{t:"Стены",d:"За оборудованием, вокруг машины, раковины (как ПН)"}],
+"СБ Суббота":[{t:"Окна и двери",d:"Оконные секции в зале и дверные стекла"},{t:"Кофемолки, батч брю, термос",d:"Снаружи, носик щёткой. Ёмкость замочить с химией 10-15 мин, промыть"}],
+"ВС Воскресенье":[{t:"Холодильник молоко/заготовки",d:"Полки и сам холодильник, насухо, сложить обратно"},{t:"Ценники",d:"Протереть от пыли со всех сторон, особенно сверху"}],
+"Ежемесячно":[{t:"Разморозить холодильник/морозилку",d:"Насухо протереть"},{t:"За оборудованием",d:"Стенки за холодильниками, под и за кофемашиной"},{t:"Питчеры",d:"Замочить в лимонной кислоте 10-15 мин, промыть"},{t:"Светильники",d:"Снять, протереть влажной тряпкой, насухо, повесить"}]}};
+
+if(localStorage.getItem('cf5pv')!==DP_VER){localStorage.removeItem('cf5p');localStorage.setItem('cf5pv',DP_VER);}
+let P=JSON.parse(localStorage.getItem('cf5p'))||JSON.parse(JSON.stringify(DP));
+let T=JSON.parse(localStorage.getItem('cf5t'))||JSON.parse(JSON.stringify(DT));
+let tab='shift',cat=null,sub=null,edit=false,ord={},ts={};
+let hist=JSON.parse(localStorage.getItem('cf5h')||'[]');
+function iTS(){Object.keys(T).forEach(c=>{Object.keys(T[c]).forEach(k=>{const x=c+'_'+k;if(!ts[x]||ts[x].length!==T[c][k].length)ts[x]=new Array(T[c][k].length).fill(false)})})}
+iTS();
+function sP(){localStorage.setItem('cf5p',JSON.stringify(P))}
+function sT(){localStorage.setItem('cf5t',JSON.stringify(T))}
+
+// ═══════════════════════════════════════
+//  МАОШ (Maaş Sistemi) — state
+// ═══════════════════════════════════════
+const HOURLY_RATE=12000;
+const BONUS_RATES={ml100:500,ml200:700,ml300:1000,ml400:1200,ml500:1400,dome300:1000,dome400:1300};
+const DRINK_LIST=[
+  {id:'ml100',l:'100 мл',r:500,c:'☕'},
+  {id:'ml200',l:'200 мл',r:700,c:'☕'},
+  {id:'ml300',l:'300 мл',r:1000,c:'☕'},
+  {id:'ml400',l:'400 мл',r:1200,c:'☕'},
+  {id:'ml500',l:'500 мл',r:1400,c:'☕'},
+  {id:'dome300',l:'Купол 300',r:1000,c:'🧊'},
+  {id:'dome400',l:'Купол 400',r:1300,c:'🧊'}
+];
+const FINE_PRESETS=[
+  {id:'clean',l:'🧹 Чистота',amt:30000,s:'каждое нарушение'},
+  {id:'insp_70',l:'🏢 Проверка 70-80%',amt:1000000,s:'делится на всех'},
+  {id:'insp_60',l:'🏢 Проверка 60-70%',amt:2000000,s:'делится на всех'},
+  {id:'insp_50',l:'🏢 Проверка 50-60%',amt:3000000,s:'делится на всех'},
+  {id:'foreign',l:'🚫 Посторонняя продукция',amt:4000000,s:'делится на всех'},
+  {id:'custom',l:'✏️ Своя сумма',amt:0,s:'укажите вручную'}
+];
+const MN=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+// URL hash'ten kullanıcı bilgisi al (bot tarafından eklenir)
+const HP=new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+let MY_UID=parseInt(HP.get('uid'))||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.id:0);
+let MY_ROLE=HP.get('role')||'barista';
+let MY_NAME=decodeURIComponent(HP.get('name')||'')||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста');
+let SUMMARY={};
+let BARISTAS=[];
+try{SUMMARY=JSON.parse(decodeURIComponent(HP.get('summary')||'{}'))}catch(e){SUMMARY={}}
+try{BARISTAS=JSON.parse(decodeURIComponent(HP.get('baristas')||'[]'))}catch(e){BARISTAS=[]}
+let LOGS=[];
+try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
+// Bot'tan gelen bardak fiyatları — yoksa default'lar
+let PRICES={};
+try{PRICES=JSON.parse(decodeURIComponent(HP.get('prices')||'{}'))}catch(e){PRICES={}}
+// Default fiyatları override et
+DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
+
+// Bot'tan açıldıysa direkt «Смена» açılsın; aksi halde «Заказ»
+if(!MY_UID)tab='order';
+// (zaten yukarıda tab='shift' default)
+
+let mView='main'; // main | shiftEnd | shift | fine | baristas | transfer | pay | shiftDetail | activeBaristas | tips | settings
+let shiftDraft={hours:'',drinks:{},note:''};
+let endDraft={drinks:{},note:''};         // Vardiya bitirme taslağı
+let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};
+let payTarget=0;
+let detailShift=null;                      // Tıklanan vardiya kaydı
+let tipDraft={total:'',distributions:{},note:'',mode:'equal'}; // equal|custom
+let settingsTab='prices'; // prices|names|logs
+
+function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.').replace(/,/g,'.')}
+function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
+function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
+
+const TABS=[{id:'shift',l:'Смена'},{id:'order',l:'Заказ'},{id:'zadachi',l:'Задачи'},{id:'uborka',l:'Уборка'},{id:'salary',l:'Зарплата'},{id:'report',l:'Отчёт'}];
+function dT(){document.getElementById('tabsEl').innerHTML=TABS.map(t=>'<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')">'+t.l+'</div>').join('')}
+function go(t){
+  // Aktif timer'ları temizle (canlı süre güncelleyiciler)
+  if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
+  if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
+  tab=t;cat=null;sub=null;mView='main';dT();render();
+}
+function toggleEdit(){edit=!edit;document.getElementById('eBtn').classList.toggle('on',edit);render()}
+dT();
+
+const DAY_MAP={0:'ВС Воскресенье',1:'ПН Понедельник',2:'ВТ Вторник',3:'СР Среда',4:'ЧТ Четверг',5:'ПТ Пятница',6:'СБ Суббота'};
+function render(){
+  const m=document.getElementById('main'),b=document.getElementById('bot');
+  // Edit kalemini sadece owner görsün
+  const eBtn=document.getElementById('eBtn');
+  if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
+  if(tab==='shift'){rShift(m,b)}
+  else if(tab==='order'){cat?rOC(m,b):rOCs(m,b)}
+  else if(tab==='zadachi'||tab==='uborka'){sub?rTL(m,b):rTM(m,b)}
+  else if(tab==='salary'){rM(m,b)}
+  else rR(m,b);
+}
+function allItems(){return Object.values(P).flatMap(c=>c.items)}
+
+function buildPreview(){
+  const all=allItems();
+  const lines=Object.entries(ord).map(([id,qty])=>{const p=all.find(x=>x.id===id);const nm=p?p.n:id;return'<div class="ord-line"><span class="ord-line-name">'+nm+'</span><span class="ord-line-qty">'+qty+'\xd7</span></div>'}).join('');
+  return'<div class="ord-preview"><div class="ord-preview-title">&#10003; Выбрано для заказа</div>'+lines+'</div>';
+}
+
+function rOCs(m,b){let h='';
+if(edit)h+='<div class="add-row"><input class="add-inp" id="nc" placeholder="Новая категория"><button class="add-btn" onclick="aC()">+</button></div>';
+Object.keys(P).forEach(k=>{const d=P[k],cnt=d.items.reduce((a,p)=>a+(ord[p.id]||0),0);
+h+='<div class="card" onclick="cat=\''+esc(k)+'\';render()"><div class="card-left"><div class="card-icon">'+(d.icon||'&#128230;')+'</div><div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+d.items.length+' позиций</div></div></div><div class="card-right">'+(cnt?'<span class="badge badge-gold">'+cnt+'</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dC(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>'});
+h+='<div class="footer">XSYN</div>';
+m.innerHTML=h;
+const tot=Object.values(ord).reduce((a,v)=>a+v,0);
+b.style.display='block';
+let bh='';if(tot>0)bh+=buildPreview();
+bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+b.innerHTML=bh}
+
+function rOC(m,b){const d=P[cat];if(!d){cat=null;render();return}
+let h='<button class="back" onclick="cat=null;render()">&#8249; Назад</button><div class="sec">'+cat+'</div>';
+if(edit)h+='<div class="add-row"><input class="add-inp" id="ni" placeholder="Название товара"><input class="add-inp" id="ninote" placeholder="Примечание (необяз.)" style="max-width:140px"><button class="add-btn" onclick="aI()">+</button></div>';
+d.items.forEach(function(p,i){const q=ord[p.id]||0;
+h+='<div class="item '+(q?'has':'')+'"><div class="item-left" onclick="cq(\''+p.id+'\',1)"><div class="item-name">'+p.n+'</div>'+(p.note?'<div class="item-note">'+p.note+'</div>':'')+'</div><div style="display:flex;align-items:center"><div class="qty-box"><button class="qb m" onclick="cq(\''+p.id+'\',-1)">&minus;</button><span class="qv '+(q?'':'z')+'">'+(q||'&middot;')+'</span><button class="qb p" onclick="cq(\''+p.id+'\',1)">+</button></div>'+(edit?'<div class="edit-btns">'+(i>0?'<button class="mvbtn" onclick="mv('+i+',-1)">&#9650;</button>':'')+(i<d.items.length-1?'<button class="mvbtn" onclick="mv('+i+',1)">&#9660;</button>':'')+'<button class="xbtn" onclick="dI('+i+')">&#10005;</button></div>':'')+'</div></div>'});
+h+='<div class="footer">XSYN</div>';
+m.innerHTML=h;
+const tot=Object.values(ord).reduce((a,v)=>a+v,0);
+b.style.display='block';
+let bh='';if(tot>0)bh+=buildPreview();
+bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+b.innerHTML=bh}
+
+function cq(id,d){ord[id]=Math.max(0,(ord[id]||0)+d);if(!ord[id])delete ord[id];if(tg)tg.HapticFeedback?.impactOccurred('light');render()}
+function aC(){const v=document.getElementById('nc')?.value?.trim();if(!v)return;P[v]={icon:'&#128230;',items:[]};sP();render()}
+function dC(k){if(!confirm('Удалить \xab'+k+'\xbb?'))return;delete P[k];sP();render()}
+function aI(){const v=document.getElementById('ni')?.value?.trim();if(!v||!cat)return;const note=document.getElementById('ninote')?.value?.trim()||'';P[cat].items.push({id:'x'+Date.now(),n:v,note:note});sP();render()}
+function dI(i){if(!cat)return;P[cat].items.splice(i,1);sP();render()}
+function mv(i,dir){if(!cat)return;const arr=P[cat].items,j=i+dir;if(j<0||j>=arr.length)return;[arr[i],arr[j]]=[arr[j],arr[i]];sP();render()}
+
+// ── Sipariş gönder — her zaman toast gösterir ──
+function sO(){
+  var tot=Object.values(ord).reduce(function(a,v){return a+v},0);
+  if(!tot)return;
+  // Payload — tam ürün isimleriyle gönder (bot uzun mesajları parçalar).
+  // Sadece sendData 4096 byte limitini aşarsa kademeli kısaltmaya geç.
+  var maxL=200; // pratik olarak hiçbir isim bunu aşmaz
+  var ps;
+  do{
+    var g=[];
+    Object.keys(P).forEach(function(ck){
+      var d=P[ck],it=[];
+      d.items.forEach(function(p){
+        if(ord[p.id]){
+          var nm=String(p.n||'');
+          if(nm.length>maxL)nm=nm.substring(0,maxL);
+          it.push(nm+':'+ord[p.id]);
+        }
+      });
+      if(it.length)g.push(ck+'|'+it.join('|'));
+    });
+    ps=JSON.stringify({a:'o',g:g,c:tot});
+    var bl=0;for(var i=0;i<ps.length;i++){bl+=ps.charCodeAt(i)>127?2:1}
+    if(bl<=3800)break;
+    maxL-=10;
+  }while(maxL>=20);
+  // Geçmiş kaydet (tam isimlerle)
+  var allNames={};var all=allItems();
+  Object.keys(ord).forEach(function(id){var p=all.find(function(x){return x.id===id});if(p)allNames[id]=p.n});
+  hist.push({type:'order',items:JSON.parse(JSON.stringify(ord)),names:allNames,date:new Date().toISOString(),user:tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста'});
+  localStorage.setItem('cf5h',JSON.stringify(hist));
+  toast('Заказ отправлен!');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  ord={};cat=null;render();
+  if(tg&&tg.sendData){try{tg.sendData(ps);}catch(e){console.warn('sendData:',e)}}
+}
+
+// ── Уборка — bugünü öne çıkar ──
+function rTM(m,b){
+  const src=T[tab]||{},t=gT(),dow=t.getDay(),todayKey=DAY_MAP[dow];
+  let h='';
+  if(tab==='uborka'){
+    // Uborka'da edit modu yoktur — add-row gösterilmez
+    const allKeys=Object.keys(src);
+    // Bugünün öncelikli kartları
+    const prioKeys=['Ежедневно',todayKey].filter(k=>allKeys.includes(k));
+    // Standart hafta sırası — bugün üstte de gösterilir, altta da sırayla yer alır
+    const DAY_ORDER=['ПН Понедельник','ВТ Вторник','СР Среда','ЧТ Четверг','ПТ Пятница','СБ Суббота','ВС Воскресенье'];
+    const restKeys=DAY_ORDER.filter(k=>allKeys.includes(k));
+    const lastKeys=['Ежемесячно'].filter(k=>allKeys.includes(k));
+    // Başlıkta bugünün günü belirtiliyor
+    h+='<div class="sec sec-today">&#9733; '+DR[dow]+', '+t.getDate()+' '+MO[t.getMonth()]+' — сегодня обязательно</div>';
+    prioKeys.forEach(function(k){h+=buildUCard(k,src,todayKey,true);});
+    if(restKeys.length||lastKeys.length){
+      h+='<div class="sec" style="margin-top:10px">Остальные / Ежемесячно</div>';
+      restKeys.concat(lastKeys).forEach(function(k){h+=buildUCard(k,src,todayKey,false);});
+    }
+  } else {
+    if(edit)h+='<div class="add-row"><input class="add-inp" id="ns" placeholder="Новый раздел"><button class="add-btn" onclick="aS()">+</button></div>';
+    Object.keys(src).forEach(function(k){
+      const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
+      h+='<div class="card" onclick="sub=\''+esc(k)+'\';render()"><div class="card-left"><div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+done+'/'+total+'</div></div></div><div class="card-right">'+(ok?'<span class="badge badge-green">&#10003;</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dSe(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>';
+    });
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function buildUCard(k,src,todayKey,highlight){
+  const sk='uborka_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
+  const isDay=k===todayKey,isEjd=k==='Ежедневно',isMon=k==='Ежемесячно';
+  let fb='';
+  if(isEjd)fb='<span class="badge badge-today">каждый день</span>';
+  else if(isDay)fb='<span class="badge badge-today-big">&#9733; сегодня</span>';
+  else if(isMon)fb='<span class="badge badge-month">ежемесячно</span>';
+  else fb='<span class="badge badge-week">на неделе</span>';
+  const iconEl=highlight?(isDay?'<div class="card-icon today-icon">&#9733;</div>':'<div class="card-icon today-icon">&#9200;</div>'):'';
+  const cls='card'+(highlight?' today-card':'');
+  return'<div class="'+cls+'" onclick="sub=\''+esc(k)+'\';render()"><div class="card-left">'+iconEl+'<div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+done+'/'+total+' '+fb+'</div></div></div><div class="card-right">'+(ok?'<span class="badge badge-green">&#10003;</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dSe(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>';
+}
+
+function rTL(m,b){const src=T[tab]||{},items=src[sub]||[],sk=tab+'_'+sub;
+if(!ts[sk]||ts[sk].length!==items.length)ts[sk]=new Array(items.length).fill(false);
+const st=ts[sk],done=st.filter(Boolean).length,total=st.length,pct=total?(done/total*100):0;
+let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
+h+='<div class="prog"><div class="prog-top"><span class="prog-label">'+sub+'</span><span class="prog-num">'+done+'/'+total+'</span></div><div class="pbar"><div class="pfill '+(pct===100?'ok':'')+'" style="width:'+pct+'%"></div></div></div>';
+if(edit)h+='<div class="add-row"><input class="add-inp" id="nt" placeholder="Задача"><input class="add-inp" id="ntd" placeholder="Описание" style="max-width:140px"><button class="add-btn" onclick="aTk()">+</button></div>';
+items.forEach(function(item,i){const t=typeof item==='string'?item:item.t,d=typeof item==='string'?'':item.d||'';
+h+='<div class="task '+(st[i]?'done':'')+'" onclick="tgl('+i+')"><div class="chk">'+(st[i]?'&#10003;':'')+'</div><div class="task-body"><div class="task-t">'+t+'</div>'+(d?'<div class="task-d">'+d+'</div>':'')+'</div>'+(edit?'<div class="edit-btns">'+(i>0?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',-1)">&#9650;</button>':'')+(i<items.length-1?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',1)">&#9660;</button>':'')+'<button class="xbtn" onclick="event.stopPropagation();dTk('+i+')">&#10005;</button></div>':'')+'</div>'});
+h+='<div class="footer">XSYN</div>';
+m.innerHTML=h;b.style.display='block';
+if(done===total&&total)b.innerHTML='<button class="mbtn grn" onclick="svT()">Готово &mdash; сохранить</button>';
+else b.innerHTML='<button class="mbtn" disabled>'+done+'/'+total+' выполнено</button>'}
+
+function tgl(i){const sk=tab+'_'+sub;ts[sk][i]=!ts[sk][i];if(tg)tg.HapticFeedback?.impactOccurred(ts[sk][i]?'medium':'light');render()}
+function aS(){const v=document.getElementById('ns')?.value?.trim();if(!v)return;if(!T[tab])T[tab]={};T[tab][v]=[];sT();iTS();render()}
+function dSe(k){if(!confirm('Удалить?'))return;delete T[tab][k];sT();iTS();render()}
+function aTk(){const v=document.getElementById('nt')?.value?.trim();if(!v||!sub)return;const d=document.getElementById('ntd')?.value?.trim()||'';T[tab][sub].push({t:v,d:d});sT();iTS();render()}
+function dTk(i){T[tab][sub].splice(i,1);sT();iTS();render()}
+function mvT(i,dir){if(!sub)return;const arr=T[tab][sub],j=i+dir;if(j<0||j>=arr.length)return;[arr[i],arr[j]]=[arr[j],arr[i]];sT();render()}
+
+function svT(){
+  const items=T[tab][sub]||[],comp=items.map(function(x){return typeof x==='string'?x:x.t});
+  hist.push({type:'task',category:tab+': '+sub,title:sub,completed:comp,date:new Date().toISOString(),user:tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста'});
+  localStorage.setItem('cf5h',JSON.stringify(hist));
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'tasks',category:tab+'_'+sub,completed:comp}));}catch(e){console.warn(e);}}
+  toast(sub+' — готово!');ts[tab+'_'+sub]=new Array(items.length).fill(false);sub=null;render();
+}
+
+function rR(m,b){b.style.display='none';const today=new Date().toDateString(),ti=hist.filter(function(x){return new Date(x.date).toDateString()===today});
+if(!ti.length){m.innerHTML='<div class="empty"><div style="font-size:52px">&#128237;</div><p>Сегодня записей нет</p></div><div class="footer">XSYN</div>';return}
+let h='';const all=allItems();
+ti.filter(function(x){return x.type==='order'}).forEach(function(o){const tm=new Date(o.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+h+='<div class="rcard"><h3>Заказ</h3><div class="rtime">'+tm+' &middot; '+o.user+'</div>';
+Object.entries(o.items).forEach(function([id,qty]){const nm=o.names&&o.names[id]?o.names[id]:(all.find(function(x){return x.id===id})||{}).n||id;h+='<div class="rline"><span>'+nm+'</span><span>'+qty+'x</span></div>'});h+='</div>'});
+ti.filter(function(x){return x.type==='task'}).forEach(function(t){const tm=new Date(t.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+h+='<div class="rcard"><h3>'+t.title+'</h3><div class="rtime">'+tm+' &middot; '+t.user+'</div>';
+t.completed.forEach(function(c){h+='<div class="rline"><span>'+c+'</span><span>&#10003;</span></div>'});h+='</div>'});
+h+='<div class="footer">XSYN</div>';m.innerHTML=h}
+
+function esc(s){return String(s||'').replace(/'/g,"\\'")}
+function escH(s){return String(s||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function toast(msg){const t=document.getElementById('toast');t.innerHTML=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2500)}
+
+// ═══════════════════════════════════════
+//  МАОШ — RENDER FUNCTIONS
+// ═══════════════════════════════════════
+// ═══════════════════════════════════════
+//  СМЕНА — отдельная вкладка для старта/завершения смены
+// ═══════════════════════════════════════
+function rShift(m,b){
+  // Bot dışından açılırsa — uyarı
+  if(!MY_UID){
+    let h='<div class="no-owner-card"><div class="ic">🔒</div><div class="t">Войдите через бота</div><div class="s">Откройте /menu в боте.</div></div>';
+    h+='<div class="footer">XSYN</div>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
+  // mView içerikleri (shiftEnd) bu tab'da çalışsın
+  if(mView==='shiftEnd')return rMShiftEnd(m,b);
+  if(mView==='shift')return rMShift(m,b);
+
+  const s=SUMMARY||{};
+  const active=s.active||null;
+  let h='';
+  // Rol pill (sadece isim)
+  h+=(MY_ROLE==='owner'
+      ? '<div class="role-pill owner">👑 Владелец · '+escH(MY_NAME)+'</div>'
+      : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>');
+
+  // Aktif vardiya kartı veya BAŞLAT butonu
+  if(active){
+    const startStr=fmtTime(active.start_time);
+    const dur=liveDur(active.start_time);
+    h+='<div class="act-card" id="actCard">'
+      +'<div class="act-pulse"><span class="act-dot"></span>В смене</div>'
+      +'<div class="act-time" id="actDur">'+dur+'</div>'
+      +'<div class="act-sub">прошло с начала смены</div>'
+      +'<div class="act-row"><span>Пришли в</span><b>'+startStr+'</b></div>'
+      +'<button class="btn-end" onclick="openShiftEnd()">🔴 Завершить смену</button>'
+    +'</div>';
+    if(window._actTimer)clearInterval(window._actTimer);
+    window._actTimer=setInterval(function(){
+      const el=document.getElementById('actDur');
+      if(!el){clearInterval(window._actTimer);return}
+      el.textContent=liveDur(active.start_time);
+    },1000);
+  } else {
+    h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
+    h+='<div class="refresh-hint" style="margin-top:10px">Нажмите «Начать смену» как только пришли. Время прихода фиксируется автоматически.</div>';
+  }
+
+  // Şu an çalışan diğer baristalar
+  const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID});
+  if(activeOthers.length){
+    h+='<div class="sec">🟢 Сейчас в смене ('+activeOthers.length+')</div>';
+    activeOthers.forEach(function(brs){
+      h+='<div class="hist" style="background:#ecfdf5;border-color:#6ee7b7">'
+        +'<div class="hist-l">'
+          +'<div class="hist-d">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div>'
+          +'<div class="hist-m">с '+fmtTime(brs.active.start_time)+' · <span id="oa_'+brs.id+'" data-st="'+escH(brs.active.start_time||'')+'">'+liveDur(brs.active.start_time)+'</span></div>'
+        +'</div>'
+        +'<div class="hist-r" style="color:#059669">🟢</div>'
+      +'</div>';
+    });
+    // Diğer baristaların canlı süresini güncelle (saniye saniye)
+    if(window._anyActTimer)clearInterval(window._anyActTimer);
+    window._anyActTimer=setInterval(function(){
+      if(tab!=='shift'){clearInterval(window._anyActTimer);return}
+      let any=false;
+      activeOthers.forEach(function(brs){
+        const el=document.getElementById('oa_'+brs.id);
+        if(el){any=true;el.textContent=liveDur(el.getAttribute('data-st'))}
+      });
+      if(!any){clearInterval(window._anyActTimer);window._anyActTimer=null}
+    },1000);
+  } else {
+    if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
+  }
+
+  // Kendi son vardiyaları (kısa)
+  const myShifts=(s.shifts||[]).slice(-3).reverse();
+  if(myShifts.length){
+    h+='<div class="sec">📊 Ваши последние смены</div>';
+    myShifts.forEach(function(sh){
+      const dt=new Date(sh.start_time||sh.created_at||Date.now());
+      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      const tm=sh.start_time?(fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
+      h+='<div class="hist">'
+        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+(sh.hours%1===0?sh.hours:Number(sh.hours).toFixed(2))+'h · '+fmt(sh.total||0)+' сум</div></div>'
+        +'<div class="hist-r">+'+fmt(sh.total||0)+'</div>'
+      +'</div>';
+    });
+    h+='<div class="refresh-hint" style="margin-top:8px">Полная зарплата, штрафы и чаевые — во вкладке «Зарплата».</div>';
+  }
+
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function rM(m,b){
+  if(mView==='shift')return rMShift(m,b);
+  if(mView==='shiftEnd')return rMShiftEnd(m,b);
+  if(mView==='shiftDetail')return rMShiftDetail(m,b);
+  if(mView==='fine')return rMFine(m,b);
+  if(mView==='baristas')return rMBaristas(m,b);
+  if(mView==='activeBaristas')return rMActiveBaristas(m,b);
+  if(mView==='transfer')return rMTransfer(m,b);
+  if(mView==='pay')return rMPay(m,b);
+  if(mView==='tips')return rMTips(m,b);
+  if(mView==='settings')return rMSettings(m,b);
+  return rMMain(m,b);
+}
+
+// Aktif vardiya süresini canlı hesapla (H:MM:SS)
+function liveDur(startIso){
+  if(!startIso)return '0:00:00';
+  try{
+    const s=new Date(startIso);
+    const now=gT();
+    const diff=Math.max(0,Math.floor((now.getTime()-s.getTime())/1000)); // saniye
+    const h=Math.floor(diff/3600),mn=Math.floor((diff%3600)/60),sc=diff%60;
+    return h+':'+String(mn).padStart(2,'0')+':'+String(sc).padStart(2,'0');
+  }catch(e){return '0:00:00'}
+}
+function liveHours(startIso){
+  if(!startIso)return 0;
+  try{
+    const s=new Date(startIso);
+    const now=gT();
+    return Math.max(0,(now.getTime()-s.getTime())/3600000);
+  }catch(e){return 0}
+}
+function fmtTime(iso){
+  if(!iso)return '--:--';
+  try{const d=new Date(iso);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}catch(e){return '--:--'}
+}
+function fmtDay(iso){
+  if(!iso)return '';
+  try{const d=new Date(iso);return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+'.'+d.getFullYear()}catch(e){return ''}
+}
+
+function rMMain(m,b){
+  const s=SUMMARY||{};
+  const period=s.period||curPeriod();
+  const net=s.net||0,hourly=s.hourly||0,bonus=s.bonus||0,fines=s.fines||0,paid=s.paid||0;
+  const hours=s.hours||0;
+  const active=s.active||null;
+  let h='';
+
+  // Eğer URL'den uid gelmediyse — bot üzerinden açılması gerekiyor
+  if(!MY_UID){
+    h+='<div class="no-owner-card"><div class="ic">🔒</div><div class="t">Войдите через бота</div><div class="s">Откройте приложение через команду /menu в боте, чтобы система зарплат работала корректно.</div></div>';
+    h+='<div class="footer">XSYN</div>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
+
+  // Rol pill — temiz görünüm (id yok)
+  const rolePill=MY_ROLE==='owner'
+    ? '<div class="role-pill owner">👑 Владелец · Бухгалтерия · '+escH(MY_NAME)+'</div>'
+    : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
+  h+=rolePill;
+
+  // ⚠️ Aktif vardiya kartı / Başlat butonu artık ayrı «Смена» tab'ında.
+  // Burada sadece kısa bilgilendirme:
+  if(active){
+    h+='<div class="refresh-hint" style="margin-bottom:10px">🟢 Сейчас вы в смене (с '+fmtTime(active.start_time)+'). Управление сменой — во вкладке «Смена».</div>';
+  } else {
+    h+='<div class="refresh-hint" style="margin-bottom:10px">▶ Чтобы начать или завершить смену — откройте вкладку «Смена».</div>';
+  }
+
+  // Maaş kartı
+  const tips=s.tips||0;
+  h+='<div class="sal-card">'
+    +'<div class="sal-period">'+escH(fmtMonth(period))+'</div>'
+    +'<div class="sal-amount">'+fmt(net)+'</div>'
+    +'<div class="sal-amount-sub">сум · чистая зарплата</div>'
+    +'<div class="sal-stats">'
+      +'<div class="sal-stat"><div class="sal-stat-v">'+(hours%1===0?hours:hours.toFixed(1))+'h</div><div class="sal-stat-l">часы</div></div>'
+      +'<div class="sal-stat"><div class="sal-stat-v">'+fmt(bonus)+'</div><div class="sal-stat-l">бонус</div></div>'
+      +'<div class="sal-stat"><div class="sal-stat-v" style="color:#10b981">+'+fmt(tips)+'</div><div class="sal-stat-l">чаевые</div></div>'
+      +'<div class="sal-stat"><div class="sal-stat-v red">-'+fmt(fines)+'</div><div class="sal-stat-l">штраф</div></div>'
+    +'</div>'
+  +'</div>';
+
+  // ── Bahşiş mini-kartı (inline, ayrı sayfa değil) ──
+  h+='<div class="tip-card">'
+    +'<div class="tip-l">'
+      +'<div class="tip-i">💝</div>'
+      +'<div><div class="tip-t">Чаевые в этом месяце</div>'
+      +'<div class="tip-v">+'+fmt(tips)+' сум '+(s.tips_count?'· '+s.tips_count+' раз':'')+'</div></div>'
+    +'</div>'
+    +(MY_ROLE==='owner'?'<button class="tip-btn" onclick="openTips()">+ Раздать</button>':'')
+  +'</div>';
+
+  // ── Günlük/haftalık özet (sadece basit istatistik) ──
+  const stats=calcQuickStats(s.shifts||[]);
+  h+='<div class="stat-grid">'
+    +'<div class="stat-box"><div class="stat-l">Сегодня</div><div class="stat-v">'+fmt(stats.today)+'</div><div class="stat-s">'+stats.todayShifts+' смен</div></div>'
+    +'<div class="stat-box"><div class="stat-l">7 дней</div><div class="stat-v">'+fmt(stats.week)+'</div><div class="stat-s">'+stats.weekShifts+' смен</div></div>'
+    +'<div class="stat-box"><div class="stat-l">Месяц</div><div class="stat-v">'+fmt((s.gross||0))+'</div><div class="stat-s">'+(s.shifts_count||0)+' смен</div></div>'
+  +'</div>';
+
+  // Owner paneli (Бухгалтерия)
+  if(MY_ROLE==='owner'){
+    const activeCount=BARISTAS.filter(function(x){return x.active}).length;
+    h+='<div class="own-panel">'
+      +'<div class="own-title">👑 Бухгалтерия</div>'
+      +'<div class="own-grid">'
+        +'<div class="own-btn" onclick="mView=\'activeBaristas\';render()"><div class="own-btn-i">🟢</div><div class="own-btn-t">В смене</div>'+(activeCount?'<div class="own-btn-s">'+activeCount+'</div>':'')+'</div>'
+        +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+(BARISTAS.length?'<div class="own-btn-s">'+BARISTAS.length+'</div>':'')+'</div>'
+        +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
+        +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
+        +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
+        +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\'prices\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div></div>'
+      +'</div>'
+    +'</div>';
+  }
+
+  // Vardiya geçmişi (tıklanabilir)
+  const shifts=(s.shifts||[]).slice().reverse();
+  h+='<div class="sec-link"><span>📊 Мои смены ('+(s.shifts_count||0)+')</span></div>';
+  if(shifts.length){
+    shifts.forEach(function(sh,idx){
+      const dt=new Date(sh.start_time||sh.created_at||sh.date||Date.now());
+      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      let drinkSum=0;try{const d=typeof sh.drinks==='string'?JSON.parse(sh.drinks):sh.drinks||{};Object.values(d).forEach(function(v){drinkSum+=parseInt(v)||0})}catch(e){}
+      const tm=sh.start_time?(' · '+fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
+      h+='<div class="hist click" onclick="openShiftDetail('+(s.shifts.length-1-idx)+')">'
+        +'<div class="hist-l"><div class="hist-d">'+day+tm+' · '+(sh.hours%1===0?sh.hours:Number(sh.hours).toFixed(1))+'h '+(drinkSum?'· '+drinkSum+' шт':'')+'</div><div class="hist-m">часы '+fmt(sh.hourly_pay||0)+' + бонус '+fmt(sh.bonus||0)+'</div></div>'
+        +'<div class="hist-r">+'+fmt(sh.total||0)+'</div>'
+        +'<span class="hist-arr">›</span>'
+      +'</div>';
+    });
+  } else if(!active) {
+    h+='<div class="empty-mini">Смен ещё нет — нажмите «Начать смену»</div>';
+  }
+
+  // Cezalar (sadece kendi cezalarını görür — bot zaten kendi user_id'sine göre filtreliyor)
+  const fl=(s.fines_list||[]).slice().reverse();
+  if(fl.length){
+    h+='<div class="sec">⚠️ Штрафы ('+(s.fines_count||0)+')</div>';
+    fl.forEach(function(f){
+      const dt=new Date(f.created_at||Date.now());
+      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      h+='<div class="hist fine">'
+        +'<div class="hist-l"><div class="hist-d">'+day+' · '+escH(f.reason||'Без причины')+'</div><div class="hist-m">от '+escH(f.added_by_name||'?')+'</div></div>'
+        +'<div class="hist-r red">-'+fmt(f.amount||0)+'</div>'
+      +'</div>';
+    });
+  }
+
+  // Bahşiş tarihçesi (kendi)
+  const tipsList=(s.tips_list||[]).slice().reverse();
+  if(tipsList.length){
+    h+='<div class="sec">💝 Чаевые ('+(s.tips_count||0)+')</div>';
+    tipsList.forEach(function(t){
+      const dt=new Date(t.created_at||Date.now());
+      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      h+='<div class="hist" style="background:#ecfdf5;border-color:#6ee7b7">'
+        +'<div class="hist-l"><div class="hist-d">'+day+(t.note?' · '+escH(t.note):'')+'</div><div class="hist-m">от '+escH(t.added_by_name||'?')+'</div></div>'
+        +'<div class="hist-r" style="color:#059669">+'+fmt(t.amount||0)+'</div>'
+      +'</div>';
+    });
+  }
+
+  if(paid>0){
+    h+='<div class="sec">💵 Выплачено</div>';
+    h+='<div class="hist paid"><div class="hist-l"><div class="hist-d">За '+escH(fmtMonth(period))+'</div></div><div class="hist-r grey">-'+fmt(paid)+'</div></div>';
+  }
+
+  h+='<div class="refresh-hint">🔄 Все данные сохраняются в боте — после закрытия не пропадут. Откройте /menu для свежих данных.</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
+function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},note:''};render()}
+function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
+function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};render()}
+function openTips(){mView='tips';tipDraft={total:'',distributions:{},note:'',mode:'equal'};render()}
+
+// Hızlı istatistik (bugün/hafta) — bitmiş vardiyalardan
+function calcQuickStats(shifts){
+  const now=gT();
+  const today=now.toDateString();
+  const wkAgo=new Date(now.getTime()-7*86400000);
+  let today_=0,todayShifts=0,week=0,weekShifts=0;
+  shifts.forEach(function(sh){
+    const dt=new Date(sh.start_time||sh.created_at||sh.date||0);
+    if(isNaN(dt))return;
+    if(dt.toDateString()===today){today_+=(sh.total||0);todayShifts++}
+    if(dt>=wkAgo){week+=(sh.total||0);weekShifts++}
+  });
+  return {today:today_,todayShifts:todayShifts,week:week,weekShifts:weekShifts};
+}
+
+// ── Vardiyayı şimdi başlat ──
+function startShiftNow(){
+  if(!confirm('Начать смену сейчас?\n\nВремя прихода: '+fmtTime(new Date().toISOString())))return;
+  const nowIso=gT().toISOString();
+  // Optimistik
+  SUMMARY.active={start_time:nowIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
+  toast('🟢 Смена началась!');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start'}))}catch(e){console.warn(e)}}
+  render();
+}
+
+// ── Vardiya BITIR ekranı (geliş zamanı zaten kayıtlı, sadece bardak+not) ──
+function rMShiftEnd(m,b){
+  const active=(SUMMARY||{}).active;
+  if(!active){mView='main';render();return}
+  const startStr=fmtTime(active.start_time);
+  const dayStr=fmtDay(active.start_time);
+  const liveH=liveHours(active.start_time);
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🔴 Завершить смену · '+dayStr+'</div>';
+  // Süre özeti
+  h+='<div class="sf-card" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:#6ee7b7">'
+    +'<div class="det-times">'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Сейчас</div><div class="det-time-v" id="seNow">'+fmtTime(new Date().toISOString())+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+(liveH%1===0?liveH:liveH.toFixed(2))+'h</div></div>'
+    +'</div>'
+  +'</div>';
+  // İçecekler
+  h+='<div class="sec">🥤 Напитки за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(нажмите на цифру для ввода)</span></div>';
+  DRINK_LIST.forEach(function(d){
+    const q=parseInt(endDraft.drinks[d.id])||0;
+    const sub=q*d.r;
+    h+='<div class="dr-item '+(q?'has':'')+'">'
+      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(d.r)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
+      +'<div class="qty-box">'
+        +'<button class="qb m" onclick="dqEnd(\''+d.id+'\',-1)">&minus;</button>'
+        +'<span class="qv '+(q?'':'z')+'" onclick="dqEndManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'·')+'</span>'
+        +'<button class="qb p" onclick="dqEnd(\''+d.id+'\',1)">+</button>'
+      +'</div>'
+    +'</div>';
+  });
+  // Not
+  h+='<div class="sec">📝 Заметка (необязательно)</div>'
+    +'<textarea class="sf-note" rows="2" placeholder="например: вечерняя смена, замена" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
+  // Toplam
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Часы × 12.000</span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
+    +'<div class="sf-tot-row"><span>Бонус (напитки)</span><span id="seBonus">0</span></div>'
+    +'<div class="sf-tot-big"><span>ИТОГО</span><span id="seTotal">'+fmt(Math.round(liveH*HOURLY_RATE))+' сум</span></div>'
+  +'</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену</button>';
+  recalcEnd();
+  // Saniyelik canlı güncelleme
+  if(window._endTimer)clearInterval(window._endTimer);
+  window._endTimer=setInterval(function(){
+    const en=document.getElementById('seNow');if(!en){clearInterval(window._endTimer);return}
+    const lh=liveHours(active.start_time);
+    en.textContent=fmtTime(new Date().toISOString());
+    const ed=document.getElementById('seDur');if(ed)ed.textContent=(lh%1===0?lh:lh.toFixed(2))+'h';
+    recalcEnd();
+  },1000);
+}
+
+function dqEnd(id,d){
+  endDraft.drinks[id]=Math.max(0,(parseInt(endDraft.drinks[id])||0)+d);
+  if(!endDraft.drinks[id])delete endDraft.drinks[id];
+  if(tg)tg.HapticFeedback?.impactOccurred('light');
+  render();
+}
+function dqEndManual(id){
+  const cur=parseInt(endDraft.drinks[id])||0;
+  const v=prompt('Сколько штук?',cur||'');
+  if(v===null)return;
+  const n=Math.max(0,parseInt(v)||0);
+  if(n===0)delete endDraft.drinks[id];else endDraft.drinks[id]=n;
+  render();
+}
+function recalcEnd(){
+  const active=(SUMMARY||{}).active;if(!active)return;
+  const liveH=liveHours(active.start_time);
+  let bonus=0;
+  DRINK_LIST.forEach(function(d){bonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  const hourly=Math.round(liveH*HOURLY_RATE);
+  const total=hourly+bonus;
+  const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
+  const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(bonus);
+  const eTt=document.getElementById('seTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
+}
+
+function endShiftSave(){
+  const active=(SUMMARY||{}).active;
+  if(!active){toast('Нет активной смены');return}
+  const liveH=liveHours(active.start_time);
+  let bonus=0;
+  DRINK_LIST.forEach(function(d){bonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  const hourly=Math.round(liveH*HOURLY_RATE);
+  const total=hourly+bonus;
+  const payload={action:'shift_end',drinks:endDraft.drinks,note:endDraft.note};
+  // Optimistik güncelleme
+  const finishedShift={
+    start_time:active.start_time,
+    end_time:new Date().toISOString(),
+    hours:Math.round(liveH*100)/100,
+    drinks:JSON.stringify(endDraft.drinks),
+    bonus:bonus,hourly_pay:hourly,total:total,
+    note:endDraft.note,
+    created_at:active.start_time
+  };
+  SUMMARY.shifts=SUMMARY.shifts||[];
+  SUMMARY.shifts.push(finishedShift);
+  SUMMARY.shifts_count=(SUMMARY.shifts_count||0)+1;
+  SUMMARY.hours=(SUMMARY.hours||0)+finishedShift.hours;
+  SUMMARY.hourly=(SUMMARY.hourly||0)+hourly;
+  SUMMARY.bonus=(SUMMARY.bonus||0)+bonus;
+  SUMMARY.gross=(SUMMARY.hourly)+(SUMMARY.bonus);
+  SUMMARY.fines=SUMMARY.fines||0;
+  SUMMARY.paid=SUMMARY.paid||0;
+  SUMMARY.net=SUMMARY.gross-SUMMARY.fines-SUMMARY.paid;
+  SUMMARY.active=null;
+  if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
+  if(window._actTimer){clearInterval(window._actTimer);window._actTimer=null}
+  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,note:endDraft.note,total:total});
+  localStorage.setItem('cf5h',JSON.stringify(hist));
+  toast('🔴 Смена закрыта · '+fmt(total)+' сум');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  endDraft={drinks:{},note:''};
+  mView='main';
+  render();
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
+}
+
+// ── Vardiya DETAY ekranı (üstüne basınca açılır) ──
+function rMShiftDetail(m,b){
+  const sh=detailShift;
+  if(!sh){mView='main';render();return}
+  let drinks={};try{drinks=typeof sh.drinks==='string'?JSON.parse(sh.drinks):(sh.drinks||{})}catch(e){drinks={}}
+  const cups=Object.values(drinks).reduce(function(a,v){return a+(parseInt(v)||0)},0);
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">📊 Детали смены · '+fmtDay(sh.start_time||sh.created_at)+'</div>';
+
+  // Saatler
+  h+='<div class="det-card">'
+    +'<div class="det-h">⏰ Время</div>'
+    +'<div class="det-times">'
+      +'<div class="det-time-box"><div class="det-time-l">Пришли</div><div class="det-time-v">'+fmtTime(sh.start_time)+'</div></div>'
+      +'<div class="det-time-box"><div class="det-time-l">Ушли</div><div class="det-time-v">'+fmtTime(sh.end_time)+'</div></div>'
+      +'<div class="det-time-box"><div class="det-time-l">Часы</div><div class="det-time-v">'+(Number(sh.hours||0).toFixed(2))+'h</div></div>'
+    +'</div>'
+  +'</div>';
+
+  // İçecekler
+  h+='<div class="det-card">'
+    +'<div class="det-h">🥤 Напитки ('+cups+' шт)</div>';
+  if(cups===0){
+    h+='<div style="font-size:12px;color:var(--t3);text-align:center;padding:6px">— нет —</div>';
+  } else {
+    DRINK_LIST.forEach(function(d){
+      const q=parseInt(drinks[d.id])||0;
+      if(!q)return;
+      h+='<div class="det-row"><span>'+d.c+' '+d.l+' × '+q+'</span><span>+'+fmt(q*d.r)+'</span></div>';
+    });
+  }
+  h+='</div>';
+
+  // Hesap
+  h+='<div class="det-card">'
+    +'<div class="det-h">💰 Расчёт</div>'
+    +'<div class="det-row"><span>Часы '+(Number(sh.hours||0).toFixed(2))+'h × 12.000</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
+    +'<div class="det-row"><span>Бонус (напитки)</span><span>+'+fmt(sh.bonus||0)+'</span></div>'
+    +'<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
+  +'</div>';
+
+  // Not
+  if(sh.note){
+    h+='<div class="det-card">'
+      +'<div class="det-h">📝 Заметка</div>'
+      +'<div style="font-size:13px;color:var(--t1);font-weight:500;line-height:1.5">'+escH(sh.note)+'</div>'
+    +'</div>';
+  }
+
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+// ── Owner: Şu an çalışanlar (Бухгалтерия odası — kim aktif) ──
+function rMActiveBaristas(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  const activeList=BARISTAS.filter(function(x){return x.active});
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🟢 Сейчас в смене ('+activeList.length+')</div>';
+  if(!activeList.length){
+    h+='<div class="empty-mini">Никого нет в смене</div>';
+  } else {
+    activeList.forEach(function(brs){
+      const dur=liveDur(brs.active.start_time);
+      h+='<div class="act-mini" id="amini_'+brs.id+'">'
+        +'<div class="act-mini-dot"></div>'
+        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
+        +'<div class="act-mini-r" id="amini_d_'+brs.id+'">'+dur+'</div>'
+      +'</div>';
+    });
+    if(window._anyActTimer)clearInterval(window._anyActTimer);
+    window._anyActTimer=setInterval(function(){
+      let any=false;
+      activeList.forEach(function(brs){
+        const el=document.getElementById('amini_d_'+brs.id);
+        if(el){el.textContent=liveDur(brs.active.start_time);any=true}
+      });
+      if(!any){clearInterval(window._anyActTimer)}
+    },1000);
+  }
+  // Son vardiyalar (kim ne zaman geldi/gitti)
+  h+='<div class="sec">📜 Последние смены сотрудников</div>';
+  let allRecent=[];
+  BARISTAS.forEach(function(brs){
+    (brs.recent||[]).forEach(function(r){
+      allRecent.push(Object.assign({_n:brs.n,_r:brs.r,_uid:brs.id},r));
+    });
+  });
+  allRecent.sort(function(a,b){return (b.start_time||'').localeCompare(a.start_time||'')});
+  allRecent.slice(0,20).forEach(function(r){
+    let cups=0;try{const d=typeof r.drinks==='string'?JSON.parse(r.drinks):(r.drinks||{});Object.values(d).forEach(function(v){cups+=parseInt(v)||0})}catch(e){}
+    const day=String(new Date(r.start_time).getDate()).padStart(2,'0')+'.'+String(new Date(r.start_time).getMonth()+1).padStart(2,'0');
+    const isOpen=!r.end_time;
+    h+='<div class="hist '+(isOpen?'':'')+'" style="'+(isOpen?'background:#ecfdf5;border-color:#6ee7b7':'')+'">'
+      +'<div class="hist-l">'
+        +'<div class="hist-d">'+(r._r==='owner'?'👑 ':'')+escH(r._n)+' · '+day+'</div>'
+        +'<div class="hist-m">'+fmtTime(r.start_time)+(isOpen?' → <span style="color:#059669;font-weight:700">в смене</span>':' → '+fmtTime(r.end_time)+' · '+(Number(r.hours||0).toFixed(2))+'h'+(cups?' · '+cups+' шт':''))+'</div>'
+      +'</div>'
+      +'<div class="hist-r">'+(isOpen?'<span style="color:#059669">●</span>':'+'+fmt(r.total||0))+'</div>'
+    +'</div>';
+  });
+  if(!allRecent.length)h+='<div class="empty-mini">Нет записей</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+// ── Vardiya kayıt ekranı ──
+function rMShift(m,b){
+  const t=gT();
+  const dayStr=String(t.getDate()).padStart(2,'0')+'.'+String(t.getMonth()+1).padStart(2,'0')+'.'+t.getFullYear();
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">📅 '+dayStr+' · Запись смены</div>';
+  // Saat
+  h+='<div class="sf-card"><div class="sf-label">⏱️ Часы работы</div>'
+    +'<input class="sf-hours" id="sfHours" type="number" inputmode="decimal" min="0" max="24" step="0.5" value="'+escH(String(shiftDraft.hours||''))+'" oninput="shiftDraft.hours=this.value;recalcShift()" placeholder="например 8">'
+    +'<div class="sf-hint" id="sfHourHint">Введите количество часов</div>'
+  +'</div>';
+  // İçecekler
+  h+='<div class="sec">🥤 Напитки за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(нажмите на цифру для ввода)</span></div>';
+  DRINK_LIST.forEach(function(d){
+    const q=parseInt(shiftDraft.drinks[d.id])||0;
+    const sub=q*d.r;
+    h+='<div class="dr-item '+(q?'has':'')+'">'
+      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(d.r)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
+      +'<div class="qty-box">'
+        +'<button class="qb m" onclick="dq(\''+d.id+'\',-1)">&minus;</button>'
+        +'<span class="qv '+(q?'':'z')+'" onclick="dqManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'&middot;')+'</span>'
+        +'<button class="qb p" onclick="dq(\''+d.id+'\',1)">+</button>'
+      +'</div>'
+    +'</div>';
+  });
+  // Not
+  h+='<div class="sec">📝 Заметка (необязательно)</div>'
+    +'<textarea class="sf-note" rows="2" placeholder="например: смена 9:00 — 17:00" oninput="shiftDraft.note=this.value">'+escH(shiftDraft.note||'')+'</textarea>';
+  // Toplam
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Часы × 12.000</span><span id="sfHourly">0</span></div>'
+    +'<div class="sf-tot-row"><span>Бонус (напитки)</span><span id="sfBonus">0</span></div>'
+    +'<div class="sf-tot-big"><span>ИТОГО</span><span id="sfTotal">0 сум</span></div>'
+  +'</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  b.innerHTML='<button class="mbtn" id="sfBtn" disabled onclick="saveShift()">Введите часы</button>';
+  recalcShift();
+}
+
+function dq(id,d){
+  shiftDraft.drinks[id]=Math.max(0,(parseInt(shiftDraft.drinks[id])||0)+d);
+  if(!shiftDraft.drinks[id])delete shiftDraft.drinks[id];
+  if(tg)tg.HapticFeedback?.impactOccurred('light');
+  render();
+}
+function dqManual(id){
+  const cur=parseInt(shiftDraft.drinks[id])||0;
+  const v=prompt('Сколько штук?',cur||'');
+  if(v===null)return;
+  const n=Math.max(0,parseInt(v)||0);
+  if(n===0)delete shiftDraft.drinks[id];else shiftDraft.drinks[id]=n;
+  render();
+}
+
+function recalcShift(){
+  const hours=parseFloat(shiftDraft.hours)||0;
+  let bonus=0;
+  DRINK_LIST.forEach(function(d){bonus+=(parseInt(shiftDraft.drinks[d.id])||0)*d.r});
+  const hourly=Math.round(hours*HOURLY_RATE);
+  const total=hourly+bonus;
+  const eHr=document.getElementById('sfHourly');if(eHr)eHr.textContent=fmt(hourly);
+  const eBn=document.getElementById('sfBonus');if(eBn)eBn.textContent=fmt(bonus);
+  const eTt=document.getElementById('sfTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
+  const eHt=document.getElementById('sfHourHint');if(eHt)eHt.textContent=hours>0?(hours+'h × 12.000 = '+fmt(hourly)+' сум'):'Введите количество часов';
+  const eBt=document.getElementById('sfBtn');if(eBt){const ok=hours>0;eBt.disabled=!ok;eBt.classList.toggle('grn',ok);eBt.textContent=ok?('💾 Записать смену · '+fmt(total)+' сум'):'Введите часы';}
+}
+
+function saveShift(){
+  const hours=parseFloat(shiftDraft.hours)||0;
+  if(hours<=0)return;
+  let bonus=0;
+  DRINK_LIST.forEach(function(d){bonus+=(parseInt(shiftDraft.drinks[d.id])||0)*d.r});
+  const hourly=Math.round(hours*HOURLY_RATE);
+  const total=hourly+bonus;
+  const payload={action:'shift',hours:hours,drinks:shiftDraft.drinks,note:shiftDraft.note};
+  // Optimistik güncelleme — kullanıcı uygulamada hemen sonucu görür
+  SUMMARY.hours=(SUMMARY.hours||0)+hours;
+  SUMMARY.hourly=(SUMMARY.hourly||0)+hourly;
+  SUMMARY.bonus=(SUMMARY.bonus||0)+bonus;
+  SUMMARY.gross=(SUMMARY.hourly||0)+(SUMMARY.bonus||0);
+  SUMMARY.fines=SUMMARY.fines||0;
+  SUMMARY.paid=SUMMARY.paid||0;
+  SUMMARY.net=SUMMARY.gross-SUMMARY.fines-SUMMARY.paid;
+  SUMMARY.shifts_count=(SUMMARY.shifts_count||0)+1;
+  SUMMARY.shifts=SUMMARY.shifts||[];
+  SUMMARY.shifts.push({hours:hours,drinks:JSON.stringify(shiftDraft.drinks),bonus:bonus,hourly_pay:hourly,total:total,created_at:new Date().toISOString()});
+  // Lokal geçmişe de kaydet
+  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:hours,drinks:shiftDraft.drinks,note:shiftDraft.note,total:total});
+  localStorage.setItem('cf5h',JSON.stringify(hist));
+  toast('💾 Смена записана!');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  shiftDraft={hours:'',drinks:{},note:''};
+  mView='main';
+  render();
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
+}
+
+// ── Owner: Ceza ekleme ekranı (çoklu hedef + zorunlu sebep + split) ──
+function rMFine(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  // İlk açılışta inspection preset'iyse split otomatik aç
+  const isInsp=String(fineDraft.type||'').indexOf('insp_')===0||fineDraft.type==='foreign';
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">⚠️ Добавить штраф</div>';
+
+  // Tip seç (önce)
+  h+='<div class="sf-label" style="margin:8px 0 6px">Тип штрафа</div>';
+  FINE_PRESETS.forEach(function(p){
+    const sel=fineDraft.type===p.id;
+    h+='<div class="opt '+(sel?'on':'')+'" onclick="selFineType(\''+p.id+'\')">'
+      +'<div class="opt-r"></div>'
+      +'<div class="opt-l"><div class="opt-t">'+p.l+'</div><div class="opt-s">'+p.s+'</div></div>'
+      +(p.amt?'<div class="opt-amt">'+fmt(p.amt)+'</div>':'')
+    +'</div>';
+  });
+
+  // Custom amount
+  if(fineDraft.type==='custom'){
+    h+='<div class="sf-label" style="margin:14px 0 6px">Сумма (сум)</div>'
+      +'<input class="sf-hours" type="number" inputmode="numeric" min="1" value="'+escH(String(fineDraft.custom||''))+'" oninput="fineDraft.custom=this.value;fineDraft.amount=parseInt(this.value)||0;recalcFine()" placeholder="например 50000">';
+  }
+
+  // Split toggle (denetim cezalarında otomatik öneri)
+  h+='<div class="sf-label" style="margin:14px 0 6px">Кому?</div>';
+  h+='<div class="split-toggle '+(fineDraft.split?'on':'')+'" onclick="fineDraft.split=!fineDraft.split;render()">'
+    +'<div><div class="split-toggle-t">⚖️ Разделить на нескольких</div><div class="split-toggle-s">'+(fineDraft.split?'Сумма поделится поровну':'Полная сумма каждому выбранному')+'</div></div>'
+    +'<div class="tg-sw '+(fineDraft.split?'on':'')+'"></div>'
+  +'</div>';
+  if(isInsp&&!fineDraft.split){
+    h+='<div class="refresh-hint" style="margin-top:0">💡 Это проверка — обычно штраф делится между баристами в смене.</div>';
+  }
+
+  // Çoklu barista seç (checkbox tarzı)
+  if(!BARISTAS.length){
+    h+='<div class="empty-mini">Нет баристов. Они должны написать боту /start.</div>';
+  } else {
+    BARISTAS.forEach(function(brs){
+      const sel=fineDraft.targets.indexOf(brs.id)>=0;
+      h+='<div class="opt multi '+(sel?'on':'')+'" onclick="toggleFineTarget('+brs.id+')">'
+        +'<div class="opt-r"></div>'
+        +'<div class="opt-l"><div class="opt-t">'+(brs.active?'🟢 ':'')+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="opt-s">'+(brs.u?'@'+escH(brs.u)+' · ':'')+'штраф в мес.: '+fmt(brs.f||0)+'</div></div>'
+      +'</div>';
+    });
+  }
+
+  // Sebep — ZORUNLU
+  h+='<div class="sf-label" style="margin:14px 0 6px">Причина <span style="color:var(--red);font-weight:800">*</span></div>'
+    +'<textarea class="sf-note" rows="2" placeholder="обязательно укажите причину" oninput="fineDraft.reason=this.value;recalcFine()">'+escH(fineDraft.reason||'')+'</textarea>';
+
+  // Toplam
+  const cnt=fineDraft.targets.length;
+  const per=(fineDraft.split&&cnt>1)?Math.floor(fineDraft.amount/cnt):fineDraft.amount;
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Получателей</span><span>'+cnt+'</span></div>'
+    +(fineDraft.split&&cnt>1?'<div class="sf-tot-row"><span>Общая сумма</span><span>-'+fmt(fineDraft.amount)+'</span></div>':'')
+    +'<div class="sf-tot-big"><span>'+(fineDraft.split&&cnt>1?'Каждому':'Штраф')+'</span><span id="fnAmt">-'+fmt(per)+' сум</span></div>'
+  +'</div>';
+
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  const reasonOk=(fineDraft.reason||'').trim().length>0;
+  const ok=cnt>0&&fineDraft.amount>0&&reasonOk;
+  b.innerHTML='<button class="mbtn" id="fnBtn" '+(ok?'':'disabled')+' onclick="saveFine()">'+(ok?'⚠️ Записать штраф · -'+fmt(per)+' сум'+(fineDraft.split&&cnt>1?' × '+cnt:''):(reasonOk?'Выберите получателей':'Укажите причину'))+'</button>';
+}
+
+function toggleFineTarget(uid){
+  const i=fineDraft.targets.indexOf(uid);
+  if(i>=0)fineDraft.targets.splice(i,1);else fineDraft.targets.push(uid);
+  if(tg)tg.HapticFeedback?.impactOccurred('light');
+  render();
+}
+
+function selFineType(t){
+  fineDraft.type=t;
+  const p=FINE_PRESETS.find(function(x){return x.id===t});
+  if(p&&t!=='custom')fineDraft.amount=p.amt;
+  if(t==='custom')fineDraft.amount=parseInt(fineDraft.custom)||0;
+  // Inspection preset'lerinde split otomatik aç (checkbox manuel kapatılırsa kapanır)
+  if(t.indexOf('insp_')===0||t==='foreign')fineDraft.split=true;
+  render();
+}
+function recalcFine(){
+  // Sadece toplamı güncelle (re-render etmeden)
+  const cnt=fineDraft.targets.length;
+  const per=(fineDraft.split&&cnt>1)?Math.floor(fineDraft.amount/cnt):fineDraft.amount;
+  const eA=document.getElementById('fnAmt');if(eA)eA.textContent='-'+fmt(per)+' сум';
+  const eB=document.getElementById('fnBtn');if(eB){
+    const reasonOk=(fineDraft.reason||'').trim().length>0;
+    const ok=cnt>0&&fineDraft.amount>0&&reasonOk;
+    eB.disabled=!ok;
+    eB.textContent=ok?'⚠️ Записать штраф · -'+fmt(per)+' сум'+(fineDraft.split&&cnt>1?' × '+cnt:''):(reasonOk?'Выберите получателей':'Укажите причину');
+  }
+}
+
+function saveFine(){
+  const cnt=fineDraft.targets.length;
+  const reason=(fineDraft.reason||'').trim();
+  if(cnt===0||fineDraft.amount<=0||!reason){
+    if(!reason)toast('❌ Причина обязательна');
+    return;
+  }
+  const split=fineDraft.split&&cnt>1;
+  const per=split?Math.floor(fineDraft.amount/cnt):fineDraft.amount;
+  // Lokal güncelleme
+  fineDraft.targets.forEach(function(uid){
+    const t=BARISTAS.find(function(x){return x.id===uid});
+    if(t){t.f=(t.f||0)+per;t.net=(t.net||0)-per}
+  });
+  const payload={action:'fine',targets:fineDraft.targets,amount:fineDraft.amount,reason:reason,type:fineDraft.type,split:split};
+  toast(split?('⚠️ Штраф разделён · '+cnt+' чел.'):'⚠️ Штраф записан');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
+  fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};
+  mView='main';
+  render();
+}
+
+// ── Owner: Baristalar listesi ──
+function rMBaristas(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">👥 Все сотрудники · '+escH(fmtMonth(curPeriod()))+'</div>';
+  if(!BARISTAS.length){
+    h+='<div class="no-baristas"><div class="ic">👥</div><div>Нет сотрудников</div><div style="font-size:11px;margin-top:8px">Они должны написать боту /start</div></div>';
+  } else {
+    BARISTAS.forEach(function(brs){
+      const isMe=brs.id===MY_UID;
+      const isActive=!!brs.active;
+      h+='<div class="bcard '+(isMe?'me':'')+'" style="'+(isActive?'border-left:4px solid #10b981':'')+'">'
+        +'<div class="bcard-top">'
+          +'<div class="bcard-l">'
+            +'<div class="bcard-name">'
+              +(isActive?'<span class="act-mini-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10b981;margin-right:4px"></span>':'')
+              +(brs.r==='owner'?'<span class="crown">👑</span>':'')
+              +escH(brs.n)
+              +(isMe?' <span style="font-size:10px;color:var(--gold2);font-weight:600">(вы)</span>':'')
+            +'</div>'
+            +(brs.u?'<div class="bcard-uname">@'+escH(brs.u)+'</div>':'')
+            +(isActive?'<div class="bcard-uname" style="color:#059669;font-weight:700;margin-top:3px">🟢 В смене с '+fmtTime(brs.active.start_time)+' · '+liveDur(brs.active.start_time)+'</div>':'')
+          +'</div>'
+          +'<div class="bcard-net">'+fmt(brs.net||0)+'</div>'
+        +'</div>'
+        +'<div class="bcard-stat"><span>Часы</span><span>'+(Number(brs.h||0).toFixed(2).replace(/\.00$/,''))+'h × 12k = '+fmt(brs.hp||0)+'</span></div>'
+        +'<div class="bcard-stat"><span>Бонус</span><span>+'+fmt(brs.b||0)+'</span></div>'
+        +'<div class="bcard-stat"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(brs.f||0)+'</span></div>'
+        +(brs.paid?'<div class="bcard-stat"><span>Выплачено</span><span style="color:var(--t3)">-'+fmt(brs.paid)+'</span></div>':'')
+        +'<div class="bcard-stat"><span>Смен в месяце</span><span>'+(brs.sc||0)+'</span></div>';
+      // Son vardiyalar (in/out times) — küçük liste
+      if(brs.recent&&brs.recent.length){
+        h+='<div class="bcard-stat" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:8px;flex-direction:column;align-items:stretch"><span style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Последние смены</span>';
+        brs.recent.slice(0,3).forEach(function(r){
+          const day=String(new Date(r.start_time).getDate()).padStart(2,'0')+'.'+String(new Date(r.start_time).getMonth()+1).padStart(2,'0');
+          const open=!r.end_time;
+          h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span>'+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):(Number(r.hours||0).toFixed(2)+'h'))+'</span></div>';
+        });
+        h+='</div>';
+      }
+      h+='<div class="bcard-actions">'
+        +'<button class="bcard-act fine" onclick="quickFine('+brs.id+')">⚠️ Штраф</button>'
+        +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')">✅ Выплатить</button>'
+      +'</div>'
+      +'</div>';
+    });
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function quickFine(uid){fineDraft={target:uid,type:'clean',amount:30000,reason:'',custom:''};mView='fine';render()}
+function quickPay(uid){payTarget=uid;mView='pay';render()}
+
+// ── Owner: Maaş ödeme ──
+function rMPay(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">✅ Выплатить зарплату · '+escH(fmtMonth(curPeriod()))+'</div>';
+  if(!BARISTAS.length){
+    h+='<div class="empty-mini">Нет сотрудников</div>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
+  // Barista seç
+  h+='<div class="sf-label" style="margin:8px 0 6px">Кому?</div>';
+  BARISTAS.forEach(function(brs){
+    const sel=payTarget===brs.id;
+    const able=brs.net>0;
+    h+='<div class="opt '+(sel?'on':'')+'" '+(able?'onclick="payTarget='+brs.id+';render()"':'style="opacity:.4;cursor:not-allowed"')+'>'
+      +'<div class="opt-r"></div>'
+      +'<div class="opt-l"><div class="opt-t">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="opt-s">'+(brs.u?'@'+escH(brs.u)+' · ':'')+(able?'к выплате: '+fmt(brs.net)+' сум':'нет средств')+'</div></div>'
+      +(brs.net>0?'<div class="opt-amt">'+fmt(brs.net)+'</div>':'')
+    +'</div>';
+  });
+
+  // Detay
+  if(payTarget){
+    const t=BARISTAS.find(function(x){return x.id===payTarget});
+    if(t){
+      h+='<div class="sf-total">'
+        +'<div class="sf-tot-row"><span>Часы '+(t.h||0)+'h × 12k</span><span>+'+fmt(t.hp||0)+'</span></div>'
+        +'<div class="sf-tot-row"><span>Бонус</span><span>+'+fmt(t.b||0)+'</span></div>'
+        +'<div class="sf-tot-row"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(t.f||0)+'</span></div>'
+        +(t.paid?'<div class="sf-tot-row"><span>Уже выплачено</span><span style="color:var(--t3)">-'+fmt(t.paid)+'</span></div>':'')
+        +'<div class="sf-tot-big"><span>К выплате</span><span>'+fmt(t.net||0)+' сум</span></div>'
+      +'</div>';
+    }
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='block';
+  const tg2=BARISTAS.find(function(x){return x.id===payTarget});
+  const ok=tg2&&tg2.net>0;
+  b.innerHTML='<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="savePay()">'+(ok?'✅ Выплатить '+fmt(tg2.net)+' сум':'Выберите бариста')+'</button>';
+}
+
+function savePay(){
+  const t=BARISTAS.find(function(x){return x.id===payTarget});
+  if(!t||t.net<=0)return;
+  const payload={action:'pay',target:payTarget,period:curPeriod()};
+  // Lokal güncelleme
+  t.paid=(t.paid||0)+t.net;
+  t.net=0;
+  toast('💵 Зарплата выплачена!');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
+  payTarget=0;mView='main';render();
+}
+
+// ── Owner: Yetki devri ──
+function rMTransfer(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🔑 Управление правами</div>';
+  h+='<div class="refresh-hint">Назначайте владельцев — они смогут управлять штрафами и выплатами. Можно иметь несколько владельцев одновременно.</div>';
+  if(!BARISTAS.length){
+    h+='<div class="empty-mini">Нет сотрудников</div>';
+  } else {
+    BARISTAS.forEach(function(brs){
+      const isOwner=brs.r==='owner';
+      const isMe=brs.id===MY_UID;
+      const ownerCount=BARISTAS.filter(function(x){return x.r==='owner'}).length;
+      h+='<div class="bcard">'
+        +'<div class="bcard-top">'
+          +'<div class="bcard-l"><div class="bcard-name">'+(isOwner?'<span class="crown">👑</span>':'')+escH(brs.n)+(isMe?' <span style="font-size:10px;color:var(--gold2);font-weight:600">(вы)</span>':'')+'</div>'
+            +(brs.u?'<div class="bcard-uname">@'+escH(brs.u)+'</div>':'')+'</div>'
+          +'<div class="role-pill '+(isOwner?'owner':'barista')+'" style="margin:0">'+(isOwner?'👑 Владелец':'👤 Бариста')+'</div>'
+        +'</div>'
+        +'<div class="bcard-actions">'
+          +(isOwner
+            ? (isMe&&ownerCount<=1
+                ? '<button class="bcard-act" disabled style="opacity:.4">Единственный владелец</button>'
+                : '<button class="bcard-act" onclick="grantRole('+brs.id+',\'barista\')">👤 Снять права</button>')
+            : '<button class="bcard-act" style="background:var(--gold-bg);color:var(--gold2);border-color:var(--gold-border)" onclick="grantRole('+brs.id+',\'owner\')">👑 Сделать владельцем</button>')
+        +'</div>'
+      +'</div>';
+    });
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function grantRole(uid,role){
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(!t)return;
+  if(!confirm((role==='owner'?'Сделать ':'Снять права у ')+t.n+'?'))return;
+  const payload={action:'grant',target:uid,role:role};
+  t.r=role;
+  toast(role==='owner'?'👑 Назначен владельцем!':'ℹ️ Права сняты');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
+  // Eğer kendi yetkisini kaldırdıysa — ana ekrana dön
+  if(uid===MY_UID&&role==='barista'){MY_ROLE='barista';mView='main'}
+  render();
+}
+
+// ═══════════════════════════════════════
+//  TIPS · Раздать чаевые (owner only)
+// ═══════════════════════════════════════
+function rMTips(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">💝 Раздать чаевые</div>';
+  h+='<div class="refresh-hint" style="margin-top:0">Введите общую сумму, выберите кому, при необходимости вручную распределите.</div>';
+
+  // Toplam tutar
+  h+='<div class="sf-label" style="margin:6px 0 6px">Общая сумма (сум)</div>'
+    +'<input class="sf-hours" type="number" inputmode="numeric" min="0" placeholder="например 200000" value="'+escH(String(tipDraft.total||''))+'" oninput="tipDraft.total=this.value;recalcTips()">';
+
+  // Mod seç (eşit / manuel)
+  h+='<div class="sf-label" style="margin:14px 0 6px">Распределение</div>';
+  h+='<div class="set-tabs">'
+    +'<div class="opt '+(tipDraft.mode==='equal'?'on':'')+'" style="flex:1;margin:0" onclick="tipDraft.mode=\'equal\';render()"><div class="opt-r"></div><div class="opt-l"><div class="opt-t">⚖️ Поровну</div><div class="opt-s">между выбранными</div></div></div>'
+    +'<div class="opt '+(tipDraft.mode==='custom'?'on':'')+'" style="flex:1;margin:0" onclick="tipDraft.mode=\'custom\';render()"><div class="opt-r"></div><div class="opt-l"><div class="opt-t">✏️ Вручную</div><div class="opt-s">укажите каждому</div></div></div>'
+  +'</div>';
+
+  // Bariston seç / dağıt
+  h+='<div class="sf-label" style="margin:14px 0 6px">Кому?</div>';
+  if(!BARISTAS.length){
+    h+='<div class="empty-mini">Нет баристов.</div>';
+  } else {
+    BARISTAS.forEach(function(brs){
+      const sel=tipDraft.distributions[brs.id]!==undefined;
+      const val=tipDraft.distributions[brs.id]||0;
+      if(tipDraft.mode==='custom'){
+        h+='<div class="set-row">'
+          +'<div class="set-row-l"><div class="set-row-t">'+(brs.active?'🟢 ':'')+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div>'
+            +'<div class="set-row-s">'+(brs.u?'@'+escH(brs.u):'')+'</div></div>'
+          +'<input class="set-input" type="number" inputmode="numeric" min="0" placeholder="0" value="'+(val||'')+'" oninput="setTipFor('+brs.id+',this.value)">'
+        +'</div>';
+      } else {
+        h+='<div class="opt multi '+(sel?'on':'')+'" onclick="toggleTipTarget('+brs.id+')">'
+          +'<div class="opt-r"></div>'
+          +'<div class="opt-l"><div class="opt-t">'+(brs.active?'🟢 ':'')+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="opt-s">'+(brs.u?'@'+escH(brs.u):'')+'</div></div>'
+        +'</div>';
+      }
+    });
+  }
+
+  // Not
+  h+='<div class="sf-label" style="margin:14px 0 6px">Заметка (необязательно)</div>'
+    +'<textarea class="sf-note" rows="2" placeholder="например: вечерние чаевые" oninput="tipDraft.note=this.value">'+escH(tipDraft.note||'')+'</textarea>';
+
+  // Toplam
+  const calc=calcTipPlan();
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Получателей</span><span>'+calc.cnt+'</span></div>'
+    +'<div class="sf-tot-row"><span>Сумма</span><span id="tpTotal">'+fmt(calc.total)+' сум</span></div>'
+    +(calc.cnt>0&&tipDraft.mode==='equal'?'<div class="sf-tot-row"><span>Каждому</span><span>+'+fmt(calc.per)+' сум</span></div>':'')
+    +'<div class="sf-tot-big"><span>ИТОГО</span><span>+'+fmt(calc.sum)+' сум</span></div>'
+  +'</div>';
+
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='block';
+  const ok=calc.cnt>0&&calc.sum>0;
+  b.innerHTML='<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="saveTips()">'+(ok?'💝 Раздать +'+fmt(calc.sum)+' сум':'Введите сумму и выберите бариста')+'</button>';
+}
+function toggleTipTarget(uid){
+  if(tipDraft.distributions[uid]!==undefined)delete tipDraft.distributions[uid];
+  else tipDraft.distributions[uid]=0;
+  if(tg)tg.HapticFeedback?.impactOccurred('light');
+  render();
+}
+function setTipFor(uid,v){tipDraft.distributions[uid]=parseInt(v)||0;recalcTips()}
+function calcTipPlan(){
+  const total=parseInt(tipDraft.total)||0;
+  const ids=Object.keys(tipDraft.distributions).map(function(x){return parseInt(x)});
+  const cnt=ids.length;
+  if(tipDraft.mode==='equal'){
+    const per=cnt>0?Math.floor(total/cnt):0;
+    return {cnt:cnt,total:total,per:per,sum:per*cnt};
+  } else {
+    let s=0;ids.forEach(function(u){s+=parseInt(tipDraft.distributions[u])||0});
+    return {cnt:cnt,total:s,per:0,sum:s};
+  }
+}
+function recalcTips(){
+  const calc=calcTipPlan();
+  const e=document.getElementById('tpTotal');if(e)e.textContent=fmt(calc.total)+' сум';
+}
+function saveTips(){
+  const calc=calcTipPlan();
+  if(calc.cnt===0||calc.sum<=0)return;
+  // Dağıtım planı: {uid:amount}
+  const dist={};
+  if(tipDraft.mode==='equal'){
+    Object.keys(tipDraft.distributions).forEach(function(u){dist[u]=calc.per});
+  } else {
+    Object.keys(tipDraft.distributions).forEach(function(u){dist[u]=parseInt(tipDraft.distributions[u])||0});
+  }
+  const payload={action:'tip_distribute',distributions:dist,note:(tipDraft.note||'').trim(),total:calc.sum,mode:tipDraft.mode};
+  toast('💝 Чаевые розданы · '+calc.cnt+' чел.');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
+  tipDraft={total:'',distributions:{},note:'',mode:'equal'};
+  mView='main';render();
+}
+
+// ═══════════════════════════════════════
+//  SETTINGS · Цены / Имена / Логи (owner)
+// ═══════════════════════════════════════
+function rMSettings(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">⚙️ Настройки · '+(settingsTab==='prices'?'Цены':(settingsTab==='names'?'Имена':'Логи'))+'</div>';
+  // Mini tabs (3 alt sekme — yeni sayfa açmıyoruz)
+  h+='<div class="set-tabs">'
+    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">💰 Цены</div></div></div>'
+    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">📝 Имена</div></div></div>'
+    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;margin:0;padding:8px 6px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:12px">📋 Логи</div></div></div>'
+  +'</div>';
+
+  if(settingsTab==='prices'){
+    h+='<div class="refresh-hint" style="margin-top:0">Цены за один напиток — изменения сохраняются и применяются ко всем баристам.</div>';
+    DRINK_LIST.forEach(function(d){
+      h+='<div class="set-row">'
+        +'<div class="set-row-l">'
+          +'<div class="set-row-t">'+d.c+' '+escH(d.l)+'</div>'
+          +'<div class="set-row-s">id: '+d.id+'</div>'
+        +'</div>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" id="pr_'+d.id+'" value="'+(d.r||0)+'">'
+        +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="savePrice(\''+d.id+'\')">💾</button>'
+      +'</div>';
+    });
+  } else if(settingsTab==='names'){
+    h+='<div class="refresh-hint" style="margin-top:0">Назначьте отображаемое имя для каждого бариста — оно будет показано в интерфейсе.</div>';
+    if(!BARISTAS.length){
+      h+='<div class="empty-mini">Нет баристов.</div>';
+    } else {
+      BARISTAS.forEach(function(brs){
+        h+='<div class="set-row">'
+          +'<div class="set-row-l">'
+            +'<div class="set-row-t">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div>'
+            +'<div class="set-row-s">'+(brs.u?'@'+escH(brs.u):'id: '+brs.id)+'</div>'
+          +'</div>'
+          +'<input class="set-input wide" type="text" id="nm_'+brs.id+'" placeholder="имя" value="'+escH(brs.dn||brs.n||'')+'">'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDisplayName('+brs.id+')">💾</button>'
+        +'</div>';
+      });
+    }
+  } else if(settingsTab==='logs'){
+    h+='<div class="refresh-hint" style="margin-top:0">Журнал последних действий — штрафы, выплаты, чаевые, изменения цен и имён.</div>';
+    if(!LOGS||!LOGS.length){
+      h+='<div class="empty-mini">Логов пока нет.</div>';
+    } else {
+      LOGS.slice().reverse().forEach(function(L){
+        const dt=L.created_at?new Date(L.created_at):null;
+        const day=dt?(String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0')+' '+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0')):'';
+        const ic=({fine:'⚠️',pay:'💵',tip:'💝',price:'💰',rename:'📝',grant:'👑',shift_end:'🔴',shift_start:'🟢'})[L.action]||'•';
+        let det='';
+        try{
+          const d=typeof L.details==='string'?JSON.parse(L.details):(L.details||{});
+          if(d.amount)det+=' · '+fmt(d.amount)+' сум';
+          if(d.reason)det+=' · «'+escH(d.reason)+'»';
+          if(d.note)det+=' · '+escH(d.note);
+          if(d.drink_id)det+=' · '+d.drink_id;
+          if(d.from_name&&d.to_name)det+=' · '+escH(d.from_name)+' → '+escH(d.to_name);
+        }catch(e){}
+        h+='<div class="log-row">'
+          +'<div style="display:flex;justify-content:space-between;gap:8px"><span><b>'+ic+' '+escH(L.action||'')+'</b>'+(L.target_name?' → '+escH(L.target_name):'')+'</span><span style="color:var(--t3);font-size:10px">'+day+'</span></div>'
+          +'<div style="color:var(--t2);font-size:10px;margin-top:2px">от '+escH(L.actor_name||'?')+det+'</div>'
+        +'</div>';
+      });
+    }
+  }
+
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+
+function savePrice(drinkId){
+  const el=document.getElementById('pr_'+drinkId);
+  if(!el)return;
+  const amount=parseInt(el.value)||0;
+  if(amount<0){toast('❌ Неверная сумма');return}
+  const drink=DRINK_LIST.find(function(x){return x.id===drinkId});
+  if(drink)drink.r=amount;
+  PRICES[drinkId]=amount;
+  toast('💰 Цена сохранена');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'price_update',drink_id:drinkId,amount:amount}))}catch(e){console.warn(e)}}
+}
+
+function saveDisplayName(uid){
+  const el=document.getElementById('nm_'+uid);
+  if(!el)return;
+  const name=(el.value||'').trim();
+  if(!name){toast('❌ Имя не может быть пустым');return}
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(t){t.dn=name;t.n=name}
+  toast('📝 Имя сохранено');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'rename_user',target:uid,name:name}))}catch(e){console.warn(e)}}
+}
+
+render();
+</script>
+</body>
+</html>
