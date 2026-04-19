@@ -18,6 +18,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
+MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
 TZ = timezone(timedelta(hours=5))
 
 logging.basicConfig(level=logging.INFO)
@@ -2063,6 +2064,33 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown")
 
 
+async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inline buton ile mini app aç — gruba sabitlenebilir."""
+    bot_user = await context.bot.get_me()
+    miniapp_url = f"https://t.me/{bot_user.username}/{MINIAPP_SHORT_NAME}"
+    dm_url = f"https://t.me/{bot_user.username}?start=menu"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("☕ Открыть Caffelito", url=miniapp_url)],
+        [InlineKeyboardButton("💬 Открыть в личке", url=dm_url)]
+    ])
+    msg = await update.message.reply_text(
+        "☕ *CAFFELITO — Мини-приложение*\n\n"
+        "Нажмите кнопку, чтобы открыть приложение.\n"
+        "Заказы, смены, зарплата и отчёты — всё внутри.\n\n"
+        "_Закрепите это сообщение в группе, чтобы быстро открывать приложение._",
+        reply_markup=kb,
+        parse_mode="Markdown")
+    # Grupta otomatik sabitlemeyi dene
+    if update.effective_chat.type in ("group", "supergroup"):
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=update.effective_chat.id,
+                message_id=msg.message_id,
+                disable_notification=True)
+        except Exception as e:
+            logger.info(f"Pin failed (need admin rights): {e}")
+
+
 async def cmd_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug: текущий user ID + role"""
     db = get_db()
@@ -2138,6 +2166,7 @@ def main():
     app.add_handler(CommandHandler("otchet", cmd_report))
     app.add_handler(CommandHandler("setgroup", cmd_setgroup))
     app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("app", cmd_app))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("test", cmd_test))
