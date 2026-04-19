@@ -19,6 +19,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
+ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor
 TZ = timezone(timedelta(hours=5))
 
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +51,11 @@ def get_db():
     # display_name eski DB'lerde yoksa ekle
     try:
         db.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # authorized: ACCESS_CODE doğru girildiyse 1 olur
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN authorized INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     db.execute("""CREATE TABLE IF NOT EXISTS shifts (
@@ -145,6 +151,32 @@ def upsert_user(db, user_id, name, username=None, chat_id=None):
 def get_role(db, user_id):
     row = db.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
     return row["role"] if row else "barista"
+
+
+def is_authorized(db, user_id):
+    """ACCESS_CODE boşsa herkes yetkili. Doluysa users.authorized=1 olanlar yetkili."""
+    if not ACCESS_CODE:
+        return True
+    row = db.execute("SELECT authorized FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return bool(row and row["authorized"])
+
+
+async def require_auth(update, context):
+    """Eğer ACCESS_CODE varsa ve kullanıcı yetkisizse uyarı gönder ve False döndür."""
+    if not ACCESS_CODE:
+        return True
+    db = get_db()
+    user = update.effective_user
+    upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+    if is_authorized(db, user.id):
+        return True
+    await update.message.reply_text(
+        "🔒 *Доступ ограничен*\n\n"
+        "Этот бот — только для сотрудников.\n"
+        "Введите код доступа:\n"
+        "`/login ВАШ_КОД`",
+        parse_mode="Markdown")
+    return False
 
 
 def has_owner(db):
@@ -671,6 +703,31 @@ ITEMS_PER_PAGE = 5
 #  COMMANDS
 # ═══════════════════════════════════════
 
+async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Erişim kodu doğrulama: /login KOD"""
+    if not ACCESS_CODE:
+        await update.message.reply_text("ℹ️ Код доступа не настроен — все могут пользоваться ботом.")
+        return
+    db = get_db()
+    user = update.effective_user
+    upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "🔑 Использование:\n`/login ВАШ_КОД`",
+            parse_mode="Markdown")
+        return
+    given = " ".join(args).strip()
+    if given == ACCESS_CODE:
+        db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
+        db.commit()
+        await update.message.reply_text(
+            "✅ *Доступ открыт!*\n\nТеперь вы можете пользоваться ботом.\nНажмите /menu чтобы открыть приложение.",
+            parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Неверный код. Попробуйте ещё раз: `/login ВАШ_КОД`", parse_mode="Markdown")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     db.execute("INSERT OR IGNORE INTO shops (chat_id) VALUES (?)",
@@ -679,7 +736,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
 
-    # 👑 İlk kullanıcı otomatik owner olur
+    # Auth check
+    if ACCESS_CODE and not is_authorized(db, user.id):
+        await update.message.reply_text(
+            "🔒 *Caffelito — закрытый бот*\n\n"
+            "Этот бот только для сотрудников кофейни.\n"
+            "Введите код доступа:\n\n"
+            "`/login ВАШ_КОД`",
+            parse_mode="Markdown")
+        return
+
+    # 👑 İlk yetkili kullanıcı otomatik owner olur
     auto_owner = False
     if not has_owner(db):
         db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
@@ -1486,6 +1553,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mini App'ten gelen veriyi işle ve gruba ilet"""
     logger.info("=== WEBAPP DATA RECEIVED ===")
+    # 🔒 Auth check
+    if ACCESS_CODE:
+        db = get_db()
+        user = update.effective_user
+        upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+        if not is_authorized(db, user.id):
+            await update.message.reply_text(
+                "🔒 У вас нет доступа. Введите: `/login ВАШ_КОД`",
+                parse_mode="Markdown")
+            return
 
     # Mini App ID → güzel isim
     NAMES = {
@@ -2026,7 +2103,11 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
 
-    # 👑 İlk kullanıcı otomatik owner olur (eğer hiç owner yoksa)
+    # 🔒 Auth check
+    if not await require_auth(update, context):
+        return
+
+    # 👑 İlk yetkili kullanıcı otomatik owner olur
     if not has_owner(db):
         db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
         db.commit()
@@ -2065,19 +2146,23 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline buton ile mini app aç — gruba sabitlenebilir."""
+    """Inline buton ile mini app aç — gruba sabitlenebilir.
+    ÖNEMLİ: tg.sendData() sadece DM'deki KeyboardButton'dan çalışır.
+    Bu yüzden grupta button → DM'ye deep-link açar, DM'de otomatik keyboard button gelir."""
+    # Grupta auth zorlamıyoruz (zaten DM'ye yönlendiriyor); DM'deyse auth iste
+    if update.effective_chat.type == "private":
+        if not await require_auth(update, context):
+            return
     bot_user = await context.bot.get_me()
-    miniapp_url = f"https://t.me/{bot_user.username}/{MINIAPP_SHORT_NAME}"
-    dm_url = f"https://t.me/{bot_user.username}?start=menu"
+    dm_url = f"https://t.me/{bot_user.username}?start=app"  # DM'ye git, /start app tetiklenir
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("☕ Открыть Caffelito", url=miniapp_url)],
-        [InlineKeyboardButton("💬 Открыть в личке", url=dm_url)]
+        [InlineKeyboardButton("☕ Открыть Caffelito", url=dm_url)]
     ])
     msg = await update.message.reply_text(
         "☕ *CAFFELITO — Мини-приложение*\n\n"
-        "Нажмите кнопку, чтобы открыть приложение.\n"
+        "Нажмите кнопку — откроется чат с ботом, где приложение запустится автоматически.\n"
         "Заказы, смены, зарплата и отчёты — всё внутри.\n\n"
-        "_Закрепите это сообщение в группе, чтобы быстро открывать приложение._",
+        "_Закрепите это сообщение, чтобы быстро открывать приложение._",
         reply_markup=kb,
         parse_mode="Markdown")
     # Grupta otomatik sabitlemeyi dene
@@ -2167,6 +2252,7 @@ def main():
     app.add_handler(CommandHandler("setgroup", cmd_setgroup))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("app", cmd_app))
+    app.add_handler(CommandHandler("login", cmd_login))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("test", cmd_test))
