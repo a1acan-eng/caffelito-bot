@@ -29,6 +29,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info(f"DB_PATH = {DB_PATH}")
 
+# ─── Markdown güvenli escape (özel karakterler kullanıcı adında varsa parse hatası vermesin) ───
+def md_safe(text):
+    """Telegram parse_mode='Markdown' için tehlikeli karakterleri escape'le."""
+    if text is None:
+        return ""
+    s = str(text)
+    # Markdown legacy: _ * ` [ özel
+    return s.replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+
 # ─── DATABASE ───
 def get_db():
     # DB_PATH dizin varsa otomatik oluştur (Railway Volume mount'u için güvenli)
@@ -72,6 +81,16 @@ def get_db():
     # password: her bariastanın kendi şifresi (owner atayıp/silebilir)
     try:
         db.execute("ALTER TABLE users ADD COLUMN password TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # archived: 1 → kullanıcı arşivde (geçmiş duruyor ama aktif listede gözükmez, bot girişi kapalı)
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN archived INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    # archived_at: arşive alındığı tarih
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN archived_at TEXT")
     except sqlite3.OperationalError:
         pass
     db.execute("""CREATE TABLE IF NOT EXISTS shifts (
@@ -257,9 +276,12 @@ def is_authorized(db, user_id):
     - Auth açıksa: users.authorized=1 olanlar yetkili.
     - Auth kapalıysa: herkes yetkili.
     """
-    row = db.execute("SELECT role, authorized FROM users WHERE user_id=?", (user_id,)).fetchone()
+    row = db.execute("SELECT role, authorized, archived FROM users WHERE user_id=?", (user_id,)).fetchone()
     if row and (row["role"] or "") == "owner":
         return True
+    # Arşivlenmiş kullanıcı erişemez
+    if row and (row["archived"] or 0):
+        return False
     if not auth_required(db):
         return True
     return bool(row and row["authorized"])
@@ -535,8 +557,9 @@ def build_webapp_url(base_url, user_id, name, db):
     ]
     if role == "owner":
         rows = db.execute(
-            "SELECT user_id, name, username, role, display_name, password, authorized "
-            "FROM users ORDER BY COALESCE(display_name,name)").fetchall()
+            "SELECT user_id, name, username, role, display_name, password, authorized, "
+            "COALESCE(archived,0) AS archived, archived_at "
+            "FROM users ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
@@ -561,6 +584,8 @@ def build_webapp_url(base_url, user_id, name, db):
                 # Şifre durumu (owner için): pw=1 → şifresi var, auth=1 → giriş yapmış
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
+                "arch": 1 if (b["archived"] or 0) else 0,
+                "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
         # Son 50 log
@@ -2366,7 +2391,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        target_row["display_name"] or target_row["name"], {})
             shown = display_name_for(db, target_id, fallback=target_row["name"])
             await update.message.reply_text(
-                f"🔐 Пароль для *{shown}* установлен.\n\n"
+                f"🔐 Пароль для *{md_safe(shown)}* установлен.\n\n"
                 f"Передайте бариста: он(а) должен(а) написать боту:\n`/login {new_pwd}`",
                 parse_mode="Markdown")
 
@@ -2388,10 +2413,60 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        target_row["display_name"] or target_row["name"], {})
             shown = display_name_for(db, target_id, fallback=target_row["name"])
             await update.message.reply_text(
-                f"🗑 Пароль для *{shown}* удалён. Доступ закрыт.",
+                f"🗑 Пароль для *{md_safe(shown)}* удалён. Доступ закрыт.",
                 parse_mode="Markdown")
 
-        # ─── Kullanıcı silme (owner-only) ───
+        # ─── Kullanıcı arşivleme (owner-only) ───
+        # Arşivlenince: kullanıcı bottan giriş yapamaz, aktif listede gözükmez
+        # ama TÜM geçmişi (vardiya/ceza/ödeme/bahşiş/loglar) korunur.
+        elif action == "archive_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            if not target_id or target_id == user.id:
+                await update.message.reply_text("❌ Неверный пользователь.")
+                return
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            if (target_row["role"] or "") == "owner":
+                await update.message.reply_text("❌ Нельзя архивировать владельца.")
+                return
+            shown = target_row["display_name"] or target_row["name"] or "?"
+            now = datetime.now(TZ).isoformat()
+            db.execute(
+                "UPDATE users SET archived=1, archived_at=?, authorized=0 WHERE user_id=?",
+                (now, target_id))
+            db.commit()
+            log_action(db, "archive_user", user.id, user.first_name, target_id, shown, {})
+            await update.message.reply_text(
+                f"📦 *{md_safe(shown)}* перенесён в архив.\n"
+                f"Доступ закрыт, но вся история сохранена.",
+                parse_mode="Markdown")
+
+        elif action == "unarchive_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            shown = target_row["display_name"] or target_row["name"] or "?"
+            db.execute("UPDATE users SET archived=0, archived_at=NULL WHERE user_id=?", (target_id,))
+            db.commit()
+            log_action(db, "unarchive_user", user.id, user.first_name, target_id, shown, {})
+            await update.message.reply_text(
+                f"♻️ *{md_safe(shown)}* возвращён из архива.\n"
+                f"Не забудьте задать пароль, если нужен доступ.",
+                parse_mode="Markdown")
+
+        # ─── Kullanıcı tamamen silme (owner-only, GERİ DÖNÜŞSÜZ) ───
         # İki mod:
         #   1) Veri yoksa → direkt sil
         #   2) Veri varsa → confirm_with_data=1 flag'i şart
@@ -2427,7 +2502,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             has_data = (sc + fc + pc + tc) > 0
             if has_data and not confirm_data:
                 await update.message.reply_text(
-                    f"⚠️ У *{shown}* есть данные:\n"
+                    f"⚠️ У *{md_safe(shown)}* есть данные:\n"
                     f"• Смен: {sc}\n• Штрафов: {fc}\n• Выплат: {pc}\n• Чаевых: {tc}\n\n"
                     f"Подтвердите удаление в приложении ещё раз.",
                     parse_mode="Markdown")
@@ -2469,9 +2544,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "rename", user.id, user.first_name, target_id, new_name or target_row["name"],
                        {"old": old_name, "new": new_name})
             shown = new_name or target_row["name"] or "?"
+            uname = target_row["username"] or str(target_id)
             await update.message.reply_text(
                 f"✏️ Имя обновлено\n\n"
-                f"@{target_row['username'] or target_id} → *{shown}*",
+                f"@{md_safe(uname)} → *{md_safe(shown)}*",
                 parse_mode="Markdown")
 
     except Exception as e:

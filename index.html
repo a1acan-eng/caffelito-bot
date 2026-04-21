@@ -39,12 +39,17 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .hdr{position:sticky;top:0;z-index:100;background:rgba(var(--bg-rgb),.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);transition:background .3s ease,border-color .3s ease}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
 .brand{display:flex;align-items:center;gap:10px}
-.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer;position:relative;box-shadow:0 0 0 0 var(--gold)}
+.brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer;position:relative;box-shadow:0 0 0 0 var(--gold);transform:none}
 .brand-logo img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;-webkit-user-drag:none}
-.brand-logo:hover{transform:scale(1.08) rotate(-3deg);box-shadow:0 0 0 3px var(--gold-border)}
-.brand-logo:active{transform:scale(.94) rotate(8deg)}
-.brand-logo::after{content:'';position:absolute;inset:-4px;border-radius:14px;border:2px dashed var(--gold);opacity:0;transform:scale(.8);transition:all .3s ease;pointer-events:none}
-.brand-logo:hover::after{opacity:.5;transform:scale(1)}
+/* Hover/active sadece gerçek mouse'lu cihazlarda — dokunmatik ekranda sticky kalmasın */
+@media (hover:hover) and (pointer:fine){
+  .brand-logo:hover{transform:scale(1.08) rotate(-3deg);box-shadow:0 0 0 3px var(--gold-border)}
+  .brand-logo::after{content:'';position:absolute;inset:-4px;border-radius:14px;border:2px dashed var(--gold);opacity:0;transform:scale(.8);transition:all .3s ease;pointer-events:none}
+  .brand-logo:hover::after{opacity:.5;transform:scale(1)}
+}
+/* Tıklama anında bir kez dönen animasyon — bittikten sonra nötr pozisyona döner */
+@keyframes logoSpin{0%{transform:scale(1) rotate(0)}30%{transform:scale(.94) rotate(8deg)}60%{transform:scale(1.1) rotate(-12deg)}100%{transform:scale(1) rotate(0)}}
+.brand-logo.spin{animation:logoSpin .55s cubic-bezier(.34,1.56,.64,1) forwards}
 @keyframes themeFlash{0%{opacity:0;transform:scale(0)}50%{opacity:1;transform:scale(1.2)}100%{opacity:0;transform:scale(2.5)}}
 .theme-flash{position:fixed;top:30px;left:30px;width:38px;height:38px;border-radius:50%;background:radial-gradient(circle,var(--gold) 0%,transparent 70%);pointer-events:none;z-index:9999;animation:themeFlash .6s ease-out forwards}
 .brand-name{font-size:18px;font-weight:800;letter-spacing:-.3px}
@@ -346,6 +351,21 @@ function applyTheme(theme){
 function toggleTheme(ev){
   const cur=document.documentElement.getAttribute('data-theme')||'light';
   const next=(cur==='dark')?'light':'dark';
+  // Logo: tek seferlik dönüş animasyonu (bittikten sonra nötrde kalır)
+  try{
+    const logo=ev&&ev.currentTarget?ev.currentTarget:document.querySelector('.brand-logo');
+    if(logo){
+      logo.classList.remove('spin');
+      // reflow trick — animasyon yeniden tetiklensin
+      void logo.offsetWidth;
+      logo.classList.add('spin');
+      const onEnd=function(){logo.classList.remove('spin');logo.removeEventListener('animationend',onEnd)};
+      logo.addEventListener('animationend',onEnd);
+      // Mobilde focus/hover state'inin sticky kalmaması için blur ve aktif elementi temizle
+      try{logo.blur&&logo.blur()}catch(_){}
+      try{document.activeElement&&document.activeElement.blur&&document.activeElement.blur()}catch(_){}
+    }
+  }catch(e){}
   // Güzel görsel efekt: NERO'dan dalga yayılsın
   try{
     const f=document.createElement('div');
@@ -640,6 +660,22 @@ function go(t){
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
   if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   tab=t;cat=null;sub=null;mView='main';dT();render();
+  // Sekme değiştiğinde sayfayı her zaman yukarı kaydır — kullanıcı önceki sekmeyi
+  // aşağı kaydırmış olabilir, yeni sekmenin başını görmeli.
+  scrollTopAll();
+}
+// Mini App içinde scroll konteyneri farklı olabiliyor — hepsini sıfırla
+function scrollTopAll(){
+  try{window.scrollTo({top:0,behavior:'auto'})}catch(e){try{window.scrollTo(0,0)}catch(_){}}
+  try{document.documentElement.scrollTop=0}catch(e){}
+  try{document.body.scrollTop=0}catch(e){}
+  try{const m=document.getElementById('main');if(m)m.scrollTop=0}catch(e){}
+}
+// Ayarlar alt sekmesi değiştirildiğinde de en üste kaydır
+function setSettingsTab(t){
+  settingsTab=t;
+  render();
+  scrollTopAll();
 }
 function toggleEdit(){edit=!edit;document.getElementById('eBtn').classList.toggle('on',edit);render()}
 dT();
@@ -1985,11 +2021,11 @@ function rMSettings(m,b){
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
   // Mini tabs (5 alt sekme — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
-    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'prices\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
-    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'desserts\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
-    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'names\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
-    +'<div class="opt '+(settingsTab==='passwords'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'passwords\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🔐 Пароли</div></div></div>'
-    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="settingsTab=\'logs\';render()"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
+    +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'prices\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
+    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'desserts\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
+    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
+    +'<div class="opt '+(settingsTab==='passwords'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'passwords\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🔐 Пароли</div></div></div>'
+    +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'logs\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
   +'</div>';
 
   if(settingsTab==='prices'){
@@ -2038,10 +2074,12 @@ function rMSettings(m,b){
     +'</div>';
   } else if(settingsTab==='names'){
     h+='<div class="refresh-hint" style="margin-top:0">Назначьте отображаемое имя для каждого бариста — оно будет показано в интерфейсе.</div>';
-    if(!BARISTAS.length){
-      h+='<div class="empty-mini">Нет баристов.</div>';
+    const activeList=BARISTAS.filter(function(b){return !b.arch});
+    const archList=BARISTAS.filter(function(b){return b.arch});
+    if(!activeList.length){
+      h+='<div class="empty-mini">Нет активных баристов.</div>';
     } else {
-      BARISTAS.forEach(function(brs){
+      activeList.forEach(function(brs){
         const isOwner=(brs.r==='owner');
         const sc=brs.sc||0, fc=brs.fc||0;
         const safeName=escH((brs.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"));
@@ -2053,14 +2091,33 @@ function rMSettings(m,b){
           +'</div>'
           +'<input class="set-input wide" type="text" id="nm_'+brs.id+'" placeholder="имя" value="'+escH(brs.dn||brs.n||'')+'" style="flex:1;min-width:120px">'
           +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDisplayName('+brs.id+')" title="Сохранить имя">💾</button>'
-          +(isOwner?'':'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="deleteUser('+brs.id+',\''+safeName+'\','+sc+','+fc+')" title="Удалить пользователя">🗑</button>')
+          +(isOwner?'':'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#0ea5e9" onclick="removeUser('+brs.id+',\''+safeName+'\','+sc+','+fc+')" title="Удалить или архивировать">🗑</button>')
         +'</div>';
       });
-      h+='<div style="margin-top:14px;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc;font-size:11px;color:var(--t2);line-height:1.5">'
-        +'💡 <b>🗑 Удалить</b> — убирает бариста из системы. Если у бариста есть смены/штрафы/выплаты, потребуется подтверждение.<br>'
-        +'Используйте, когда сотрудник уволился, либо случайный человек нажал /start.'
-      +'</div>';
     }
+    if(archList.length){
+      h+='<div class="sec" style="margin-top:18px;font-size:13px;color:var(--t2)">📦 Архив ('+archList.length+')</div>';
+      h+='<div class="refresh-hint" style="margin-top:0;font-size:11px">Эти пользователи не имеют доступа к боту, но их история сохранена.</div>';
+      archList.forEach(function(brs){
+        const sc=brs.sc||0, fc=brs.fc||0;
+        const safeName=escH((brs.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"));
+        const archDate=brs.arch_at?(' · '+(brs.arch_at||'').slice(0,10)):'';
+        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px;opacity:.75;background:var(--card2)">'
+          +'<div class="set-row-l" style="min-width:130px">'
+            +'<div class="set-row-t">📦 '+escH(brs.n)+'</div>'
+            +'<div class="set-row-s">'+(brs.u?'@'+escH(brs.u):'id: '+brs.id)+archDate+'</div>'
+            +((sc||fc)?'<div class="set-row-s" style="margin-top:2px;color:var(--t3)">📊 смен: '+sc+' · штрафов: '+fc+'</div>':'')
+          +'</div>'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#16a34a" onclick="restoreUser('+brs.id+',\''+safeName+'\')" title="Вернуть из архива">♻️</button>'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="deleteUserPermanent('+brs.id+',\''+safeName+'\','+sc+','+fc+')" title="Удалить навсегда">🗑</button>'
+        +'</div>';
+      });
+    }
+    h+='<div style="margin-top:14px;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc;font-size:11px;color:var(--t2);line-height:1.5">'
+      +'💡 <b>🗑 удаление:</b> два варианта на выбор.<br>'
+      +'• 📦 <b>Архив</b> — сохраняет всю историю, доступ закрыт. Подходит для уволенных сотрудников.<br>'
+      +'• 🗑 <b>Удалить навсегда</b> — стирает пользователя и все его данные. Подходит для случайных людей, нажавших /start.'
+    +'</div>';
   } else if(settingsTab==='passwords'){
     h+='<div class="refresh-hint" style="margin-top:0">У каждого бариста — свой пароль. Без пароля никто не войдёт. Вы можете задать новый или удалить (закрыть доступ).</div>';
     if(!BARISTAS.length){
@@ -2173,23 +2230,69 @@ function clearBaristaPassword(uid,nm){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'clear_password',target:uid}))}catch(e){console.warn(e)}}
 }
 
-// ── Kullanıcı silme (owner) — iki aşamalı ──
-function deleteUser(uid,nm,sc,fc){
+// ── Kullanıcı kaldırma (owner) — iki seçenekli: ARŞİV veya SİL ──
+function removeUser(uid,nm,sc,fc){
   const hasData=(sc||0)+(fc||0)>0;
-  // 1. aşama: net onay
-  if(!confirm('🗑 Удалить пользователя «'+(nm||'?')+'»?\n\nОн исчезнет из системы.\nЕсли это случайный человек — смело удаляйте.'))return;
-  // 2. aşama: veri varsa ekstra uyarı
-  if(hasData){
-    const msg='⚠️ ВНИМАНИЕ!\n\nУ «'+(nm||'?')+'» сохранены данные:\n'
-      +'• Смен: '+(sc||0)+'\n'
-      +'• Штрафов: '+(fc||0)+'\n\n'
-      +'Все эти записи будут удалены БЕЗВОЗВРАТНО.\n\n'
-      +'Точно продолжить?';
-    if(!confirm(msg))return;
+  const dataLine=hasData?('\n📊 У него: смен '+(sc||0)+', штрафов '+(fc||0)+'.\n'):'\n';
+  // 1. ekran: ne yapacağını sor
+  // confirm() sadece OK/Cancel — bu yüzden önce arşiv soruyoruz, "İptal"
+  // dersen kalıcı silmeyi soruyoruz, ona da iptal dersen iptal.
+  const ask1='Что сделать с «'+(nm||'?')+'»?'+dataLine
+    +'\n✅ OK — 📦 Архивировать (история сохранится, доступ закрыт)'
+    +'\n❌ Отмена — выбрать другой вариант';
+  if(confirm(ask1)){
+    // ARŞİV
+    archiveUserConfirmed(uid,nm);
+    return;
   }
-  // Optimistik: listeden çıkar
+  // 2. ekran: kalıcı sil mi yoksa iptal mi?
+  const ask2='🗑 Удалить НАВСЕГДА «'+(nm||'?')+'»?'+dataLine
+    +(hasData?'\n⚠️ Все данные будут стёрты БЕЗВОЗВРАТНО.\n':'')
+    +'\n✅ OK — удалить навсегда'
+    +'\n❌ Отмена — ничего не делать';
+  if(!confirm(ask2))return;
+  // Veri varsa ekstra ikinci doğrulama
+  if(hasData){
+    if(!confirm('Точно удалить «'+(nm||'?')+'» БЕЗ ВОЗМОЖНОСТИ ВОССТАНОВЛЕНИЯ?\nИстория ('+(sc||0)+' смен, '+(fc||0)+' штрафов) исчезнет.'))return;
+  }
+  deleteUserConfirmed(uid,nm,hasData);
+}
+
+function archiveUserConfirmed(uid,nm){
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(t){t.arch=1;t.auth=0;t.arch_at=new Date().toISOString()}
+  toast('📦 «'+(nm||'?')+'» в архиве');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'archive_user',target:uid}))}catch(e){console.warn(e)}}
+  render();
+}
+
+function restoreUser(uid,nm){
+  if(!confirm('♻️ Вернуть «'+(nm||'?')+'» из архива?\nНе забудьте задать пароль для доступа.'))return;
+  const t=BARISTAS.find(function(x){return x.id===uid});
+  if(t){t.arch=0;t.arch_at=''}
+  toast('♻️ Восстановлен');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'unarchive_user',target:uid}))}catch(e){console.warn(e)}}
+  render();
+}
+
+// Arşivden kalıcı silme (zaten arşivde)
+function deleteUserPermanent(uid,nm,sc,fc){
+  const hasData=(sc||0)+(fc||0)>0;
+  const msg='🗑 Удалить «'+(nm||'?')+'» БЕЗ ВОЗВРАТА?\n'
+    +(hasData?'\n⚠️ Останется в логах действий, но смены/штрафы/выплаты исчезнут.\n':'')
+    +'\nПродолжить?';
+  if(!confirm(msg))return;
+  if(hasData){
+    if(!confirm('Точно? Это действие НЕОБРАТИМО.'))return;
+  }
+  deleteUserConfirmed(uid,nm,hasData);
+}
+
+function deleteUserConfirmed(uid,nm,hasData){
   for(let i=BARISTAS.length-1;i>=0;i--){if(BARISTAS[i].id===uid)BARISTAS.splice(i,1)}
-  toast('🗑 Пользователь удалён');
+  toast('🗑 Удалён навсегда');
   if(tg)tg.HapticFeedback?.notificationOccurred('warning');
   if(tg&&tg.sendData){
     try{tg.sendData(JSON.stringify({action:'delete_user',target:uid,confirm_with_data:hasData?1:0}))}catch(e){console.warn(e)}
