@@ -2391,6 +2391,64 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"🗑 Пароль для *{shown}* удалён. Доступ закрыт.",
                 parse_mode="Markdown")
 
+        # ─── Kullanıcı silme (owner-only) ───
+        # İki mod:
+        #   1) Veri yoksa → direkt sil
+        #   2) Veri varsa → confirm_with_data=1 flag'i şart
+        elif action == "delete_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может удалять пользователей.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            confirm_data = bool(data.get("confirm_with_data"))
+            if not target_id:
+                await update.message.reply_text("❌ Укажите пользователя.")
+                return
+            if target_id == user.id:
+                await update.message.reply_text("❌ Нельзя удалить самого себя.")
+                return
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            if (target_row["role"] or "") == "owner":
+                await update.message.reply_text("❌ Нельзя удалить владельца.")
+                return
+            shown = target_row["display_name"] or target_row["name"] or "?"
+            # İlişkili veri sayımı
+            sc = db.execute("SELECT COUNT(*) AS c FROM shifts WHERE user_id=?", (target_id,)).fetchone()["c"]
+            fc = db.execute("SELECT COUNT(*) AS c FROM fines WHERE user_id=?", (target_id,)).fetchone()["c"]
+            pc = db.execute("SELECT COUNT(*) AS c FROM payments WHERE user_id=?", (target_id,)).fetchone()["c"]
+            try:
+                tc = db.execute("SELECT COUNT(*) AS c FROM tips WHERE user_id=?", (target_id,)).fetchone()["c"]
+            except Exception:
+                tc = 0
+            has_data = (sc + fc + pc + tc) > 0
+            if has_data and not confirm_data:
+                await update.message.reply_text(
+                    f"⚠️ У *{shown}* есть данные:\n"
+                    f"• Смен: {sc}\n• Штрафов: {fc}\n• Выплат: {pc}\n• Чаевых: {tc}\n\n"
+                    f"Подтвердите удаление в приложении ещё раз.",
+                    parse_mode="Markdown")
+                return
+            # Tüm ilişkili verileri sil
+            db.execute("DELETE FROM shifts WHERE user_id=?", (target_id,))
+            db.execute("DELETE FROM fines WHERE user_id=?", (target_id,))
+            db.execute("DELETE FROM payments WHERE user_id=?", (target_id,))
+            try:
+                db.execute("DELETE FROM tips WHERE user_id=?", (target_id,))
+            except Exception:
+                pass
+            db.execute("DELETE FROM users WHERE user_id=?", (target_id,))
+            db.commit()
+            log_action(db, "delete_user", user.id, user.first_name, target_id,
+                       shown, {"shifts": sc, "fines": fc, "payments": pc, "tips": tc})
+            await update.message.reply_text(
+                f"🗑 Пользователь *{shown}* полностью удалён.\n"
+                f"_Удалено: смен {sc}, штрафов {fc}, выплат {pc}, чаевых {tc}._",
+                parse_mode="Markdown")
+
         # ─── Yeni: Display name ata ───
         elif action == "rename_user":
             db = get_db()

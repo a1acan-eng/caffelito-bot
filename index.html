@@ -25,6 +25,15 @@
 [data-theme="dark"] [style*="border:1px dashed #cbd5e1"],[data-theme="dark"] [style*="border:2px dashed #cbd5e1"]{border-color:var(--border2)!important}
 [data-theme="dark"] input,[data-theme="dark"] textarea,[data-theme="dark"] select{color-scheme:dark}
 [data-theme="dark"] input[type="number"],[data-theme="dark"] input[type="text"],[data-theme="dark"] input[type="time"],[data-theme="dark"] textarea{background:var(--card2);color:var(--t1);border-color:var(--border2)}
+/* ── Salary card: dark mode'da sarı kalsın ama yazılar siyah/koyu olsun ── */
+[data-theme="dark"] .sal-card{background:linear-gradient(135deg,#fde68a,#facc15 50%,#f59e0b);border:1px solid #ca8a04;box-shadow:0 4px 24px rgba(250,204,21,.35)}
+[data-theme="dark"] .sal-card::before{background:radial-gradient(circle,rgba(0,0,0,.08),transparent 70%)}
+[data-theme="dark"] .sal-amount,[data-theme="dark"] .sal-period,[data-theme="dark"] .sal-amount-sub{color:#1a1a1a!important;opacity:1}
+[data-theme="dark"] .sal-amount-sub{opacity:.75}
+[data-theme="dark"] .sal-stat{background:rgba(255,255,255,.92);border:1px solid rgba(0,0,0,.08)}
+[data-theme="dark"] .sal-stat-v{color:#1a1a1a!important}
+[data-theme="dark"] .sal-stat-l{color:#6b6356!important;opacity:1}
+[data-theme="dark"] .sal-stat-v.red{color:#dc2626!important}
 .card,.set-row,.opt,.hist,.alert,.btn-end{transition:background .3s ease,border-color .3s ease,color .3s ease}
 body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased;transition:background .3s ease,color .3s ease}
 .hdr{position:sticky;top:0;z-index:100;background:rgba(var(--bg-rgb),.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);transition:background .3s ease,border-color .3s ease}
@@ -2033,15 +2042,24 @@ function rMSettings(m,b){
       h+='<div class="empty-mini">Нет баристов.</div>';
     } else {
       BARISTAS.forEach(function(brs){
-        h+='<div class="set-row">'
-          +'<div class="set-row-l">'
-            +'<div class="set-row-t">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div>'
+        const isOwner=(brs.r==='owner');
+        const sc=brs.sc||0, fc=brs.fc||0;
+        const safeName=escH((brs.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"));
+        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px">'
+          +'<div class="set-row-l" style="min-width:130px">'
+            +'<div class="set-row-t">'+(isOwner?'👑 ':'')+escH(brs.n)+'</div>'
             +'<div class="set-row-s">'+(brs.u?'@'+escH(brs.u):'id: '+brs.id)+'</div>'
+            +(!isOwner&&(sc||fc)?'<div class="set-row-s" style="margin-top:2px;color:var(--t3)">📊 смен: '+sc+' · штрафов: '+fc+'</div>':'')
           +'</div>'
-          +'<input class="set-input wide" type="text" id="nm_'+brs.id+'" placeholder="имя" value="'+escH(brs.dn||brs.n||'')+'">'
-          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDisplayName('+brs.id+')">💾</button>'
+          +'<input class="set-input wide" type="text" id="nm_'+brs.id+'" placeholder="имя" value="'+escH(brs.dn||brs.n||'')+'" style="flex:1;min-width:120px">'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDisplayName('+brs.id+')" title="Сохранить имя">💾</button>'
+          +(isOwner?'':'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="deleteUser('+brs.id+',\''+safeName+'\','+sc+','+fc+')" title="Удалить пользователя">🗑</button>')
         +'</div>';
       });
+      h+='<div style="margin-top:14px;padding:10px;border:1px dashed #cbd5e1;border-radius:10px;background:#f8fafc;font-size:11px;color:var(--t2);line-height:1.5">'
+        +'💡 <b>🗑 Удалить</b> — убирает бариста из системы. Если у бариста есть смены/штрафы/выплаты, потребуется подтверждение.<br>'
+        +'Используйте, когда сотрудник уволился, либо случайный человек нажал /start.'
+      +'</div>';
     }
   } else if(settingsTab==='passwords'){
     h+='<div class="refresh-hint" style="margin-top:0">У каждого бариста — свой пароль. Без пароля никто не войдёт. Вы можете задать новый или удалить (закрыть доступ).</div>';
@@ -2153,6 +2171,30 @@ function clearBaristaPassword(uid,nm){
   toast('🗑 Пароль удалён');
   if(tg)tg.HapticFeedback?.notificationOccurred('warning');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'clear_password',target:uid}))}catch(e){console.warn(e)}}
+}
+
+// ── Kullanıcı silme (owner) — iki aşamalı ──
+function deleteUser(uid,nm,sc,fc){
+  const hasData=(sc||0)+(fc||0)>0;
+  // 1. aşama: net onay
+  if(!confirm('🗑 Удалить пользователя «'+(nm||'?')+'»?\n\nОн исчезнет из системы.\nЕсли это случайный человек — смело удаляйте.'))return;
+  // 2. aşama: veri varsa ekstra uyarı
+  if(hasData){
+    const msg='⚠️ ВНИМАНИЕ!\n\nУ «'+(nm||'?')+'» сохранены данные:\n'
+      +'• Смен: '+(sc||0)+'\n'
+      +'• Штрафов: '+(fc||0)+'\n\n'
+      +'Все эти записи будут удалены БЕЗВОЗВРАТНО.\n\n'
+      +'Точно продолжить?';
+    if(!confirm(msg))return;
+  }
+  // Optimistik: listeden çıkar
+  for(let i=BARISTAS.length-1;i>=0;i--){if(BARISTAS[i].id===uid)BARISTAS.splice(i,1)}
+  toast('🗑 Пользователь удалён');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
+  if(tg&&tg.sendData){
+    try{tg.sendData(JSON.stringify({action:'delete_user',target:uid,confirm_with_data:hasData?1:0}))}catch(e){console.warn(e)}
+  }
+  render();
 }
 
 // ── Tatlı kataloğu CRUD (owner) ──
