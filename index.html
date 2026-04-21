@@ -34,6 +34,19 @@
 [data-theme="dark"] .sal-stat-v{color:#1a1a1a!important}
 [data-theme="dark"] .sal-stat-l{color:#6b6356!important;opacity:1}
 [data-theme="dark"] .sal-stat-v.red{color:#dc2626!important}
+/* ── Уборка / Задачи: dark mode'da göz acıtmayan badge'ler ── */
+[data-theme="dark"] .badge-week{background:rgba(96,165,250,.15);color:#93c5fd}
+[data-theme="dark"] .badge-today-big{background:linear-gradient(135deg,#fde68a,#facc15);color:#1a1a1a;border:1px solid #ca8a04;font-weight:800}
+[data-theme="dark"] .badge-green{background:rgba(34,197,94,.18);color:#86efac}
+[data-theme="dark"] .card.today-card{background:rgba(245,212,75,.08);border:2px solid rgba(245,212,75,.4);box-shadow:0 4px 16px rgba(0,0,0,.3)}
+[data-theme="dark"] .card.today-card .card-title{color:#fde68a}
+[data-theme="dark"] .card-icon.today-icon{background:#facc15;color:#1a1a1a}
+[data-theme="dark"] .sec.sec-today{color:#fde68a}
+[data-theme="dark"] .pbar{background:var(--card3)}
+[data-theme="dark"] .task{color:var(--t1)}
+[data-theme="dark"] .task .task-d{color:var(--t2)}
+[data-theme="dark"] .task.done .task-t{color:var(--t3)}
+[data-theme="dark"] .chk{border-color:var(--border2)}
 .card,.set-row,.opt,.hist,.alert,.btn-end{transition:background .3s ease,border-color .3s ease,color .3s ease}
 body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased;transition:background .3s ease,color .3s ease}
 .hdr{position:sticky;top:0;z-index:100;background:rgba(var(--bg-rgb),.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);transition:background .3s ease,border-color .3s ease}
@@ -681,6 +694,7 @@ function toggleEdit(){edit=!edit;document.getElementById('eBtn').classList.toggl
 dT();
 
 const DAY_MAP={0:'ВС Воскресенье',1:'ПН Понедельник',2:'ВТ Вторник',3:'СР Среда',4:'ЧТ Четверг',5:'ПТ Пятница',6:'СБ Суббота'};
+let _lastViewKey='';
 function render(){
   const m=document.getElementById('main'),b=document.getElementById('bot');
   // Edit kalemini sadece owner görsün
@@ -691,6 +705,15 @@ function render(){
   else if(tab==='zadachi'||tab==='uborka'){sub?rTL(m,b):rTM(m,b)}
   else if(tab==='salary'){rM(m,b)}
   else rR(m,b);
+  // View/sub-view/tab değiştiyse sayfayı en üste kaydır —
+  // (aynı view'da küçük render'larda scroll'u bozma, sadece navigasyon değişimlerinde)
+  try{
+    const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'');
+    if(key!==_lastViewKey){
+      _lastViewKey=key;
+      scrollTopAll();
+    }
+  }catch(e){}
 }
 function allItems(){return Object.values(P).flatMap(c=>c.items)}
 
