@@ -2345,12 +2345,13 @@ function saveDessert(id){
 function deleteDessert(id){
   const d=DESSERT_CAT.find(function(x){return x.id===id});
   if(!d)return;
-  if(!confirm('Скрыть десерт «'+(d.label||id)+'»?\nОн больше не будет показан баристам.'))return;
-  d.active=0;
-  // DESSERT_LIST'ten de çıkar
+  if(!confirm('🗑 Удалить десерт «'+(d.label||id)+'» из каталога?\n\nЕго больше не будет ни у баристов, ни у вас.\nИстория старых смен сохранится.'))return;
+  // Hem owner katalog listesinden hem aktif listeden çıkar (artık tamamen silinmiş gibi)
+  for(let i=DESSERT_CAT.length-1;i>=0;i--){if(DESSERT_CAT[i].id===id)DESSERT_CAT.splice(i,1)}
   for(let i=DESSERT_LIST.length-1;i>=0;i--){if(DESSERT_LIST[i].id===id)DESSERT_LIST.splice(i,1)}
   persistDesserts();  // localStorage'a yaz
-  toast('🗑 Скрыт');
+  toast('🗑 Удалён');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_delete',id:id}))}catch(e){console.warn(e)}}
   render();
 }

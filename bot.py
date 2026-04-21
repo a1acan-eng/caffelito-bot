@@ -140,6 +140,12 @@ def get_db():
         updated_by INTEGER,
         updated_by_name TEXT,
         updated_at TEXT)""")
+    # Eski "soft-delete"li (active=0) tatlıları kataloğdan tamamen temizle —
+    # kullanıcı "скрыт" görmek istemiyor, tamamen silinsin.
+    try:
+        db.execute("DELETE FROM desserts_catalog WHERE COALESCE(active,1)=0")
+    except sqlite3.OperationalError:
+        pass
     # Tatlı kataloğu boşsa default seed
     cnt = db.execute("SELECT COUNT(*) as c FROM desserts_catalog").fetchone()
     if (cnt["c"] or 0) == 0:
@@ -306,6 +312,28 @@ async def require_auth(update, context):
 def has_owner(db):
     row = db.execute("SELECT COUNT(*) as c FROM users WHERE role='owner'").fetchone()
     return (row["c"] or 0) > 0
+
+
+async def send_reopen_button(update, context, db, user):
+    """
+    Mini App aksiyondan sonra otomatik kapanır (Telegram limitasyonu —
+    bot tarafında engellenemez). Bu helper TAM onaydan hemen sonra
+    "🚀 Продолжить в приложении" inline butonu gönderir.
+    Kullanıcı tek dokunuşla uygulamaya geri döner — /start basmaya gerek yok.
+    URL her seferinde taze build edilir, böylece state güncel olur.
+    """
+    try:
+        if not WEBAPP_URL:
+            return
+        if update.effective_chat.type != "private":
+            return
+        url = build_webapp_url(WEBAPP_URL, user.id, user.first_name, db)
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🚀 Продолжить в приложении", web_app=WebAppInfo(url=url))
+        ]])
+        await update.message.reply_text("👆 Одно касание — и вы снова в Caffelito", reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"send_reopen_button failed: {e}")
 
 
 async def refresh_webapp_keyboard(update, context, db, user, text="🔄 Приложение обновлено 👇"):
@@ -2360,11 +2388,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not row:
                 await update.message.reply_text("❌ Десерт не найден.")
                 return
-            db.execute("UPDATE desserts_catalog SET active=0, updated_at=? WHERE id=?",
-                       (datetime.now(TZ).isoformat(), did))
+            # Tam silme — kataloğdan kaldırılır. Eski vardiyalar JSON içinde
+            # snapshot tuttuğu için geçmiş veriler bozulmaz.
+            db.execute("DELETE FROM desserts_catalog WHERE id=?", (did,))
             db.commit()
-            log_action(db, "dessert_delete", user.id, user.first_name, None, None, {"id": did})
-            await update.message.reply_text(f"🗑 Десерт «{row['label']}» скрыт.")
+            log_action(db, "dessert_delete", user.id, user.first_name, None, None, {"id": did, "label": row["label"]})
+            await update.message.reply_text(f"🗑 Десерт «{row['label']}» удалён из каталога.")
             await refresh_webapp_keyboard(update, context, db, user,
                 "🔄 Каталог десертов обновлён 👇")
 
@@ -2556,6 +2585,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"❌ Ошибка: {e}")
         except:
             pass
+    finally:
+        # 🚀 Her aksiyondan sonra "tek tıkla geri dön" butonu — Telegram mini app'i
+        # sendData sonrası otomatik kapatır, bu tek çare.
+        try:
+            await send_reopen_button(update, context, db, user)
+        except Exception as _e:
+            logger.warning(f"reopen button error: {_e}")
 
 
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
