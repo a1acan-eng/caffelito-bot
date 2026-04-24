@@ -74,9 +74,15 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .clock-day{font-size:10px;color:var(--t2);font-weight:500}
 .icon-btn{width:34px;height:34px;border-radius:9px;border:1px solid var(--border2);background:var(--card);color:var(--t2);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s}
 .icon-btn.on{background:var(--yellow);border-color:var(--gold-border);color:var(--t1)}
-.tabs{display:flex;padding:0 16px;gap:2px}
-.tab{flex:1;padding:10px 4px 12px;text-align:center;font-size:11px;font-weight:700;color:var(--t3);border-bottom:2.5px solid transparent;cursor:pointer;transition:all .2s;letter-spacing:.3px}
-.tab.on{color:var(--gold2);border-bottom-color:var(--gold)}
+.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.78);-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);border-top:1px solid rgba(0,0,0,.06);z-index:40}
+.tab{flex:1;min-width:0;padding:9px 4px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t3);border-radius:999px;cursor:pointer;transition:all .25s cubic-bezier(.2,.7,.2,1);letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab.on{color:var(--t1);background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);transform:translateY(-1px)}
+.tab:active{transform:scale(.95)}
+@media (prefers-color-scheme: dark){
+  .tabs{background:rgba(28,28,30,.78);border-top-color:rgba(255,255,255,.08)}
+  .tab.on{background:rgba(255,255,255,.14);box-shadow:0 2px 10px rgba(0,0,0,.3),0 0 0 1px rgba(255,255,255,.08)}
+}
+body{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
 .wrap{padding:14px 18px}
 .alert{background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;font-size:12px;font-weight:500;line-height:1.5}
 .alert b{font-weight:700}
@@ -121,7 +127,7 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .pbar{height:5px;background:var(--card3);border-radius:3px;overflow:hidden}
 .pfill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--gold2),var(--yellow));transition:width .4s}.pfill.ok{background:linear-gradient(90deg,var(--green),#4ade80)}
 .back{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;font-size:12px;font-weight:600;border-radius:9px;background:var(--card);border:1px solid var(--border);color:var(--t2);cursor:pointer;margin-bottom:12px;font-family:inherit}
-.bottom{position:fixed;bottom:0;left:0;right:0;padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 25%);z-index:100}
+.bottom{position:fixed;bottom:calc(58px + env(safe-area-inset-bottom));left:0;right:0;padding:0 18px 10px;background:linear-gradient(transparent,var(--bg) 25%);z-index:50}
 .mbtn{width:100%;padding:15px;border-radius:var(--r);border:none;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;background:var(--yellow);color:var(--t1);box-shadow:0 4px 20px rgba(212,160,32,.2)}
 .mbtn:active{transform:scale(.98)}.mbtn:disabled{opacity:.2;cursor:not-allowed;box-shadow:none}
 .mbtn.grn{background:var(--green);color:#fff;box-shadow:0 4px 20px rgba(22,163,74,.2)}
@@ -357,10 +363,10 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
       <button class="icon-btn" id="eBtn" onclick="toggleEdit()">&#9998;</button>
     </div>
   </div>
-  <div class="tabs" id="tabsEl"></div>
 </div>
 <div class="wrap" id="main"></div>
 <div class="bottom" id="bot" style="display:none"></div>
+<div class="tabs" id="tabsEl"></div>
 <div class="toast" id="toast"></div>
 <div id="pass-overlay" style="display:none">
   <div class="pass-icon"><img src="nero.jpg" alt=""></div>
