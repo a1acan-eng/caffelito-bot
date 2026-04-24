@@ -565,11 +565,11 @@ def build_webapp_url(base_url, user_id, name, db):
         "hours": s["hours"], "bonus": s["bonus"], "hourly": s["hourly"],
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
         "tips": s["tips"], "tips_count": s["tips_count"],
-        "tips_list": s["tips_list"][-30:],
+        "tips_list": s["tips_list"][-10:],
         "period": s["period"], "shifts_count": s["shifts_count"],
         "fines_count": s["fines_count"],
-        "shifts": s["shifts"][-30:],
-        "fines_list": s["fines_list"][-30:],
+        "shifts": s["shifts"][-10:],
+        "fines_list": s["fines_list"][-10:],
         "active": s["active"],
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
@@ -594,7 +594,7 @@ def build_webapp_url(base_url, user_id, name, db):
             today_shifts = db.execute(
                 "SELECT id, start_time, end_time, hours, total, drinks "
                 "FROM shifts WHERE user_id=? AND start_time IS NOT NULL "
-                "ORDER BY id DESC LIMIT 10",
+                "ORDER BY id DESC LIMIT 3",
                 (b["user_id"],)).fetchall()
             real_name = (b["display_name"] or b["name"] or "?").strip()
             baristas.append({
@@ -616,9 +616,9 @@ def build_webapp_url(base_url, user_id, name, db):
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
-        # Son 50 log
+        # Son 15 log (URL boyut sınırı için)
         logs_rows = db.execute(
-            "SELECT * FROM logs ORDER BY id DESC LIMIT 50").fetchall()
+            "SELECT * FROM logs ORDER BY id DESC LIMIT 15").fetchall()
         logs = [dict(l) for l in logs_rows]
         parts.append(f"logs={quote(json.dumps(logs, ensure_ascii=False))}")
     return base_url + "#" + "&".join(parts)
@@ -1049,11 +1049,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         role_note = "\n\n👤 Вы — *бариста*. Чтобы стать владельцем — /setowner (если ещё нет владельца) или попросите владельца /grantowner."
 
-    await update.message.reply_text(
-        "☕ *CAFFELITO BOT*\n\n"
-        "Нажмите кнопку ниже чтобы открыть приложение 👇" + role_note,
-        reply_markup=reply_kb,
-        parse_mode="Markdown")
+    try:
+        await update.message.reply_text(
+            "☕ *CAFFELITO BOT*\n\n"
+            "Нажмите кнопку ниже чтобы открыть приложение 👇" + role_note,
+            reply_markup=reply_kb,
+            parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"start reply with keyboard failed: {e}")
+        await update.message.reply_text(
+            "☕ *CAFFELITO BOT*\n\n"
+            "⚠️ Слишком много данных для кнопки. Откройте приложение через меню (≡) внизу." + role_note,
+            parse_mode="Markdown")
 
 
 async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
