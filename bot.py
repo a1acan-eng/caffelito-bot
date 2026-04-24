@@ -574,6 +574,7 @@ def build_webapp_url(base_url, user_id, name, db):
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
     desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
+    ts = int(datetime.now(TZ).timestamp())
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -581,7 +582,7 @@ def build_webapp_url(base_url, user_id, name, db):
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
-        f"ts={int(datetime.now(TZ).timestamp())}",
+        f"ts={ts}",
     ]
     if role == "owner":
         rows = db.execute(
@@ -621,7 +622,8 @@ def build_webapp_url(base_url, user_id, name, db):
             "SELECT * FROM logs ORDER BY id DESC LIMIT 15").fetchall()
         logs = [dict(l) for l in logs_rows]
         parts.append(f"logs={quote(json.dumps(logs, ensure_ascii=False))}")
-    return base_url + "#" + "&".join(parts)
+    sep = "&" if "?" in base_url else "?"
+    return base_url + f"{sep}v={ts}" + "#" + "&".join(parts)
 
 # ═══════════════════════════════════════
 #  ПРОДУКЦИЯ СКЛАДА (Sipariş Listesi)
@@ -2772,8 +2774,38 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ═══════════════════════════════════════
 
+async def setup_commands(app):
+    """Telegram'da / yazınca çıkacak komut menüsü."""
+    await app.bot.set_my_commands([
+        BotCommand("start",      "🚀 Открыть приложение / обновить"),
+        BotCommand("menu",       "☕ Главное меню"),
+        BotCommand("app",        "📱 Открыть мини-приложение"),
+        BotCommand("zakaz",      "📋 Сделать заказ"),
+        BotCommand("zadachi",    "✅ Задачи"),
+        BotCommand("uborka",     "🧹 Уборка"),
+        BotCommand("okk",        "🔍 ОКК контроль"),
+        BotCommand("otchet",     "📊 Отчёт"),
+        BotCommand("zarplata",   "💰 Моя зарплата"),
+        BotCommand("baristalar", "👥 Список бариста"),
+        BotCommand("ceza",       "⚠️ Штраф"),
+        BotCommand("odendi",     "✅ Отметить оплату"),
+        BotCommand("tip",        "💵 Чаевые"),
+        BotCommand("logs",       "📜 Логи"),
+        BotCommand("whoami",     "🪪 Кто я"),
+        BotCommand("chatid",     "🆔 ID чата"),
+        BotCommand("login",      "🔑 Войти по паролю"),
+        BotCommand("setowner",   "👑 Стать владельцем"),
+        BotCommand("grantowner", "👑 Назначить владельца"),
+        BotCommand("addbarista", "➕ Добавить бариста"),
+        BotCommand("revoke",     "🚫 Отозвать доступ"),
+        BotCommand("setname",    "✏️ Изменить имя"),
+        BotCommand("setprice",   "💲 Изменить цену"),
+        BotCommand("setgroup",   "📢 Привязать группу"),
+    ])
+
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(setup_commands).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("zakaz", cmd_order))
     app.add_handler(CommandHandler("zadachi", cmd_gorev))

@@ -609,21 +609,9 @@ DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
 // Bot'tan gelen tatlı kataloğu — owner Settings'ten yönetir
 let DESSERT_CAT=[];
 try{DESSERT_CAT=JSON.parse(decodeURIComponent(HP.get('desserts')||'[]'))}catch(e){DESSERT_CAT=[]}
-// localStorage'dan owner'ın yaptığı SON değişiklikleri al ve birleştir
-// (Telegram sendData app'i kapattığı için bot'a kaydetme + bot'tan dönen URL arasında
-//  geçici uçurum oluşuyor — localStorage onu doldurur)
-try{
-  const localCat=JSON.parse(localStorage.getItem('cf_desserts_cat')||'[]');
-  const localTs=parseInt(localStorage.getItem('cf_desserts_cat_ts')||'0');
-  // 24 saatten yeni değişiklikler hâlâ geçerli sayılır (sonra DB'den gelen kazanır)
-  if(localCat.length && (Date.now()-localTs)<24*3600*1000){
-    const map={};
-    DESSERT_CAT.forEach(function(d){map[d.id]=d});
-    // Local override server (en taze sayılır)
-    localCat.forEach(function(d){map[d.id]=d});
-    DESSERT_CAT=Object.keys(map).map(function(k){return map[k]});
-  }
-}catch(e){}
+// Server (bot'tan gelen URL) artık her değişiklikten sonra taze gönderiliyor —
+// localStorage merge'i kaldırıldı çünkü silinen kalemleri geri getiriyordu.
+try{ localStorage.removeItem('cf_desserts_cat'); localStorage.removeItem('cf_desserts_cat_ts'); }catch(e){}
 // HTML kodunun beklediği format: {id,l,c,r}
 DESSERT_LIST=DESSERT_CAT.filter(function(d){return d.active!==0}).map(function(d){
   return {id:d.id,l:d.label,c:d.icon||'🍮',r:parseInt(d.price)||DESSERT_RATE,active:d.active!==0};
