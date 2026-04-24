@@ -565,11 +565,11 @@ def build_webapp_url(base_url, user_id, name, db):
         "hours": s["hours"], "bonus": s["bonus"], "hourly": s["hourly"],
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
         "tips": s["tips"], "tips_count": s["tips_count"],
-        "tips_list": s["tips_list"][-10:],
+        "tips_list": s["tips_list"][-5:],
         "period": s["period"], "shifts_count": s["shifts_count"],
         "fines_count": s["fines_count"],
-        "shifts": s["shifts"][-10:],
-        "fines_list": s["fines_list"][-10:],
+        "shifts": s["shifts"][-5:],
+        "fines_list": s["fines_list"][-5:],
         "active": s["active"],
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
@@ -592,16 +592,11 @@ def build_webapp_url(base_url, user_id, name, db):
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
-            today_shifts = db.execute(
-                "SELECT id, start_time, end_time, hours, total, drinks "
-                "FROM shifts WHERE user_id=? AND start_time IS NOT NULL "
-                "ORDER BY id DESC LIMIT 3",
-                (b["user_id"],)).fetchall()
             real_name = (b["display_name"] or b["name"] or "?").strip()
             baristas.append({
                 "id": b["user_id"], "n": real_name,
-                "rn": b["name"] or "",  # gerçek telegram adı
-                "dn": b["display_name"] or "",  # owner-atanmış
+                "rn": b["name"] or "",
+                "dn": b["display_name"] or "",
                 "u": b["username"] or "",
                 "r": b["role"], "h": bs["hours"], "b": bs["bonus"],
                 "hp": bs["hourly"], "f": bs["fines"],
@@ -609,19 +604,13 @@ def build_webapp_url(base_url, user_id, name, db):
                 "tips": bs["tips"],
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
-                "recent": [dict(r) for r in today_shifts],
-                # Şifre durumu (owner için): pw=1 → şifresi var, auth=1 → giriş yapmış
+                "recent": [],
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
                 "arch": 1 if (b["archived"] or 0) else 0,
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
-        # Son 15 log (URL boyut sınırı için)
-        logs_rows = db.execute(
-            "SELECT * FROM logs ORDER BY id DESC LIMIT 15").fetchall()
-        logs = [dict(l) for l in logs_rows]
-        parts.append(f"logs={quote(json.dumps(logs, ensure_ascii=False))}")
     sep = "&" if "?" in base_url else "?"
     return base_url + f"{sep}v={ts}" + "#" + "&".join(parts)
 
