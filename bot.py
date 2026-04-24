@@ -1823,13 +1823,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mini App'ten gelen veriyi işle ve gruba ilet"""
     logger.info("=== WEBAPP DATA RECEIVED ===")
-    # 🔒 Auth check (her zaman, per-barista şifre kontrolü)
     db = get_db()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
-    if not is_authorized(db, user.id):
+    # Aksiyonu önceden oku — login_passcode auth check'ten muaf
+    _pre_action = None
+    try:
+        _pre_action = (json.loads(update.effective_message.web_app_data.data).get("action")
+                       or json.loads(update.effective_message.web_app_data.data).get("a"))
+    except Exception:
+        pass
+    if _pre_action != "login_passcode" and not is_authorized(db, user.id):
         await update.message.reply_text(
-            "🔒 У вас нет доступа. Введите: `/login ВАШ_ПАРОЛЬ`",
+            "🔒 У вас нет доступа. Введите пароль в приложении или: `/login ВАШ_ПАРОЛЬ`",
             parse_mode="Markdown")
         return
 
