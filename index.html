@@ -386,17 +386,20 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
-// ─── Passcode auth (Wallet style) ───
+// ─── Passcode auth (Wallet style, client-side SHA-256) ───
 (function(){
   const HP2=new URLSearchParams((window.location.hash||'').replace(/^#/,''));
-  const isAuth=(HP2.get('auth')||'1')==='1';
-  const hasPw=(HP2.get('haspw')||'0')==='1';
-  if(isAuth)return;
+  const role=HP2.get('role')||'barista';
+  const pwh=(HP2.get('pwh')||'').trim();
+  // Owner her zaman içeri girer, passcode yok
+  if(role==='owner')return;
+  // Bu oturumda bir kez doğrulandıysa tekrar sorma
+  try{if(sessionStorage.getItem('cf_pass_ok')==='1')return;}catch(e){}
   const ov=document.getElementById('pass-overlay');
   const boxes=document.querySelectorAll('#passBoxes .pass-box');
   const msg=document.getElementById('passMsg');
   const hint=document.getElementById('passHint');
-  if(!hasPw){
+  if(!pwh){
     document.getElementById('passTitle').textContent='Нет пароля';
     msg.textContent='Попросите владельца назначить вам пароль';
     msg.classList.add('err');
@@ -412,24 +415,38 @@ const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
       b.textContent=i<buf.length?'•':'';
     });
   }
-  function submit(){
+  async function sha256hex(s){
+    const buf2=new TextEncoder().encode(s);
+    const hash=await crypto.subtle.digest('SHA-256',buf2);
+    return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  async function submit(){
     if(buf.length!==4)return;
     msg.textContent='⏳ Проверка...';
     msg.classList.remove('err');
     try{
-      if(window.Telegram?.WebApp?.sendData){
-        window.Telegram.WebApp.sendData(JSON.stringify({action:'login_passcode',passcode:buf}));
+      const h=await sha256hex(buf);
+      if(h===pwh){
+        try{sessionStorage.setItem('cf_pass_ok','1')}catch(e){}
+        msg.textContent='✅ Доступ открыт';
+        try{window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success')}catch(e){}
+        setTimeout(()=>{ov.style.display='none'},250);
+      }else{
+        msg.textContent='❌ Неверный пароль';
+        msg.classList.add('err');
+        try{window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('error')}catch(e){}
+        ov.classList.add('shake');setTimeout(()=>ov.classList.remove('shake'),400);
+        buf='';setTimeout(paint,150);
       }
     }catch(e){
-      msg.textContent='❌ Ошибка отправки';
+      msg.textContent='❌ Ошибка: '+e.message;
       msg.classList.add('err');
-      ov.classList.add('shake');setTimeout(()=>ov.classList.remove('shake'),400);
       buf='';paint();
     }
   }
   document.querySelectorAll('#pass-overlay .pad-key').forEach(btn=>{
     btn.addEventListener('click',()=>{
-      if(!hasPw)return;
+      if(!pwh)return;
       const k=btn.dataset.k;
       if(!k)return;
       if(k==='del'){buf=buf.slice(0,-1);paint();msg.textContent='';return;}
