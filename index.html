@@ -338,6 +338,83 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .tg-sw.on::after{left:18px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .wrap>*{animation:fadeIn .25s ease both}.wrap>*:nth-child(2){animation-delay:.03s}.wrap>*:nth-child(3){animation-delay:.06s}.wrap>*:nth-child(n+4){animation-delay:.09s}
+/* ─── Recipe Trainer (Тренажёр рецептов) ─── */
+.rt-card{background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border:1px solid var(--gold-border);border-radius:18px;padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:transform .15s;box-shadow:0 4px 14px rgba(212,160,32,.15)}
+.rt-card:active{transform:scale(.98)}
+.rt-card-ic{font-size:34px;flex-shrink:0}
+.rt-card-info{flex:1;min-width:0}
+.rt-card-t{font-size:15px;font-weight:800;color:#5a3e00}
+.rt-card-s{font-size:11px;font-weight:600;color:#8a6a1a;margin-top:2px}
+.rt-card-arr{color:#8a6a1a;font-size:20px}
+.rt-hero{background:linear-gradient(135deg,#fef3c7,#fde68a);border:1px solid var(--gold-border);border-radius:20px;padding:20px;margin-bottom:14px;text-align:center}
+.rt-hero-ic{font-size:42px;margin-bottom:6px}
+.rt-hero-t{font-size:18px;font-weight:800;color:#5a3e00}
+.rt-hero-s{font-size:12px;font-weight:600;color:#8a6a1a;margin-top:4px}
+.rt-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+.rt-stat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px 8px;text-align:center}
+.rt-stat-v{font-size:18px;font-weight:800;color:var(--t1)}
+.rt-stat-k{font-size:10px;font-weight:600;color:var(--t3);margin-top:2px;letter-spacing:.3px}
+.rt-levels{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rt-lvl{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;cursor:pointer;transition:transform .15s;position:relative}
+.rt-lvl:active{transform:scale(.97)}
+.rt-lvl.locked{opacity:.5;cursor:not-allowed}
+.rt-lvl.done{border-color:#10b981;background:#ecfdf5}
+.rt-lvl-n{font-size:10px;font-weight:700;color:var(--t3);letter-spacing:.5px}
+.rt-lvl-t{font-size:14px;font-weight:800;color:var(--t1);margin-top:4px}
+.rt-lvl-s{font-size:11px;color:var(--t3);margin-top:4px}
+.rt-lvl-badge{position:absolute;top:8px;right:8px;font-size:16px}
+.rt-q-bar{background:var(--card);border-radius:12px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;border:1px solid var(--border)}
+.rt-q-prog{flex:1;height:6px;background:var(--border2);border-radius:3px;overflow:hidden;margin:0 12px}
+.rt-q-fill{height:100%;background:linear-gradient(90deg,var(--gold),#f59e0b);border-radius:3px;transition:width .3s}
+.rt-q-hearts{font-size:14px;letter-spacing:2px}
+.rt-q-card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:20px;margin-bottom:10px}
+.rt-q-label{font-size:10.5px;font-weight:700;color:var(--gold2);letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
+.rt-q-text{font-size:16px;font-weight:700;line-height:1.4;color:var(--t1)}
+.rt-q-hint{font-size:12px;color:var(--t3);margin-top:6px}
+.rt-opts{display:flex;flex-direction:column;gap:8px}
+.rt-opt{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 16px;font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:all .15s;color:var(--t1)}
+.rt-opt:active{transform:scale(.98)}
+.rt-opt:hover{border-color:var(--gold)}
+.rt-opt.correct{background:#ecfdf5;border-color:#10b981;color:#065f46}
+.rt-opt.wrong{background:#fef2f2;border-color:#ef4444;color:#991b1b}
+.rt-opt.reveal{background:#ecfdf5;border-color:#10b981;color:#065f46;opacity:.7}
+.rt-opt.disabled{pointer-events:none}
+.rt-feedback{background:var(--card);border-radius:14px;padding:14px;margin-top:10px;text-align:center;font-size:13px;font-weight:700}
+.rt-feedback.ok{background:#ecfdf5;color:#065f46;border:1px solid #10b981}
+.rt-feedback.no{background:#fef2f2;color:#991b1b;border:1px solid #ef4444}
+.rt-next{margin-top:10px;width:100%;padding:14px;background:var(--gold);border:none;border-radius:14px;font-size:15px;font-weight:800;color:#fff;cursor:pointer;transition:transform .15s}
+.rt-next:active{transform:scale(.98)}
+.rt-result{text-align:center;padding:28px 20px;background:var(--card);border-radius:20px;border:1px solid var(--border);margin-bottom:12px}
+.rt-result-ic{font-size:56px;margin-bottom:8px}
+.rt-result-t{font-size:22px;font-weight:800;color:var(--t1)}
+.rt-result-s{font-size:14px;color:var(--t3);margin-top:4px}
+.rt-result-score{font-size:40px;font-weight:900;color:var(--gold2);margin-top:14px}
+.rt-an-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:8px}
+.rt-an-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px}
+.rt-an-name{font-size:14px;font-weight:800;color:var(--t1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-an-lvl{background:var(--yellow);color:#5a3e00;font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;border:1px solid var(--gold-border)}
+.rt-an-lvl.z{background:var(--card2);color:var(--t3);border-color:var(--border2)}
+.rt-an-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0}
+.rt-an-g{text-align:center}
+.rt-an-g-v{font-size:14px;font-weight:800;color:var(--t1)}
+.rt-an-g-k{font-size:9px;font-weight:700;color:var(--t3);letter-spacing:.3px;margin-top:1px}
+.rt-an-trend{display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.rt-an-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--card2);color:var(--t3);border:1px solid var(--border2)}
+.rt-an-chip.ok{background:#ecfdf5;color:#065f46;border-color:#10b98166}
+.rt-an-chip.no{background:#fef2f2;color:#991b1b;border-color:#ef444466}
+.rt-an-last{font-size:10px;color:var(--t3);margin-top:6px;font-weight:600}
+.rt-trend-ic{font-size:16px}
+.rt-trend-up{color:#10b981}.rt-trend-down{color:#ef4444}.rt-trend-flat{color:var(--t3)}
+@media (prefers-color-scheme: dark){
+  .rt-an-chip.ok{background:rgba(16,185,129,.15)}
+  .rt-an-chip.no{background:rgba(239,68,68,.15)}
+  .rt-lvl.done{background:rgba(16,185,129,.12)}
+  .rt-opt.correct{background:rgba(16,185,129,.15)}
+  .rt-opt.wrong{background:rgba(239,68,68,.15)}
+  .rt-opt.reveal{background:rgba(16,185,129,.1)}
+  .rt-feedback.ok{background:rgba(16,185,129,.15)}
+  .rt-feedback.no{background:rgba(239,68,68,.15)}
+}
 /* ─── Passcode (Wallet style) ─── */
 #pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
 #pass-overlay .pass-icon{width:96px;height:96px;margin-bottom:16px;border-radius:24px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff}
@@ -728,6 +805,8 @@ let SUMMARY={};
 let BARISTAS=[];
 try{SUMMARY=JSON.parse(decodeURIComponent(HP.get('summary')||'{}'))}catch(e){SUMMARY={}}
 try{BARISTAS=JSON.parse(decodeURIComponent(HP.get('baristas')||'[]'))}catch(e){BARISTAS=[]}
+let RT_SELF={};
+try{RT_SELF=JSON.parse(decodeURIComponent(HP.get('rt')||'{}'))}catch(e){RT_SELF={}}
 let LOGS=[];
 try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -819,7 +898,7 @@ function render(){
   if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
   if(tab==='shift'){rShift(m,b)}
   else if(tab==='order'){cat?rOC(m,b):rOCs(m,b)}
-  else if(tab==='zadachi'||tab==='uborka'){sub?rTL(m,b):rTM(m,b)}
+  else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub?rTL(m,b):rTM(m,b))}
   else if(tab==='salary'){rM(m,b)}
   else rR(m,b);
   // View/sub-view/tab değiştiyse sayfayı en üste kaydır —
@@ -930,6 +1009,9 @@ function rTM(m,b){
       restKeys.concat(lastKeys).forEach(function(k){h+=buildUCard(k,src,todayKey,false);});
     }
   } else {
+    // Tarif Eğitmeni oyun kartı — Задачи'nın en üstünde
+    const gs=getGameState();
+    h+='<div class="rt-card" onclick="sub=\'__game__\';render()"><div class="rt-card-ic">🎯</div><div class="rt-card-info"><div class="rt-card-t">Тренажёр рецептов</div><div class="rt-card-s">Ур. '+gs.level+' · '+gs.xp+' XP · серия '+gs.bestStreak+'</div></div><div class="rt-card-arr">›</div></div>';
     if(edit)h+='<div class="add-row"><input class="add-inp" id="ns" placeholder="Новый раздел"><button class="add-btn" onclick="aS()">+</button></div>';
     Object.keys(src).forEach(function(k){
       const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
@@ -2517,6 +2599,227 @@ function addNewDessert(){
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
   render();
+}
+
+/* ═══════════════════════════════════════
+   ТРЕНАЖЁР РЕЦЕПТОВ — Recipe Trainer Game
+   ═══════════════════════════════════════ */
+const RT_RECIPES=[
+  {n:'Эспрессо',i:[['Молотый кофе','18 г']]},
+  {n:'Американо 300мл',i:[['Эспрессо','36–40 г'],['Горячая вода','240 мл']]},
+  {n:'Американо 400мл',i:[['Эспрессо','36–40 г'],['Горячая вода','340 мл']]},
+  {n:'Капучино 300мл',i:[['Эспрессо','36–40 г'],['Молоко','180 мл']]},
+  {n:'Капучино 400мл',i:[['Эспрессо','36–40 г'],['Молоко','260 мл']]},
+  {n:'Латте 300мл',i:[['Эспрессо','20–21 г'],['Молоко','200 мл']]},
+  {n:'Латте 400мл',i:[['Эспрессо','36–40 г'],['Молоко','280 мл']]},
+  {n:'Флэт Уайт 200мл',i:[['Эспрессо','36–40 г'],['Молоко','130 мл']]},
+  {n:'Раф-кофе 400мл',i:[['Эспрессо','20–21 г'],['Сливки 11%','200 мл'],['Ванильный сироп','20 мл']]},
+  {n:'Caffelito coffee 400мл',i:[['Эспрессо','36–40 г'],['Какао-порошок','20 г'],['Молоко','210 мл']]},
+  {n:'Айс американо 300мл',i:[['Лёд','150 г'],['Эспрессо','36–40 г'],['Горячая вода','50 мл']]},
+  {n:'Айс капучино 300мл',i:[['Лёд','100 г'],['Молоко','100 мл'],['Эспрессо','36–40 г']]},
+  {n:'Айс латте 300мл',i:[['Лёд','100 г'],['Молоко','180 мл'],['Эспрессо','20–21 г']]},
+  {n:'Айс раф 400мл',i:[['Эспрессо','20–21 г'],['Сироп ванильный','50 мл'],['Сливки 11%','150 мл'],['Лёд','150 г']]},
+  {n:'Эспрессо тоник 400мл',i:[['Лёд','150 мл'],['Индиан Тоник','200 мл'],['Эспрессо','36–40 г'],['Лимон','20 г']]},
+  {n:'Бамбл 400мл',i:[['Карамельный сироп','20 мл'],['Лёд','150 г'],['Сок апельсиновый','200 мл'],['Эспрессо','36–40 г']]},
+  {n:'Фрапетто 400мл',i:[['Эспрессо','36–40 г'],['Мороженое пломбир','100 г'],['Молоко','150 мл'],['Сироп','40 мл'],['Лёд','100 г'],['Взбитые сливки','30 г']]},
+  {n:'Мохито б/а 400мл',i:[['Сегмент лайма','3 шт'],['Мята','10 г'],['Сахарный сироп','40 мл'],['Вода с газом','200 мл'],['Лёд','150 г']]},
+  {n:'Милк-шейк 400мл',i:[['Молоко','200 мл'],['Сироп','30 мл'],['Мороженое пломбир','150 г'],['Взбитые сливки','30 г']]},
+  {n:'Какао 300мл',i:[['Какао-порошок','20 г'],['Молоко','250 мл']]},
+  {n:'Горячий шоколад 200мл',i:[['Какао-порошок','40 г'],['Молоко','140 мл']]},
+  {n:'Чай с облепихой 400мл',i:[['Пюре облепиховое','60 г'],['Лимон','20 г'],['Мёд','20 г'],['Горячая вода','300 мл'],['Мята','1 г']]},
+  {n:'Чай ягодный 400мл',i:[['Пюре ягодное','60 г'],['Лимон','20 г'],['Мёд','20 г'],['Горячая вода','300 мл'],['Мята','1 г']]},
+  {n:'Чай с имбирём 400мл',i:[['Пюре имбирное','60 г'],['Лимон','20 г'],['Мёд','20 г'],['Горячая вода','300 мл'],['Мята','1 г']]},
+  {n:'Лимонад облепиховый 400мл',i:[['Лимон','20 г'],['Пюре облепихи','50 мл'],['Вода с газом','200 мл'],['Мята','1 г'],['Лёд','150 г']]},
+  {n:'Лимонад имбирный 400мл',i:[['Лимон','20 г'],['Пюре имбирное','50 мл'],['Вода с газом','200 мл'],['Мята','1 г'],['Лёд','150 г']]},
+  {n:'Лимонад ягодный 400мл',i:[['Лимон','20 г'],['Пюре ягодное','50 мл'],['Вода с газом','200 мл'],['Мята','1 г'],['Лёд','150 г']]},
+  {n:'Айс латте матча 400мл',i:[['Матча','2 г'],['Горячая вода','30 мл'],['Молоко','200 мл'],['Лёд','200 г'],['Сахарный сироп','20 мл']]},
+  {n:'Матча 400мл',i:[['Матча','2 г'],['Горячая вода','30 мл'],['Молоко','280 мл'],['Сахарный сироп','20 мл']]},
+  {n:'Дрип кофе 200мл',i:[['Дрип кофе','1 шт'],['Горячая вода','180 мл']]}
+];
+const RT_LEVELS=[
+  {n:1,t:'Новичок',d:'Простые вопросы',q:8,mix:{q1:1,q2:0,q3:0},pass:70},
+  {n:2,t:'Ученик',d:'Больше вариантов',q:10,mix:{q1:1,q2:0,q3:0},pass:75},
+  {n:3,t:'Бариста',d:'+ Что не входит?',q:12,mix:{q1:.6,q2:.4,q3:0},pass:75},
+  {n:4,t:'Мастер',d:'+ Провокации',q:14,mix:{q1:.45,q2:.3,q3:.25},pass:80},
+  {n:5,t:'Эксперт',d:'Максимальный хардкор',q:16,mix:{q1:.3,q2:.3,q3:.4},pass:85}
+];
+function rtPool(){const s=new Set();RT_RECIPES.forEach(r=>r.i.forEach(x=>s.add(x[0])));return Array.from(s);}
+function rtNotIn(r){const set=new Set(r.i.map(x=>x[0]));return rtPool().filter(x=>!set.has(x));}
+function rtAllValues(){const s=new Set();RT_RECIPES.forEach(r=>r.i.forEach(x=>s.add(x[1])));return Array.from(s);}
+function rtShuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a;}
+function rtPick(a){return a[Math.floor(Math.random()*a.length)];}
+function rtUnit(v){const m=/(г|мл|шт)$/.exec(v);return m?m[1]:'';}
+function rtFakeVals(correct,n){const u=rtUnit(correct),pool=rtAllValues().filter(v=>rtUnit(v)===u&&v!==correct);return rtShuffle(pool).slice(0,n);}
+function rtMakeQ(type){
+  const r=rtPick(RT_RECIPES);
+  if(type==='q1'||(!r.i.length)){
+    const ing=rtPick(r.i);
+    const opts=rtShuffle([ing[1],...rtFakeVals(ing[1],3)]);
+    return{type:'q1',text:'Сколько «'+ing[0]+'» в напитке «'+r.n+'»?',opts:opts,correct:ing[1],hint:r.n};
+  }
+  if(type==='q2'){
+    const ni=rtNotIn(r);if(!ni.length)return rtMakeQ('q1');
+    const correct=rtPick(ni);
+    const wrongs=rtShuffle(r.i.map(x=>x[0])).slice(0,3);
+    if(wrongs.length<3){const extra=rtShuffle(rtPool().filter(x=>x!==correct&&!wrongs.includes(x))).slice(0,3-wrongs.length);wrongs.push(...extra);}
+    return{type:'q2',text:'Что НЕ входит в «'+r.n+'»?',opts:rtShuffle([correct,...wrongs]),correct:correct,hint:'Внимательно подумай о составе'};
+  }
+  // q3 — trick
+  const ni=rtNotIn(r);if(!ni.length)return rtMakeQ('q1');
+  const fake=rtPick(ni);
+  const fakeAmounts=rtShuffle(rtAllValues().filter(v=>rtUnit(v)==='мл'||rtUnit(v)==='г')).slice(0,3);
+  return{type:'q3',text:'Сколько «'+fake+'» добавляется в «'+r.n+'»?',opts:rtShuffle(['не добавляется',...fakeAmounts]),correct:'не добавляется',hint:'Подумай, есть ли вообще этот ингредиент?'};
+}
+function rtBuildSession(level){
+  const cfg=RT_LEVELS[level-1],qs=[],mix=cfg.mix;
+  for(let i=0;i<cfg.q;i++){
+    const r=Math.random();let type='q1';
+    if(r<mix.q1)type='q1';else if(r<mix.q1+mix.q2)type='q2';else type='q3';
+    qs.push(rtMakeQ(type));
+  }
+  return qs;
+}
+const RT_KEY='cf_rt_v1';
+function getGameState(){
+  // Sunucudan gelen veri öncelikli (owner dashboard senkron olsun)
+  if(RT_SELF&&RT_SELF.level){
+    return{level:RT_SELF.level,maxLevel:RT_SELF.maxLevel||RT_SELF.level,xp:RT_SELF.xp||0,bestStreak:RT_SELF.bestStreak||0};
+  }
+  try{const s=JSON.parse(localStorage.getItem(RT_KEY));if(s&&s.level)return s;}catch(e){}
+  return{level:1,maxLevel:1,xp:0,bestStreak:0};
+}
+function saveGameState(s){try{localStorage.setItem(RT_KEY,JSON.stringify(s));}catch(e){}}
+let RT=null; // active session
+function rGame(m,b){
+  const gs=getGameState();
+  if(!RT){
+    let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
+    h+='<div class="rt-hero"><div class="rt-hero-ic">🎯</div><div class="rt-hero-t">Тренажёр рецептов</div><div class="rt-hero-s">Изучай рецептуру играя · Caffelito</div></div>';
+    h+='<div class="rt-stats"><div class="rt-stat"><div class="rt-stat-v">'+gs.level+'</div><div class="rt-stat-k">УРОВЕНЬ</div></div><div class="rt-stat"><div class="rt-stat-v">'+gs.xp+'</div><div class="rt-stat-k">XP</div></div><div class="rt-stat"><div class="rt-stat-v">'+gs.bestStreak+'</div><div class="rt-stat-k">СЕРИЯ</div></div></div>';
+    h+='<div class="sec">Уровни</div><div class="rt-levels">';
+    RT_LEVELS.forEach(function(L){
+      const locked=L.n>gs.maxLevel,done=L.n<gs.maxLevel;
+      const cls='rt-lvl'+(locked?' locked':'')+(done?' done':'');
+      const badge=locked?'🔒':(done?'✓':'▶');
+      h+='<div class="'+cls+'" onclick="'+(locked?'':'rtStart('+L.n+')')+'"><div class="rt-lvl-badge">'+badge+'</div><div class="rt-lvl-n">УР. '+L.n+'</div><div class="rt-lvl-t">'+L.t+'</div><div class="rt-lvl-s">'+L.d+' · '+L.q+' вопр.</div></div>';
+    });
+    h+='</div>';
+    // Owner için analytics bölümü
+    if(MY_ROLE==='owner'&&BARISTAS&&BARISTAS.length){
+      const trainees=BARISTAS.filter(x=>!x.arch);
+      h+='<div class="sec" style="margin-top:18px">📊 Аналитика бариста</div>';
+      h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Готовимся к проверке центра · 2 раза в месяц</div>';
+      if(!trainees.length){h+='<div class="card"><div class="card-left"><div class="card-info"><div class="card-title">Нет данных</div></div></div></div>';}
+      trainees.forEach(function(bar){
+        const r=bar.rt||{};
+        const acc=r.tq?Math.round((r.tc/r.tq)*100):0;
+        const rec=r.rec||[];
+        // Trend: son 3 session pass oranı
+        const last3=rec.slice(0,3),prev=rec.slice(3);
+        const p1=last3.filter(x=>x.p).length,p2=prev.filter(x=>x.p).length;
+        let trend='flat',ticon='→';
+        if(rec.length>=2){if(p1>p2){trend='up';ticon='↗'}else if(p1<p2){trend='down';ticon='↘'}}
+        const dim=(r.ts||0)===0;
+        const lvl=r.lvl||1,mx=r.max||1;
+        h+='<div class="rt-an-card'+(dim?' rt-an-inactive':'')+'">';
+        h+='<div class="rt-an-head"><div class="rt-an-name">'+esc(bar.n)+'</div><span class="rt-trend-ic rt-trend-'+trend+'">'+ticon+'</span><span class="rt-an-lvl'+(dim?' z':'')+'">Ур. '+lvl+'/'+Math.max(mx,lvl)+'</span></div>';
+        h+='<div class="rt-an-grid"><div class="rt-an-g"><div class="rt-an-g-v">'+acc+'%</div><div class="rt-an-g-k">ТОЧНОСТЬ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.ts||0)+'</div><div class="rt-an-g-k">СЕССИЙ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.bs||0)+'</div><div class="rt-an-g-k">СЕРИЯ</div></div></div>';
+        if(rec.length){
+          h+='<div class="rt-an-trend">';
+          rec.slice().reverse().forEach(function(s){
+            const ok=s.p===1;
+            h+='<span class="rt-an-chip '+(ok?'ok':'no')+'">У'+s.l+' '+s.c+'/'+s.t+'</span>';
+          });
+          h+='</div>';
+        }
+        // Last played
+        if(r.lp){
+          try{
+            const d=new Date(r.lp);
+            const now=new Date();
+            const diffMs=now-d;
+            const mins=Math.floor(diffMs/60000),hrs=Math.floor(mins/60),days=Math.floor(hrs/24);
+            let label='только что';
+            if(days>=1)label=days+' дн. назад';
+            else if(hrs>=1)label=hrs+' ч. назад';
+            else if(mins>=2)label=mins+' мин. назад';
+            h+='<div class="rt-an-last">Последний раз: '+label+'</div>';
+          }catch(e){}
+        } else {
+          h+='<div class="rt-an-last" style="color:#ef4444">⚠️ Ни разу не играл</div>';
+        }
+        h+='</div>';
+      });
+    }
+    h+='<div class="footer">XSYN</div>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
+  // active session
+  if(RT.done){
+    const pct=Math.round(RT.correct/RT.total*100);
+    const cfg=RT_LEVELS[RT.level-1];
+    const passed=pct>=cfg.pass;
+    let h='<div class="rt-result"><div class="rt-result-ic">'+(passed?'🏆':'💪')+'</div><div class="rt-result-t">'+(passed?'Уровень пройден!':'Попробуй ещё раз')+'</div><div class="rt-result-s">'+RT.correct+' из '+RT.total+' верно · '+pct+'%</div><div class="rt-result-score">+'+RT.xp+' XP</div></div>';
+    if(passed&&RT.level<RT_LEVELS.length){
+      h+='<button class="rt-next" onclick="rtStart('+(RT.level+1)+')">Следующий уровень ▸</button>';
+    }
+    h+='<button class="rt-next" style="background:var(--card);color:var(--t1);border:1px solid var(--border);margin-top:8px" onclick="rtStart('+RT.level+')">Повторить уровень</button>';
+    h+='<button class="rt-next" style="background:transparent;color:var(--t3);border:none;margin-top:4px" onclick="RT=null;render()">← К уровням</button>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
+  const q=RT.qs[RT.idx],cfg=RT_LEVELS[RT.level-1];
+  const pct=(RT.idx/RT.qs.length)*100;
+  let h='<div class="rt-q-bar"><span style="font-size:11px;font-weight:700;color:var(--t3)">УР.'+RT.level+'</span><div class="rt-q-prog"><div class="rt-q-fill" style="width:'+pct+'%"></div></div><span class="rt-q-hearts">'+'❤️'.repeat(RT.hearts)+'🤍'.repeat(3-RT.hearts)+'</span></div>';
+  h+='<div class="rt-q-card"><div class="rt-q-label">Вопрос '+(RT.idx+1)+' / '+RT.qs.length+'</div><div class="rt-q-text">'+q.text+'</div></div>';
+  h+='<div class="rt-opts">';
+  q.opts.forEach(function(opt,i){
+    let cls='rt-opt';
+    if(RT.answered){cls+=' disabled';if(opt===q.correct)cls+=RT.pickedIdx===i?' correct':' reveal';else if(RT.pickedIdx===i)cls+=' wrong';}
+    h+='<div class="'+cls+'" onclick="'+(RT.answered?'':'rtAnswer('+i+')')+'">'+opt+'</div>';
+  });
+  h+='</div>';
+  if(RT.answered){
+    const ok=q.opts[RT.pickedIdx]===q.correct;
+    h+='<div class="rt-feedback '+(ok?'ok':'no')+'">'+(ok?'✓ Верно! +10 XP':'✗ Правильный ответ: '+q.correct)+'</div>';
+    h+='<button class="rt-next" onclick="rtNext()">'+(RT.idx+1>=RT.qs.length?'Завершить':'Дальше')+' ▸</button>';
+  }
+  m.innerHTML=h;b.style.display='none';
+}
+function rtStart(level){
+  RT={level:level,qs:rtBuildSession(level),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:3,answered:false,pickedIdx:-1,done:false,total:0};
+  RT.total=RT.qs.length;
+  render();
+}
+function rtAnswer(i){
+  if(!RT||RT.answered)return;
+  RT.answered=true;RT.pickedIdx=i;
+  const q=RT.qs[RT.idx],ok=q.opts[i]===q.correct;
+  if(ok){RT.correct++;RT.xp+=10;RT.streak++;if(RT.streak>RT.maxStreak)RT.maxStreak=RT.streak;if(tg)tg.HapticFeedback?.notificationOccurred('success');}
+  else{RT.streak=0;RT.hearts=Math.max(0,RT.hearts-1);if(tg)tg.HapticFeedback?.notificationOccurred('error');}
+  render();
+}
+function rtNext(){
+  if(!RT)return;
+  if(RT.hearts<=0){RT.done=true;finishGame();render();return;}
+  RT.idx++;RT.answered=false;RT.pickedIdx=-1;
+  if(RT.idx>=RT.qs.length){RT.done=true;finishGame();}
+  render();
+}
+function finishGame(){
+  const gs=getGameState(),cfg=RT_LEVELS[RT.level-1],pct=Math.round(RT.correct/RT.total*100),passed=pct>=cfg.pass;
+  gs.xp=(gs.xp||0)+RT.xp;
+  if(RT.maxStreak>(gs.bestStreak||0))gs.bestStreak=RT.maxStreak;
+  if(passed&&RT.level>=gs.level){gs.level=Math.min(RT_LEVELS.length,RT.level+1);gs.maxLevel=Math.max(gs.maxLevel||1,gs.level);}
+  saveGameState(gs);
+  if(tg)tg.HapticFeedback?.notificationOccurred(passed?'success':'warning');
+  // Sunucuya gönder — owner analytics için kayıt
+  RT._sent=true;
+  if(tg&&tg.sendData){
+    try{tg.sendData(JSON.stringify({
+      action:'rt_session',level:RT.level,correct:RT.correct,total:RT.total,
+      xp:RT.xp,maxStreak:RT.maxStreak,passed:passed?1:0
+    }));}catch(e){console.warn('rt send fail',e);}
+  }
 }
 
 render();

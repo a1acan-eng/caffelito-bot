@@ -170,6 +170,27 @@ def get_db():
         target_id INTEGER, target_name TEXT,
         details TEXT,
         created_at TEXT)""")
+    # ─── Recipe Trainer (Тренажёр рецептов) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS rt_progress (
+        user_id INTEGER PRIMARY KEY,
+        level INTEGER DEFAULT 1,
+        max_level INTEGER DEFAULT 1,
+        xp INTEGER DEFAULT 0,
+        best_streak INTEGER DEFAULT 0,
+        total_sessions INTEGER DEFAULT 0,
+        total_correct INTEGER DEFAULT 0,
+        total_questions INTEGER DEFAULT 0,
+        last_played_at TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS rt_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        level INTEGER,
+        correct INTEGER,
+        total INTEGER,
+        xp_earned INTEGER,
+        max_streak INTEGER,
+        passed INTEGER,
+        played_at TEXT)""")
     db.commit()
     return db
 
@@ -580,6 +601,18 @@ def build_webapp_url(base_url, user_id, name, db):
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
     desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
+    # Recipe trainer — bu kullanıcının progress'ı
+    rt_row = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (user_id,)).fetchone()
+    rt_self = {
+        "level": rt_row["level"] if rt_row else 1,
+        "maxLevel": rt_row["max_level"] if rt_row else 1,
+        "xp": rt_row["xp"] if rt_row else 0,
+        "bestStreak": rt_row["best_streak"] if rt_row else 0,
+        "totalSessions": rt_row["total_sessions"] if rt_row else 0,
+        "totalCorrect": rt_row["total_correct"] if rt_row else 0,
+        "totalQuestions": rt_row["total_questions"] if rt_row else 0,
+        "lastPlayed": rt_row["last_played_at"] if rt_row else None,
+    }
     import hashlib
     ts = int(datetime.now(TZ).timestamp())
     pwd_row = db.execute("SELECT password FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -593,6 +626,7 @@ def build_webapp_url(base_url, user_id, name, db):
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
+        f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     if role == "owner":
@@ -604,6 +638,22 @@ def build_webapp_url(base_url, user_id, name, db):
         for b in rows:
             bs = calc_summary(db, b["user_id"])
             real_name = (b["display_name"] or b["name"] or "?").strip()
+            # Recipe trainer progress for this barista
+            rtp = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (b["user_id"],)).fetchone()
+            rt_sess = db.execute(
+                "SELECT level, correct, total, passed, played_at FROM rt_sessions "
+                "WHERE user_id=? ORDER BY id DESC LIMIT 5", (b["user_id"],)).fetchall()
+            rt_data = {
+                "lvl": rtp["level"] if rtp else 1,
+                "max": rtp["max_level"] if rtp else 1,
+                "xp": rtp["xp"] if rtp else 0,
+                "bs": rtp["best_streak"] if rtp else 0,
+                "ts": rtp["total_sessions"] if rtp else 0,
+                "tc": rtp["total_correct"] if rtp else 0,
+                "tq": rtp["total_questions"] if rtp else 0,
+                "lp": rtp["last_played_at"] if rtp else None,
+                "rec": [{"l":r["level"],"c":r["correct"],"t":r["total"],"p":r["passed"],"d":r["played_at"]} for r in rt_sess],
+            }
             baristas.append({
                 "id": b["user_id"], "n": real_name,
                 "rn": b["name"] or "",
@@ -616,6 +666,7 @@ def build_webapp_url(base_url, user_id, name, db):
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "recent": [],
+                "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
                 "arch": 1 if (b["archived"] or 0) else 0,
@@ -2584,6 +2635,43 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"✏️ Имя обновлено\n\n"
                 f"@{md_safe(uname)} → *{md_safe(shown)}*",
                 parse_mode="Markdown")
+
+        # ─── Recipe Trainer — session bitince progress kaydı ───
+        elif action == "rt_session":
+            db = get_db()
+            lvl = int(data.get("level", 1) or 1)
+            correct = int(data.get("correct", 0) or 0)
+            total = int(data.get("total", 0) or 0)
+            xp = int(data.get("xp", 0) or 0)
+            max_streak = int(data.get("maxStreak", 0) or 0)
+            passed = 1 if data.get("passed") else 0
+            now = datetime.now(TZ).isoformat()
+            db.execute("""INSERT INTO rt_sessions
+                (user_id, level, correct, total, xp_earned, max_streak, passed, played_at)
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (user.id, lvl, correct, total, xp, max_streak, passed, now))
+            row = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (user.id,)).fetchone()
+            if row:
+                new_level = row["level"]
+                new_max = row["max_level"]
+                if passed and lvl >= row["level"]:
+                    new_level = min(5, lvl + 1)
+                    new_max = max(row["max_level"], new_level)
+                db.execute("""UPDATE rt_progress SET
+                    level=?, max_level=?, xp=xp+?, best_streak=MAX(best_streak,?),
+                    total_sessions=total_sessions+1, total_correct=total_correct+?,
+                    total_questions=total_questions+?, last_played_at=?
+                    WHERE user_id=?""",
+                    (new_level, new_max, xp, max_streak, correct, total, now, user.id))
+            else:
+                new_level = min(5, lvl + 1) if passed else lvl
+                new_max = max(1, new_level if passed else lvl)
+                db.execute("""INSERT INTO rt_progress
+                    (user_id, level, max_level, xp, best_streak, total_sessions,
+                     total_correct, total_questions, last_played_at)
+                    VALUES (?,?,?,?,?,1,?,?,?)""",
+                    (user.id, new_level, new_max, xp, max_streak, correct, total, now))
+            db.commit()
 
     except Exception as e:
         logger.error(f"WEBAPP DATA ERROR: {e}")
