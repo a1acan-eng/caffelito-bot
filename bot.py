@@ -1932,11 +1932,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.error(f"GROUP FORWARD FAILED: {e}")
                     await update.message.reply_text(f"Ошибка: {e}")
 
-            try:
-                await start(update, context)
-            except Exception as e:
-                logger.warning(f"auto /start after order failed: {e}")
-
         elif action == "tasks":
             completed = data.get("completed", [])
             category = data.get("category", "")
@@ -2588,13 +2583,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(f"❌ Ошибка: {e}")
         except:
             pass
-    finally:
-        # 🚀 Her aksiyondan sonra "tek tıkla geri dön" butonu — Telegram mini app'i
-        # sendData sonrası otomatik kapatır, bu tek çare.
+    # Her aksiyondan sonra otomatik /start — karşılama mesajı + taze klavye butonu gönderir.
+    # (Telegram bot kullanıcı yerine /start yazamaz; aynı fonksiyonu kendisi çağırır.)
+    if update.effective_chat.type == "private":
         try:
-            await send_reopen_button(update, context, db, user)
+            await start(update, context)
         except Exception as _e:
-            logger.warning(f"reopen button error: {_e}")
+            logger.warning(f"auto /start failed: {_e}")
 
 
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
