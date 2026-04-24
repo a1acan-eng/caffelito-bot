@@ -575,10 +575,27 @@ def build_webapp_url(base_url, user_id, name, db):
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
     desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
     ts = int(datetime.now(TZ).timestamp())
+    auth_flag = 1 if is_authorized(db, user_id) else 0
+    pwd_row = db.execute("SELECT password FROM users WHERE user_id=?", (user_id,)).fetchone()
+    has_pwd = 1 if (pwd_row and (pwd_row["password"] or "").strip()) else 0
+    # Yetkisizse hassas veri gönderme — sadece passcode ekranı için minimum bilgi
+    if not auth_flag:
+        parts = [
+            f"uid={user_id}",
+            f"role={role}",
+            f"name={quote(show_name or '')}",
+            f"auth=0",
+            f"haspw={has_pwd}",
+            f"ts={ts}",
+        ]
+        sep = "&" if "?" in base_url else "?"
+        return base_url + f"{sep}v={ts}" + "#" + "&".join(parts)
     parts = [
         f"uid={user_id}",
         f"role={role}",
         f"name={quote(show_name or '')}",
+        f"auth={auth_flag}",
+        f"haspw={has_pwd}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
@@ -991,16 +1008,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.commit()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
-
-    # Auth check (per-barista password)
-    if not is_authorized(db, user.id):
-        await update.message.reply_text(
-            "🔒 *Caffelito — закрытый бот*\n\n"
-            "Этот бот только для сотрудников кофейни.\n"
-            "Введите ваш личный пароль (получите у владельца):\n\n"
-            "`/login ВАШ_ПАРОЛЬ`",
-            parse_mode="Markdown")
-        return
 
     # 👑 İlk yetkili kullanıcı otomatik owner olur
     auto_owner = False
@@ -1871,6 +1878,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         now = datetime.now(TZ)
 
         group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+
+        # ─── Passcode girişi (Wallet stili 4 hane) ───
+        if action == "login_passcode":
+            db = get_db()
+            upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+            given = (data.get("passcode") or "").strip()
+            # Owner her zaman yetkili
+            if get_role(db, user.id) == "owner":
+                db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
+                db.commit()
+                await update.message.reply_text("👑 Доступ открыт.")
+                return
+            row = db.execute("SELECT password FROM users WHERE user_id=?", (user.id,)).fetchone()
+            own_pwd = ((row["password"] if row else None) or "").strip()
+            ok = (own_pwd and given == own_pwd) or (ACCESS_CODE and given == ACCESS_CODE)
+            if ok:
+                db.execute("UPDATE users SET authorized=1 WHERE user_id=?", (user.id,))
+                db.commit()
+                log_action(db, "login_ok", user.id, user.first_name, user.id, user.first_name, {"via": "passcode"})
+                await update.message.reply_text("✅ Доступ открыт!")
+            else:
+                log_action(db, "login_fail", user.id, user.first_name, user.id, user.first_name, {"via": "passcode"})
+                await update.message.reply_text("❌ Неверный пароль.")
+            return
 
         if action == "order":
             from html import escape as esc_html

@@ -322,6 +322,23 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .tg-sw.on::after{left:18px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .wrap>*{animation:fadeIn .25s ease both}.wrap>*:nth-child(2){animation-delay:.03s}.wrap>*:nth-child(3){animation-delay:.06s}.wrap>*:nth-child(n+4){animation-delay:.09s}
+/* ─── Passcode (Wallet style) ─── */
+#pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+#pass-overlay .pass-icon{font-size:64px;margin-bottom:16px}
+#pass-overlay .pass-title{font-size:20px;font-weight:600;color:var(--t1);margin-bottom:32px;text-align:center}
+#pass-overlay .pass-boxes{display:flex;gap:14px;margin-bottom:24px}
+#pass-overlay .pass-box{width:54px;height:60px;border:2px solid var(--border);border-radius:14px;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--t1);transition:all .15s}
+#pass-overlay .pass-box.filled{background:var(--accent,#3b82f6);border-color:var(--accent,#3b82f6)}
+#pass-overlay .pass-box.active{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+#pass-overlay.shake .pass-boxes{animation:passShake .4s}
+@keyframes passShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-10px)}40%,80%{transform:translateX(10px)}}
+#pass-overlay .pass-pad{display:grid;grid-template-columns:repeat(3,72px);gap:14px;margin-top:8px}
+#pass-overlay .pad-key{width:72px;height:72px;border-radius:50%;border:none;background:var(--card);color:var(--t1);font-size:28px;font-weight:500;cursor:pointer;transition:all .1s;-webkit-tap-highlight-color:transparent}
+#pass-overlay .pad-key:active{background:var(--card2);transform:scale(.95)}
+#pass-overlay .pad-key.empty{background:transparent;cursor:default}
+#pass-overlay .pass-msg{margin-top:16px;font-size:13px;color:var(--t3);min-height:18px;text-align:center}
+#pass-overlay .pass-msg.err{color:#ef4444}
+#pass-overlay .pass-hint{margin-top:24px;font-size:12px;color:var(--t3);text-align:center;max-width:280px}
 </style>
 </head>
 <body>
@@ -344,8 +361,86 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 <div class="wrap" id="main"></div>
 <div class="bottom" id="bot" style="display:none"></div>
 <div class="toast" id="toast"></div>
+<div id="pass-overlay" style="display:none">
+  <div class="pass-icon">💎</div>
+  <div class="pass-title" id="passTitle">Введите пароль Caffelito</div>
+  <div class="pass-boxes" id="passBoxes">
+    <div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div>
+  </div>
+  <div class="pass-pad">
+    <button class="pad-key" data-k="1">1</button>
+    <button class="pad-key" data-k="2">2</button>
+    <button class="pad-key" data-k="3">3</button>
+    <button class="pad-key" data-k="4">4</button>
+    <button class="pad-key" data-k="5">5</button>
+    <button class="pad-key" data-k="6">6</button>
+    <button class="pad-key" data-k="7">7</button>
+    <button class="pad-key" data-k="8">8</button>
+    <button class="pad-key" data-k="9">9</button>
+    <button class="pad-key empty"></button>
+    <button class="pad-key" data-k="0">0</button>
+    <button class="pad-key" data-k="del">⌫</button>
+  </div>
+  <div class="pass-msg" id="passMsg"></div>
+  <div class="pass-hint" id="passHint">Пароль выдаёт владелец кофейни</div>
+</div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
+// ─── Passcode auth (Wallet style) ───
+(function(){
+  const HP2=new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+  const isAuth=(HP2.get('auth')||'1')==='1';
+  const hasPw=(HP2.get('haspw')||'0')==='1';
+  if(isAuth)return;
+  const ov=document.getElementById('pass-overlay');
+  const boxes=document.querySelectorAll('#passBoxes .pass-box');
+  const msg=document.getElementById('passMsg');
+  const hint=document.getElementById('passHint');
+  if(!hasPw){
+    document.getElementById('passTitle').textContent='Нет пароля';
+    msg.textContent='Попросите владельца назначить вам пароль';
+    msg.classList.add('err');
+    hint.textContent='';
+    document.querySelectorAll('#pass-overlay .pad-key').forEach(b=>b.style.opacity='.3');
+  }
+  ov.style.display='flex';
+  let buf='';
+  function paint(){
+    boxes.forEach((b,i)=>{
+      b.classList.toggle('filled',i<buf.length);
+      b.classList.toggle('active',i===buf.length);
+      b.textContent=i<buf.length?'•':'';
+    });
+  }
+  function submit(){
+    if(buf.length!==4)return;
+    msg.textContent='⏳ Проверка...';
+    msg.classList.remove('err');
+    try{
+      if(window.Telegram?.WebApp?.sendData){
+        window.Telegram.WebApp.sendData(JSON.stringify({action:'login_passcode',passcode:buf}));
+      }
+    }catch(e){
+      msg.textContent='❌ Ошибка отправки';
+      msg.classList.add('err');
+      ov.classList.add('shake');setTimeout(()=>ov.classList.remove('shake'),400);
+      buf='';paint();
+    }
+  }
+  document.querySelectorAll('#pass-overlay .pad-key').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      if(!hasPw)return;
+      const k=btn.dataset.k;
+      if(!k)return;
+      if(k==='del'){buf=buf.slice(0,-1);paint();msg.textContent='';return;}
+      if(buf.length>=4)return;
+      buf+=k;paint();
+      try{window.Telegram?.WebApp?.HapticFeedback?.selectionChanged?.()}catch(e){}
+      if(buf.length===4)setTimeout(submit,150);
+    });
+  });
+  paint();
+})();
 
 // ═══════════════════════════════════════
 //  ТЕМА (день/ночь) — клик на NERO логотип
