@@ -80,14 +80,17 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 }
 .tab{flex:1;min-width:0;padding:8px 2px 7px;text-align:center;font-size:9.5px;font-weight:700;color:var(--t3);border-radius:999px;cursor:pointer;transition:all .28s cubic-bezier(.2,.7,.2,1);letter-spacing:0;white-space:nowrap;overflow:hidden;display:flex;flex-direction:column;align-items:center;gap:2px;line-height:1}
 .tab-ic{font-size:17px;line-height:1;filter:grayscale(.15)}
-.tab.on{color:var(--gold2);background:var(--yellow);box-shadow:0 2px 8px rgba(212,160,32,.35),inset 0 0 0 1px var(--gold-border)}
+.tab.on{color:#5a3e00;background:var(--yellow);box-shadow:0 2px 8px rgba(212,160,32,.35),inset 0 0 0 1px var(--gold-border)}
 .tab.on .tab-ic{filter:none}
 .tab:active{transform:scale(.94)}
 @media (prefers-color-scheme: dark){
-  .tabs{background:rgba(40,40,42,.55);border-color:rgba(255,255,255,.12)}
+  .tabs{background:rgba(40,40,42,.6);border-color:rgba(255,255,255,.14)}
   @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
     .tabs{background:rgba(40,40,42,.94)}
   }
+  .tab{color:rgba(255,255,255,.72)}
+  .tab-ic{filter:none}
+  .tab.on{color:#3a2800;background:#ffd257;box-shadow:0 2px 10px rgba(255,200,60,.35),inset 0 0 0 1px rgba(255,210,87,.5)}
 }
 body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .wrap{padding:14px 18px}
