@@ -1934,6 +1934,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.error(f"GROUP FORWARD FAILED: {e}")
                     await update.message.reply_text(f"Ошибка: {e}")
 
+            try:
+                await start(update, context)
+            except Exception as e:
+                logger.warning(f"auto /start after order failed: {e}")
+
         elif action == "tasks":
             completed = data.get("completed", [])
             category = data.get("category", "")
