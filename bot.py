@@ -7,8 +7,9 @@ import json, os, logging, sqlite3
 from datetime import datetime, timezone, timedelta
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    WebAppInfo, BotCommand, KeyboardButton, ReplyKeyboardMarkup,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    WebAppInfo, BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
+    MenuButtonCommands, MenuButtonWebApp, MenuButtonDefault,
+    KeyboardButton, ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -1009,6 +1010,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
         auto_owner = True
 
+    # Role'e göre komut listesi + menu butonunu her start'ta senkronla
+    await sync_user_ui(context.bot, db, user.id)
+
     chat_type = update.effective_chat.type  # 'private', 'group', 'supergroup', 'channel'
 
     # Grupta web_app çalışmaz — DM'ye yönlendiren inline buton gönder
@@ -1089,6 +1093,7 @@ async def cmd_setowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
     db.commit()
+    await sync_user_ui(context.bot, db, user.id)
     await update.message.reply_text(
         f"👑 *Вы — владелец!*\n\n"
         f"Имя: {user.first_name}\n"
@@ -1156,6 +1161,7 @@ async def cmd_grantowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     db.execute("UPDATE users SET role='owner' WHERE user_id=?", (target["user_id"],))
     db.commit()
+    await sync_user_ui(context.bot, db, target["user_id"])
     await update.message.reply_text(f"👑 {target['name']} теперь *владелец*.", parse_mode="Markdown")
     try:
         await context.bot.send_message(
@@ -1184,6 +1190,7 @@ async def cmd_addbarista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     db.execute("UPDATE users SET role='barista' WHERE user_id=?", (target["user_id"],))
     db.commit()
+    await sync_user_ui(context.bot, db, target["user_id"])
     await update.message.reply_text(f"✅ {target['name']} — теперь бариста.")
 
 
@@ -1207,6 +1214,7 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     db.execute("UPDATE users SET role='barista' WHERE user_id=?", (target["user_id"],))
     db.commit()
+    await sync_user_ui(context.bot, db, target["user_id"])
     await update.message.reply_text(f"✅ {target['name']}: роль владельца снята.")
 
 
@@ -2237,6 +2245,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     return
             db.execute("UPDATE users SET role=? WHERE user_id=?", (new_role, target_id))
             db.commit()
+            await sync_user_ui(context.bot, db, target_id)
             log_action(db, "role_change", user.id, user.first_name, target_id,
                        display_name_for(db, target_id), {"new_role": new_role})
             await update.message.reply_text(f"✅ {display_name_for(db, target_id)}: роль → {new_role}")
@@ -2757,34 +2766,62 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ═══════════════════════════════════════
 
+BARISTA_COMMANDS = [
+    BotCommand("start",    "🚀 Открыть приложение"),
+    BotCommand("zarplata", "💰 Моя зарплата"),
+    BotCommand("whoami",   "🪪 Кто я"),
+]
+
+OWNER_COMMANDS = [
+    BotCommand("start",      "🚀 Открыть приложение / обновить"),
+    BotCommand("menu",       "☕ Главное меню"),
+    BotCommand("app",        "📱 Открыть мини-приложение"),
+    BotCommand("zakaz",      "📋 Сделать заказ"),
+    BotCommand("zadachi",    "✅ Задачи"),
+    BotCommand("uborka",     "🧹 Уборка"),
+    BotCommand("okk",        "🔍 ОКК контроль"),
+    BotCommand("otchet",     "📊 Отчёт"),
+    BotCommand("zarplata",   "💰 Моя зарплата"),
+    BotCommand("baristalar", "👥 Список бариста"),
+    BotCommand("ceza",       "⚠️ Штраф"),
+    BotCommand("odendi",     "✅ Отметить оплату"),
+    BotCommand("tip",        "💵 Чаевые"),
+    BotCommand("logs",       "📜 Логи"),
+    BotCommand("whoami",     "🪪 Кто я"),
+    BotCommand("chatid",     "🆔 ID чата"),
+    BotCommand("setowner",   "👑 Стать владельцем"),
+    BotCommand("grantowner", "👑 Назначить владельца"),
+    BotCommand("addbarista", "➕ Добавить бариста"),
+    BotCommand("revoke",     "🚫 Отозвать доступ"),
+    BotCommand("setname",    "✏️ Изменить имя"),
+    BotCommand("setprice",   "💲 Изменить цену"),
+    BotCommand("setgroup",   "📢 Привязать группу"),
+]
+
+
+async def sync_user_ui(bot, db, user_id: int):
+    """Her kullanıcının rolüne göre komut listesi + menu butonu ayarla.
+    Baristalar admin komutlarını hiç görmesin, menu butonu WebApp olsun."""
+    try:
+        row = db.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+        is_owner_user = row and row["role"] == "owner"
+        cmds = OWNER_COMMANDS if is_owner_user else BARISTA_COMMANDS
+        await bot.set_my_commands(cmds, scope=BotCommandScopeChat(chat_id=user_id))
+        # Menu butonu: owner için komut listesi, barista için direkt WebApp
+        if is_owner_user:
+            await bot.set_chat_menu_button(chat_id=user_id, menu_button=MenuButtonCommands())
+        elif WEBAPP_URL:
+            await bot.set_chat_menu_button(
+                chat_id=user_id,
+                menu_button=MenuButtonWebApp(text="☕ Caffelito", web_app=WebAppInfo(url=WEBAPP_URL))
+            )
+    except Exception as e:
+        logger.warning(f"sync_user_ui failed for {user_id}: {e}")
+
+
 async def setup_commands(app):
-    """Telegram'da / yazınca çıkacak komut menüsü."""
-    await app.bot.set_my_commands([
-        BotCommand("start",      "🚀 Открыть приложение / обновить"),
-        BotCommand("menu",       "☕ Главное меню"),
-        BotCommand("app",        "📱 Открыть мини-приложение"),
-        BotCommand("zakaz",      "📋 Сделать заказ"),
-        BotCommand("zadachi",    "✅ Задачи"),
-        BotCommand("uborka",     "🧹 Уборка"),
-        BotCommand("okk",        "🔍 ОКК контроль"),
-        BotCommand("otchet",     "📊 Отчёт"),
-        BotCommand("zarplata",   "💰 Моя зарплата"),
-        BotCommand("baristalar", "👥 Список бариста"),
-        BotCommand("ceza",       "⚠️ Штраф"),
-        BotCommand("odendi",     "✅ Отметить оплату"),
-        BotCommand("tip",        "💵 Чаевые"),
-        BotCommand("logs",       "📜 Логи"),
-        BotCommand("whoami",     "🪪 Кто я"),
-        BotCommand("chatid",     "🆔 ID чата"),
-        BotCommand("login",      "🔑 Войти по паролю"),
-        BotCommand("setowner",   "👑 Стать владельцем"),
-        BotCommand("grantowner", "👑 Назначить владельца"),
-        BotCommand("addbarista", "➕ Добавить бариста"),
-        BotCommand("revoke",     "🚫 Отозвать доступ"),
-        BotCommand("setname",    "✏️ Изменить имя"),
-        BotCommand("setprice",   "💲 Изменить цену"),
-        BotCommand("setgroup",   "📢 Привязать группу"),
-    ])
+    """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
+    await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
 
 
 def main():

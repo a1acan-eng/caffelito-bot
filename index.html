@@ -324,7 +324,8 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .wrap>*{animation:fadeIn .25s ease both}.wrap>*:nth-child(2){animation-delay:.03s}.wrap>*:nth-child(3){animation-delay:.06s}.wrap>*:nth-child(n+4){animation-delay:.09s}
 /* ─── Passcode (Wallet style) ─── */
 #pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
-#pass-overlay .pass-icon{font-size:64px;margin-bottom:16px}
+#pass-overlay .pass-icon{width:96px;height:96px;margin-bottom:16px;border-radius:24px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff}
+#pass-overlay .pass-icon img{width:100%;height:100%;object-fit:cover;display:block}
 #pass-overlay .pass-title{font-size:20px;font-weight:600;color:var(--t1);margin-bottom:32px;text-align:center}
 #pass-overlay .pass-boxes{display:flex;gap:14px;margin-bottom:24px}
 #pass-overlay .pass-box{width:54px;height:60px;border:2px solid var(--border);border-radius:14px;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--t1);transition:all .15s}
@@ -362,7 +363,7 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 <div class="bottom" id="bot" style="display:none"></div>
 <div class="toast" id="toast"></div>
 <div id="pass-overlay" style="display:none">
-  <div class="pass-icon">💎</div>
+  <div class="pass-icon"><img src="nero.jpg" alt=""></div>
   <div class="pass-title" id="passTitle">Введите пароль Caffelito</div>
   <div class="pass-boxes" id="passBoxes">
     <div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div>
