@@ -910,7 +910,19 @@ function render(){
       scrollTopAll();
     }
   }catch(e){}
+  // Alt sabit panel + tab bar yüksekliğine göre body padding'i ayarla — son ürünler kapanmasın
+  try{adjustBottomPadding()}catch(e){}
 }
+function adjustBottomPadding(){
+  const b=document.getElementById('bot');
+  const tabs=document.getElementById('tabsEl');
+  const tabH=tabs?tabs.offsetHeight:0;
+  const botVisible=b&&b.style.display!=='none';
+  const botH=botVisible?b.offsetHeight:0;
+  const total=tabH+(botVisible?botH+12:8)+16;
+  document.body.style.paddingBottom='calc('+total+'px + env(safe-area-inset-bottom))';
+}
+window.addEventListener('resize',function(){try{adjustBottomPadding()}catch(e){}});
 function allItems(){return Object.values(P).flatMap(c=>c.items)}
 
 function buildPreview(){
