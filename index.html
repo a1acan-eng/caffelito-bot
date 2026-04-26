@@ -411,6 +411,86 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .rt-timer-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums}
 .rt-q-bar{padding:8px 12px}
 .rt-bonus-fly{position:fixed;left:50%;top:40%;transform:translateX(-50%);font-size:24px;font-weight:900;color:#10b981;pointer-events:none;animation:fly .9s ease-out forwards;z-index:1000}
+.rt-exam-card{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);border:1px solid rgba(255,210,87,.4);border-radius:18px;padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:transform .15s;box-shadow:0 4px 18px rgba(15,52,96,.3),0 0 0 1px rgba(255,210,87,.1)}
+.rt-exam-card:active{transform:scale(.985)}
+.rt-exam-card.rt-exam-locked{opacity:.55;cursor:not-allowed;background:linear-gradient(135deg,#2a2a2a,#444)}
+.rt-exam-l{flex-shrink:0}
+.rt-exam-ic{font-size:38px;filter:drop-shadow(0 2px 6px rgba(255,210,87,.4))}
+.rt-exam-c{flex:1;min-width:0;color:#fff}
+.rt-exam-t{font-size:15px;font-weight:800;letter-spacing:.3px}
+.rt-exam-s{font-size:11px;font-weight:600;color:rgba(255,255,255,.78);margin-top:3px;line-height:1.4}
+.rt-exam-last{font-size:11px;font-weight:700;margin-top:5px;padding:2px 8px;border-radius:6px;display:inline-block}
+.rt-exam-last.ok{background:rgba(16,185,129,.25);color:#a7f3d0}
+.rt-exam-last.no{background:rgba(239,68,68,.25);color:#fca5a5}
+.rt-exam-lock{font-size:10px;font-weight:600;color:#fbbf24;margin-top:5px}
+.rt-exam-r{color:#ffd257;font-size:22px;font-weight:800}
+/* Sertifika ekranı */
+.rt-cert{background:linear-gradient(135deg,#fef9e7,#fdf2cf);border:3px double #b8860b;border-radius:14px;padding:24px 20px;text-align:center;margin-bottom:14px;position:relative;color:#3a2800}
+.rt-cert::before,.rt-cert::after{content:'❦';position:absolute;top:8px;font-size:18px;color:#b8860b;opacity:.6}
+.rt-cert::before{left:14px}.rt-cert::after{right:14px}
+.rt-cert-head{font-size:11px;font-weight:700;letter-spacing:3px;color:#8b6914;text-transform:uppercase}
+.rt-cert-title{font-size:22px;font-weight:900;margin-top:6px;font-family:Georgia,serif}
+.rt-cert-name{font-size:18px;font-weight:800;margin-top:14px;border-bottom:1px solid #b8860b;padding-bottom:8px;display:inline-block;font-family:Georgia,serif}
+.rt-cert-body{font-size:13px;font-weight:600;margin-top:14px;line-height:1.5}
+.rt-cert-score{font-size:36px;font-weight:900;color:#b8860b;margin-top:10px;font-family:Georgia,serif}
+.rt-cert-meta{display:flex;justify-content:space-between;margin-top:18px;padding-top:14px;border-top:1px dashed #b8860b;font-size:10px;font-weight:700;letter-spacing:.5px;color:#8b6914;text-transform:uppercase}
+.rt-cert-fail{background:linear-gradient(135deg,#fee2e2,#fecaca);border:3px double #991b1b;color:#7f1d1d}
+.rt-cert-fail::before,.rt-cert-fail::after{color:#991b1b}
+.rt-cert-fail .rt-cert-head{color:#991b1b}
+.rt-cert-fail .rt-cert-name{border-bottom-color:#991b1b}
+.rt-cert-fail .rt-cert-score{color:#991b1b}
+.rt-cert-fail .rt-cert-meta{border-top-color:#991b1b;color:#991b1b}
+/* ─── Resmi sınav fullscreen ─── */
+#exam-fs{position:fixed;inset:0;background:linear-gradient(135deg,#0a0e27 0%,#16213e 50%,#1a1a2e 100%);color:#fff;z-index:99999;overflow-y:auto;display:none;flex-direction:column;padding:20px 18px;padding-bottom:max(20px,env(safe-area-inset-bottom))}
+#exam-fs.on{display:flex}
+#exam-fs .ex-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid rgba(255,210,87,.2)}
+#exam-fs .ex-brand{font-size:11px;font-weight:800;letter-spacing:3px;color:#ffd257}
+#exam-fs .ex-byname{font-size:12px;color:rgba(255,255,255,.7)}
+#exam-fs .ex-locked{font-size:10px;color:#fca5a5;font-weight:700}
+#exam-fs .ex-pre{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 4px}
+#exam-fs .ex-pre-ic{font-size:72px;margin-bottom:14px;filter:drop-shadow(0 4px 14px rgba(255,210,87,.4))}
+#exam-fs .ex-pre-t{font-size:24px;font-weight:900;color:#ffd257;letter-spacing:.5px}
+#exam-fs .ex-pre-by{font-size:13px;color:rgba(255,255,255,.85);margin-top:6px}
+#exam-fs .ex-check-list{margin-top:24px;width:100%;max-width:420px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:14px;text-align:left}
+#exam-fs .ex-check{display:flex;align-items:center;gap:10px;padding:10px 4px;font-size:13px;font-weight:700;cursor:pointer}
+#exam-fs .ex-check input{margin:0;accent-color:#ffd257;width:18px;height:18px}
+#exam-fs .ex-check.ok{color:#a7f3d0}
+#exam-fs .ex-go{margin-top:16px;width:100%;max-width:420px;padding:18px;background:#ffd257;color:#3a2800;border:none;border-radius:16px;font-size:15px;font-weight:900;cursor:pointer;letter-spacing:.5px;text-transform:uppercase;transition:transform .15s}
+#exam-fs .ex-go:disabled{opacity:.4;cursor:not-allowed}
+#exam-fs .ex-go:active:not(:disabled){transform:scale(.98)}
+#exam-fs .ex-q-bar{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:10px 14px;margin-bottom:12px}
+#exam-fs .ex-q-bar .ex-q-prog{flex:1;height:6px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}
+#exam-fs .ex-q-bar .ex-q-fill{height:100%;background:linear-gradient(90deg,#ffd257,#f59e0b);border-radius:3px;transition:width .3s}
+#exam-fs .ex-q-bar .ex-q-idx{font-size:11px;font-weight:800;color:#ffd257;letter-spacing:.5px}
+#exam-fs .ex-card{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:18px;margin-bottom:12px}
+#exam-fs .ex-kind{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#ffd257;margin-bottom:6px}
+#exam-fs .ex-kind.photo{color:#60a5fa}
+#exam-fs .ex-text{font-size:17px;font-weight:700;line-height:1.4;color:#fff}
+#exam-fs .ex-photo-prompt{margin-top:10px;background:rgba(96,165,250,.15);border:1px dashed #60a5fa;border-radius:12px;padding:14px;font-size:12px;color:#dbeafe;line-height:1.45}
+#exam-fs .ex-opts{display:flex;flex-direction:column;gap:8px}
+#exam-fs .ex-opt{background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.18);color:#fff;border-radius:14px;padding:14px 16px;font-size:14px;font-weight:600;text-align:left;cursor:pointer;transition:all .15s}
+#exam-fs .ex-opt:active{transform:scale(.98)}
+#exam-fs .ex-opt.correct{background:rgba(16,185,129,.25);border-color:#10b981;color:#a7f3d0}
+#exam-fs .ex-opt.wrong{background:rgba(239,68,68,.25);border-color:#ef4444;color:#fca5a5}
+#exam-fs .ex-opt.reveal{background:rgba(16,185,129,.12);border-color:#10b98166;color:#a7f3d0;opacity:.7}
+#exam-fs .ex-opt.disabled{pointer-events:none}
+#exam-fs .ex-photo-btn{width:100%;padding:18px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;border:none;border-radius:14px;font-size:15px;font-weight:800;cursor:pointer;margin-top:10px;letter-spacing:.5px;display:flex;align-items:center;justify-content:center;gap:10px}
+#exam-fs .ex-photo-btn:active{transform:scale(.98)}
+#exam-fs .ex-fb{background:rgba(255,255,255,.08);border-radius:12px;padding:12px 14px;margin-top:10px;font-size:13px;font-weight:700;text-align:center}
+#exam-fs .ex-fb.ok{background:rgba(16,185,129,.2);color:#a7f3d0}
+#exam-fs .ex-fb.no{background:rgba(239,68,68,.2);color:#fca5a5}
+#exam-fs .ex-next{width:100%;padding:16px;background:#ffd257;color:#3a2800;border:none;border-radius:14px;font-size:15px;font-weight:900;cursor:pointer;margin-top:8px;letter-spacing:.5px}
+#exam-fs .ex-next:active{transform:scale(.98)}
+#exam-fs .ex-timer-bar{height:4px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;margin-top:10px}
+#exam-fs .ex-timer-fill{height:100%;background:#ffd257;transition:width .25s linear,background .25s}
+#exam-fs .ex-timer-fill.warn{background:#f59e0b}
+#exam-fs .ex-timer-fill.danger{background:#ef4444}
+#exam-fs .ex-timer-num{font-size:24px;font-weight:900;text-align:center;margin-top:4px;font-variant-numeric:tabular-nums;color:#ffd257}
+#exam-fs .ex-timer-num.warn{color:#f59e0b}
+#exam-fs .ex-timer-num.danger{color:#ef4444;animation:pulse 1s ease infinite}
+#exam-fs .ex-photo-input{display:none}
+#exam-fs .ex-photo-preview{margin-top:10px;border-radius:12px;overflow:hidden;border:2px solid #10b981}
+#exam-fs .ex-photo-preview img{width:100%;display:block}
 @keyframes fly{0%{opacity:0;transform:translate(-50%,0) scale(.6)}30%{opacity:1;transform:translate(-50%,-10px) scale(1.15)}100%{opacity:0;transform:translate(-50%,-50px) scale(1)}}
 .rt-an-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:8px}
 .rt-an-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px}
@@ -478,6 +558,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 <div class="bottom" id="bot" style="display:none"></div>
 <div class="tabs" id="tabsEl"></div>
 <div class="toast" id="toast"></div>
+<div id="exam-fs"></div>
 <div id="pass-overlay" style="display:none">
   <div class="pass-icon"><img src="nero.jpg" alt=""></div>
   <div class="pass-title" id="passTitle">Введите пароль Caffelito</div>
@@ -830,6 +911,8 @@ try{SUMMARY=JSON.parse(decodeURIComponent(HP.get('summary')||'{}'))}catch(e){SUM
 try{BARISTAS=JSON.parse(decodeURIComponent(HP.get('baristas')||'[]'))}catch(e){BARISTAS=[]}
 let RT_SELF={};
 try{RT_SELF=JSON.parse(decodeURIComponent(HP.get('rt')||'{}'))}catch(e){RT_SELF={}}
+let PENDING_EXAM=null;
+try{const _ex=decodeURIComponent(HP.get('exam')||'');if(_ex&&_ex!=='null'&&_ex!=='""')PENDING_EXAM=JSON.parse(_ex);}catch(e){PENDING_EXAM=null}
 let LOGS=[];
 try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -1342,7 +1425,7 @@ function rMMain(m,b){
       +'<div class="own-title">👑 Бухгалтерия</div>'
       +'<div class="own-grid">'
         +'<div class="own-btn" onclick="mView=\'activeBaristas\';render()"><div class="own-btn-i">🟢</div><div class="own-btn-t">В смене</div>'+(activeCount?'<div class="own-btn-s">'+activeCount+'</div>':'')+'</div>'
-        +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+(BARISTAS.length?'<div class="own-btn-s">'+BARISTAS.length+'</div>':'')+'</div>'
+        +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+((BARISTAS.filter(function(x){return !x.arch}).length)?'<div class="own-btn-s">'+BARISTAS.filter(function(x){return !x.arch}).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
         +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
@@ -2762,9 +2845,34 @@ function rGame(m,b){
       h+='<div class="'+cls+'" onclick="'+(locked?'':'rtStart('+L.n+')')+'"><div class="rt-lvl-badge">'+badge+'</div><div class="rt-lvl-n">УР. '+L.n+'</div><div class="rt-lvl-t">'+L.t+'</div><div class="rt-lvl-s">'+L.d+' · '+L.q+' вопр.</div></div>';
     });
     h+='</div>';
+    // Formal Exam (Зачёт) — Resmi sınav
+    const lastExam=getLastExam();
+    const canExamToday=!lastExam||(new Date(lastExam.date).toDateString()!==new Date().toDateString());
+    h+='<div class="sec" style="margin-top:18px">🎓 Официальный зачёт</div>';
+    h+='<div class="rt-exam-card '+(canExamToday?'':'rt-exam-locked')+'" onclick="'+(canExamToday?'rtStartExam()':'')+'">';
+    h+='<div class="rt-exam-l"><div class="rt-exam-ic">🏅</div></div>';
+    h+='<div class="rt-exam-c">';
+    h+='<div class="rt-exam-t">Зачётная сессия</div>';
+    h+='<div class="rt-exam-s">30 вопросов · 15 сек · 90% для зачёта<br>Подготовка к проверке центра</div>';
+    if(lastExam){
+      const dt=new Date(lastExam.date);
+      const dStr=dt.getDate()+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+dt.getFullYear();
+      const passed=lastExam.passed;
+      h+='<div class="rt-exam-last '+(passed?'ok':'no')+'">'+(passed?'🏆 Сдан':'❌ Провалено')+' · '+lastExam.score+'% · '+dStr+'</div>';
+    }
+    if(!canExamToday)h+='<div class="rt-exam-lock">⏳ Уже сдавали сегодня. Возвращайтесь завтра.</div>';
+    h+='</div>';
+    h+='<div class="rt-exam-r">'+(canExamToday?'▶':'🔒')+'</div>';
+    h+='</div>';
     // Owner için analytics bölümü
     if(MY_ROLE==='owner'&&BARISTAS&&BARISTAS.length){
       const trainees=BARISTAS.filter(x=>!x.arch);
+      h+='<div class="sec" style="margin-top:18px">🎯 Назначить зачёт</div>';
+      h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Удалённый запуск экзамена · бариста получит уведомление</div>';
+      trainees.forEach(function(bar){
+        if(bar.id===MY_UID)return;
+        h+='<div class="card" onclick="examInvite('+bar.id+',\''+esc(bar.n)+'\')"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">'+escH(bar.n)+'</div><div class="card-sub">Назначить экзамен</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+      });
       h+='<div class="sec" style="margin-top:18px">📊 Аналитика бариста</div>';
       h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Готовимся к проверке центра · 2 раза в месяц</div>';
       if(!trainees.length){h+='<div class="card"><div class="card-left"><div class="card-info"><div class="card-title">Нет данных</div></div></div></div>';}
@@ -2789,6 +2897,13 @@ function rGame(m,b){
             h+='<span class="rt-an-chip '+(ok?'ok':'no')+'">У'+s.l+' '+s.c+'/'+s.t+'</span>';
           });
           h+='</div>';
+        }
+        // Son sınav sonucu
+        if(r.exam){
+          const ex=r.exam;
+          let edStr='';
+          try{const d=new Date(ex.d);edStr=d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')}catch(e){}
+          h+='<div class="rt-an-trend" style="margin-top:6px"><span class="rt-an-chip '+(ex.p?'ok':'no')+'" style="font-size:11px;padding:3px 9px">🎓 Зачёт: '+ex.s+'%'+(edStr?' · '+edStr:'')+'</span></div>';
         }
         // Last played
         if(r.lp){
@@ -2815,24 +2930,53 @@ function rGame(m,b){
   // active session
   if(RT.ready){
     // "Готов?" intro ekranı
-    const cfg=RT_LEVELS[RT.level-1];
-    let h='<div class="rt-ready">';
-    h+='<div class="rt-ready-ic">☕</div>';
-    h+='<div class="rt-ready-t">Готов?</div>';
-    h+='<div class="rt-ready-s">Уровень '+RT.level+' · «'+cfg.t+'»<br>'+cfg.q+' вопросов · нужно '+cfg.pass+'% для прохождения</div>';
-    h+='<div class="rt-ready-rules">';
-    h+='<div class="rt-rule"><div class="rt-rule-ic">⏱</div>30 секунд на вопрос — или потеря сердца</div>';
-    h+='<div class="rt-rule"><div class="rt-rule-ic">⚡️</div>Чем быстрее — тем больше XP</div>';
-    h+='<div class="rt-rule"><div class="rt-rule-ic">❤️</div>3 жизни — больше нельзя ошибаться</div>';
-    if(RT.level>=4)h+='<div class="rt-rule"><div class="rt-rule-ic">🎭</div>Будут вопросы-ловушки!</div>';
-    h+='</div>';
-    h+='<button class="rt-go-btn" onclick="rtBegin()">Начать ▸</button>';
-    h+='<button class="rt-cancel" onclick="rtAbort()">Отмена</button>';
+    let h='<div class="rt-ready"'+(RT.mode==='exam'?' style="background:linear-gradient(135deg,#1a1a2e,#0f3460);color:#fff"':'')+'>';
+    if(RT.mode==='exam'){
+      h+='<div class="rt-ready-ic">🏅</div>';
+      h+='<div class="rt-ready-t" style="color:#ffd257">Зачётная сессия</div>';
+      h+='<div class="rt-ready-s" style="color:rgba(255,255,255,.85)">Подготовка к проверке центра<br>1 попытка в день · результат уйдёт владельцу</div>';
+      h+='<div class="rt-ready-rules" style="background:rgba(255,255,255,.08);color:#fff">';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">📋</div>30 вопросов · все типы (вкл. провокации)</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">⏱</div>15 секунд на вопрос — без права на потерю</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">🎯</div>Нужно 90% правильных для зачёта</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">🏆</div>При успехе — сертификат на день</div>';
+      h+='</div>';
+      h+='<button class="rt-go-btn" style="background:#ffd257;color:#3a2800" onclick="rtBegin()">Я готов · Начать зачёт ▸</button>';
+      h+='<button class="rt-cancel" style="color:rgba(255,255,255,.7)" onclick="rtAbort()">Не сейчас</button>';
+    } else {
+      const cfg=RT_LEVELS[RT.level-1];
+      h+='<div class="rt-ready-ic">☕</div>';
+      h+='<div class="rt-ready-t">Готов?</div>';
+      h+='<div class="rt-ready-s">Уровень '+RT.level+' · «'+cfg.t+'»<br>'+cfg.q+' вопросов · нужно '+cfg.pass+'% для прохождения</div>';
+      h+='<div class="rt-ready-rules">';
+      h+='<div class="rt-rule"><div class="rt-rule-ic">⏱</div>10 секунд на вопрос — или потеря сердца</div>';
+      h+='<div class="rt-rule"><div class="rt-rule-ic">⚡️</div>Чем быстрее — тем больше XP</div>';
+      h+='<div class="rt-rule"><div class="rt-rule-ic">❤️</div>3 жизни — больше нельзя ошибаться</div>';
+      if(RT.level>=4)h+='<div class="rt-rule"><div class="rt-rule-ic">🎭</div>Будут вопросы-ловушки!</div>';
+      h+='</div>';
+      h+='<button class="rt-go-btn" onclick="rtBegin()">Начать ▸</button>';
+      h+='<button class="rt-cancel" onclick="rtAbort()">Отмена</button>';
+    }
     h+='</div>';
     m.innerHTML=h;b.style.display='none';return;
   }
   if(RT.done){
     const pct=Math.round(RT.correct/RT.total*100);
+    if(RT.mode==='exam'){
+      const passed=pct>=(RT.examPass||90);
+      const today=new Date(),dStr=today.getDate()+'.'+String(today.getMonth()+1).padStart(2,'0')+'.'+today.getFullYear();
+      let h='<div class="rt-cert '+(passed?'':'rt-cert-fail')+'">';
+      h+='<div class="rt-cert-head">'+(passed?'CAFFELITO · Сертификат':'CAFFELITO · Зачёт не пройден')+'</div>';
+      h+='<div class="rt-cert-title">'+(passed?'🏆 Знаток рецептуры':'❌ Не сдан')+'</div>';
+      h+='<div class="rt-cert-name">'+escH(MY_NAME||'Бариста')+'</div>';
+      h+='<div class="rt-cert-body">'+(passed?'успешно прошёл(ла) зачётную сессию по знанию рецептуры заведения':'к сожалению, не достигнут необходимый уровень')+'</div>';
+      h+='<div class="rt-cert-score">'+pct+'%</div>';
+      h+='<div class="rt-cert-meta"><span>Дата: '+dStr+'</span><span>'+RT.correct+' / '+RT.total+'</span></div>';
+      h+='</div>';
+      if(!passed)h+='<button class="rt-next" onclick="RT=null;render()" style="background:var(--card);color:var(--t1);border:1px solid var(--border)">Тренироваться</button>';
+      h+='<button class="rt-next" style="background:transparent;color:var(--t3);border:none;margin-top:4px" onclick="RT=null;render()">← К тренажёру</button>';
+      m.innerHTML=h;b.style.display='none';return;
+    }
     const cfg=RT_LEVELS[RT.level-1];
     const passed=pct>=cfg.pass;
     let h='<div class="rt-result"><div class="rt-result-ic">'+(passed?'🏆':'💪')+'</div><div class="rt-result-t">'+(passed?'Уровень пройден!':'Попробуй ещё раз')+'</div><div class="rt-result-s">'+RT.correct+' из '+RT.total+' верно · '+pct+'% · ⚡️ '+RT.timeBonus+' XP за скорость</div><div class="rt-result-score">+'+RT.xp+' XP</div></div>';
@@ -2878,18 +3022,18 @@ let RT_TIMER=null;
 function rtClearTimer(){if(RT_TIMER){clearInterval(RT_TIMER);RT_TIMER=null}}
 function rtUpdateTimerDom(){
   const ring=document.querySelector('.rt-timer-ring');if(!ring||!RT)return;
-  const tLeft=Math.max(0,RT.timeLeft||0),tMax=RT.timePerQ||30;
+  const tLeft=Math.max(0,RT.timeLeft||0),tMax=RT.timePerQ||10;
   const ringR=15,ringC=2*Math.PI*ringR;
   const dash=ringC*(1-tLeft/tMax);
-  ring.classList.toggle('warn',tLeft<=10&&tLeft>5);
-  ring.classList.toggle('danger',tLeft<=5);
+  ring.classList.toggle('warn',tLeft<=4&&tLeft>2);
+  ring.classList.toggle('danger',tLeft<=2);
   const fg=ring.querySelector('.fg');if(fg)fg.setAttribute('stroke-dashoffset',dash);
   const num=ring.querySelector('.rt-timer-num');if(num)num.textContent=tLeft;
 }
 function rtStartTimer(){
   rtClearTimer();
   if(!RT)return;
-  RT.timePerQ=30;RT.timeLeft=30;RT.qStartedAt=Date.now();
+  RT.timePerQ=10;RT.timeLeft=10;RT.qStartedAt=Date.now();
   RT_TIMER=setInterval(function(){
     if(!RT||RT.answered||RT.done){rtClearTimer();return}
     RT.timeLeft=Math.max(0,RT.timePerQ-Math.floor((Date.now()-RT.qStartedAt)/1000));
@@ -2907,14 +3051,50 @@ function rtTimeout(){
 }
 function rtStart(level){
   rtClearTimer();
-  RT={level:level,qs:rtBuildSession(level),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:3,answered:false,pickedIdx:-1,done:false,total:0,ready:true,timeBonus:0,lastGain:0,lastSpeed:0,timedOut:false,timePerQ:30,timeLeft:30};
+  RT={mode:'practice',level:level,qs:rtBuildSession(level),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:3,answered:false,pickedIdx:-1,done:false,total:0,ready:true,timeBonus:0,lastGain:0,lastSpeed:0,timedOut:false,timePerQ:10,timeLeft:10};
   RT.total=RT.qs.length;
   render();
+}
+// ─── Resmi Sınav (Зачёт) ───
+const RT_EXAM_KEY='cf_rt_exam_v1';
+function getLastExam(){try{return JSON.parse(localStorage.getItem(RT_EXAM_KEY))||null}catch(e){return null}}
+function saveLastExam(d){try{localStorage.setItem(RT_EXAM_KEY,JSON.stringify(d))}catch(e){}}
+function rtBuildExam(){
+  // 30 soru: 40% Q1 (basit), 30% Q2 (что не входит), 30% Q3 (provokasyon)
+  const qs=[];
+  for(let i=0;i<30;i++){
+    const r=Math.random();
+    let type='q1';
+    if(r<0.4)type='q1';else if(r<0.7)type='q2';else type='q3';
+    qs.push(rtMakeQ(type));
+  }
+  return qs;
+}
+function rtStartExam(){
+  const last=getLastExam();
+  if(last&&new Date(last.date).toDateString()===new Date().toDateString()){
+    if(typeof toast==='function')toast('⏳ Уже сдавали сегодня — приходите завтра');
+    return;
+  }
+  rtClearTimer();
+  RT={mode:'exam',level:0,qs:rtBuildExam(),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:99,answered:false,pickedIdx:-1,done:false,total:30,ready:true,timeBonus:0,lastGain:0,lastSpeed:0,timedOut:false,timePerQ:15,timeLeft:15,examPass:90};
+  render();
+}
+function rtStartExamTimer(){
+  rtClearTimer();
+  if(!RT)return;
+  RT.timePerQ=(RT.mode==='exam')?15:10;RT.timeLeft=RT.timePerQ;RT.qStartedAt=Date.now();
+  RT_TIMER=setInterval(function(){
+    if(!RT||RT.answered||RT.done){rtClearTimer();return}
+    RT.timeLeft=Math.max(0,RT.timePerQ-Math.floor((Date.now()-RT.qStartedAt)/1000));
+    rtUpdateTimerDom();
+    if(RT.timeLeft<=0){rtTimeout();return}
+  },250);
 }
 function rtBegin(){
   if(!RT)return;
   RT.ready=false;
-  rtStartTimer();
+  if(RT.mode==='exam')rtStartExamTimer();else rtStartTimer();
   render();
 }
 function rtAbort(){rtClearTimer();RT=null;render();}
@@ -2931,13 +3111,13 @@ function rtAnswer(i){
   rtClearTimer();
   RT.answered=true;RT.pickedIdx=i;RT.timedOut=false;
   const q=RT.qs[RT.idx],ok=q.opts[i]===q.correct;
-  const elapsed=Math.min(30,(Date.now()-RT.qStartedAt)/1000);
-  const speedSec=Math.max(0,30-elapsed); // hızlı cevap → daha çok puan
+  const elapsed=Math.min(10,(Date.now()-RT.qStartedAt)/1000);
+  const speedSec=Math.max(0,10-elapsed); // hızlı cevap → daha çok puan
   if(ok){
     const base=10;
-    const speedBonus=Math.round(speedSec*0.7); // max ~21 ekstra
+    const speedBonus=Math.round(speedSec*2); // max ~20 ekstra (10s × 2)
     const gain=base+speedBonus;
-    RT.correct++;RT.xp+=gain;RT.lastGain=gain;RT.lastSpeed=Math.round(speedSec/3);
+    RT.correct++;RT.xp+=gain;RT.lastGain=gain;RT.lastSpeed=Math.round(speedSec);
     RT.timeBonus+=speedBonus;
     RT.streak++;if(RT.streak>RT.maxStreak)RT.maxStreak=RT.streak;
     if(tg)tg.HapticFeedback?.notificationOccurred('success');
@@ -2949,14 +3129,255 @@ function rtAnswer(i){
 function rtNext(){
   if(!RT)return;
   rtClearTimer();
-  if(RT.hearts<=0){RT.done=true;finishGame();render();return;}
+  // Exam modu: can yok, sadece soru bittiğinde biter
+  if(RT.mode!=='exam'&&RT.hearts<=0){RT.done=true;finishGame();render();return;}
   RT.idx++;RT.answered=false;RT.pickedIdx=-1;RT.timedOut=false;
   if(RT.idx>=RT.qs.length){RT.done=true;finishGame();}
-  else{rtStartTimer();}
+  else{
+    if(RT.mode==='exam')rtStartExamTimer();else rtStartTimer();
+  }
   render();
 }
+/* ═══════════════════════════════════════
+   РЕЗОФИЦИАЛЬНЫЙ ЗАЧЁТ — Remote Exam (FS)
+   ═══════════════════════════════════════ */
+const OKK_INSPECTIONS=[
+  'корпус эспрессо-машины (чистота, без трещин)',
+  'холдеры (все на месте, чистые)',
+  'питчеры для молока (чистые, без накипи)',
+  'темпер для кофе',
+  'кофемолку и зону вокруг неё',
+  'холодильник внутри',
+  'витрину с круассанами',
+  'льдогенератор внутри',
+  'раковину и зону мойки',
+  'полотенца для рук',
+  'рабочую поверхность бара',
+  'пол под оборудованием'
+];
+let EX=null;       // active exam state
+let EX_TIMER=null;
+function examInvite(barId,name){
+  if(!confirm('Назначить зачёт для '+name+'?\n\nОн получит уведомление и должен открыть приложение.'))return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'exam_invite',target:barId}));}catch(e){console.warn(e)}}
+  toast('🎓 Приглашение отправлено');
+}
+function examShouldOpen(){
+  return PENDING_EXAM&&PENDING_EXAM.id&&!sessionStorage.getItem('exam_done_'+PENDING_EXAM.id);
+}
+function examBuild(){
+  // 12 bilgi sorusu + 8 fotoğrafli denetim, karışık sıra
+  const know=[];for(let i=0;i<12;i++){const r=Math.random();let t='q1';if(r<0.5)t='q1';else if(r<0.8)t='q2';else t='q3';know.push(Object.assign({kind:'know'},rtMakeQ(t)));}
+  const insp=[];const usedTargets=new Set();
+  while(insp.length<8){const tg2=OKK_INSPECTIONS[Math.floor(Math.random()*OKK_INSPECTIONS.length)];if(!usedTargets.has(tg2)){usedTargets.add(tg2);insp.push({kind:'photo',target:tg2});}}
+  // Karışık dizilim: 5 know, 1 photo, 5 know, 4 photo, 2 know, 3 photo (örnek değil — basit shuffle)
+  const all=know.concat(insp);
+  for(let i=all.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[all[i],all[j]]=[all[j],all[i]]}
+  return all;
+}
+function examOpen(){
+  if(!PENDING_EXAM)return;
+  EX={inviteId:PENDING_EXAM.id,by:PENDING_EXAM.by,phase:'preflight',pre:{battery:false,camera:false,shift:false},qs:[],idx:0,correct:0,answered:false,pickedIdx:-1,timeLeft:0,timePerQ:10,qStartedAt:0,timedOut:false,results:[],photos:{}};
+  document.getElementById('exam-fs').classList.add('on');
+  document.body.style.overflow='hidden';
+  if(tg&&tg.expand)try{tg.expand()}catch(e){}
+  if(tg&&tg.requestFullscreen)try{tg.requestFullscreen()}catch(e){}
+  if(tg&&tg.disableClosingConfirmation)try{tg.disableClosingConfirmation()}catch(e){}
+  if(tg&&tg.enableClosingConfirmation)try{tg.enableClosingConfirmation()}catch(e){}
+  examRender();
+}
+function examClose(){
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  document.getElementById('exam-fs').classList.remove('on');
+  document.body.style.overflow='';
+  EX=null;
+  if(PENDING_EXAM){sessionStorage.setItem('exam_done_'+PENDING_EXAM.id,'1');PENDING_EXAM=null;}
+  render();
+}
+function examRender(){
+  const fs=document.getElementById('exam-fs');if(!EX){fs.classList.remove('on');return}
+  let h='<div class="ex-head"><div><div class="ex-brand">CAFFELITO · ЗАЧЁТ</div><div class="ex-byname">От: '+escH(EX.by||'Шеф')+'</div></div><div class="ex-locked">🔒 НЕ ЗАКРЫВАТЬ</div></div>';
+  if(EX.phase==='preflight'){
+    h+='<div class="ex-pre">';
+    h+='<div class="ex-pre-ic">🎓</div>';
+    h+='<div class="ex-pre-t">Зачётная сессия</div>';
+    h+='<div class="ex-pre-by">Подтвердите готовность</div>';
+    h+='<div class="ex-check-list">';
+    h+='<label class="ex-check '+(EX.pre.battery?'ok':'')+'"><input type="checkbox" '+(EX.pre.battery?'checked':'')+' onclick="EX.pre.battery=this.checked;examRender()"><span>🔋 Заряд телефона ≥ 50%</span></label>';
+    h+='<label class="ex-check '+(EX.pre.camera?'ok':'')+'"><input type="checkbox" '+(EX.pre.camera?'checked':'')+' onclick="EX.pre.camera=this.checked;examRender()"><span>📷 Камера и интернет работают</span></label>';
+    h+='<label class="ex-check '+(EX.pre.shift?'ok':'')+'"><input type="checkbox" '+(EX.pre.shift?'checked':'')+' onclick="EX.pre.shift=this.checked;examRender()"><span>🟢 Я нахожусь в смене</span></label>';
+    h+='</div>';
+    const ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift;
+    h+='<button class="ex-go" '+(ready?'':'disabled')+' onclick="examBegin()">Начать зачёт ▸</button>';
+    h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>20 вопросов · бил. (10 сек) + фото (30 сек)</div>';
+    h+='</div>';
+  } else if(EX.phase==='question'){
+    const q=EX.qs[EX.idx],pct=(EX.idx/EX.qs.length)*100;
+    const timerCls=EX.timeLeft<=2?'danger':(EX.timeLeft<=4?'warn':'');
+    const tFillPct=(EX.timeLeft/EX.timePerQ)*100;
+    h+='<div class="ex-q-bar"><span class="ex-q-idx">'+(EX.idx+1)+' / '+EX.qs.length+'</span><div class="ex-q-prog"><div class="ex-q-fill" style="width:'+pct+'%"></div></div><span class="ex-q-idx" id="exTNum"><span class="ex-timer-num '+timerCls+'" style="font-size:18px">'+EX.timeLeft+'с</span></span></div>';
+    h+='<div class="ex-timer-bar"><div class="ex-timer-fill '+timerCls+'" id="exTFill" style="width:'+tFillPct+'%"></div></div>';
+    if(q.kind==='know'){
+      h+='<div class="ex-card"><div class="ex-kind">Вопрос знаний</div><div class="ex-text">'+q.text+'</div></div>';
+      h+='<div class="ex-opts">';
+      q.opts.forEach(function(opt,i){
+        let cls='ex-opt';
+        if(EX.answered){cls+=' disabled';if(opt===q.correct)cls+=EX.pickedIdx===i?' correct':' reveal';else if(EX.pickedIdx===i)cls+=' wrong';}
+        h+='<div class="'+cls+'" onclick="'+(EX.answered?'':'examAnswer('+i+')')+'">'+opt+'</div>';
+      });
+      h+='</div>';
+      if(EX.answered){
+        const ok=q.opts[EX.pickedIdx]===q.correct;
+        h+='<div class="ex-fb '+(ok?'ok':'no')+'">'+(ok?'✓ Верно':(EX.timedOut?'⏱ Время вышло. Правильно: '+q.correct:'✗ Правильно: '+q.correct))+'</div>';
+        h+='<button class="ex-next" onclick="examNext()">'+(EX.idx+1>=EX.qs.length?'Завершить':'Дальше')+' ▸</button>';
+      }
+    } else {
+      // photo question
+      h+='<div class="ex-card"><div class="ex-kind photo">📷 Фото-проверка</div><div class="ex-text">Сфотографируйте: <b>'+q.target+'</b></div><div class="ex-photo-prompt">Откройте камеру, сфотографируйте указанный объект и отправьте его в личные сообщения боту. После — нажмите кнопку ниже.</div>';
+      if(EX.photos[EX.idx]){
+        h+='<div class="ex-photo-preview"><img src="'+EX.photos[EX.idx]+'"></div>';
+      }
+      h+='</div>';
+      if(!EX.answered){
+        h+='<input class="ex-photo-input" id="exPhotoInput" type="file" accept="image/*" capture="environment" onchange="examPhotoCaptured(event)">';
+        h+='<button class="ex-photo-btn" onclick="document.getElementById(\'exPhotoInput\').click()">📷 Открыть камеру</button>';
+        if(EX.photos[EX.idx]){
+          h+='<button class="ex-next" style="margin-top:8px" onclick="examPhotoConfirm()">✓ Я сфотографировал — далее</button>';
+        }
+      } else {
+        h+='<div class="ex-fb ok">✓ Принято</div>';
+        h+='<button class="ex-next" onclick="examNext()">'+(EX.idx+1>=EX.qs.length?'Завершить':'Дальше')+' ▸</button>';
+      }
+    }
+  } else if(EX.phase==='done'){
+    const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=80;
+    h+='<div class="ex-pre">';
+    h+='<div class="ex-pre-ic">'+(passed?'🏆':'💪')+'</div>';
+    h+='<div class="ex-pre-t" style="color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'Зачёт сдан':'Не сдан')+'</div>';
+    h+='<div class="ex-pre-by">Результат: '+score+'% ('+EX.correct+'/'+total+')</div>';
+    h+='<button class="ex-go" style="margin-top:24px" onclick="examClose()">Закрыть</button>';
+    h+='</div>';
+  }
+  fs.innerHTML=h;
+}
+function examBegin(){
+  EX.qs=examBuild();EX.phase='question';EX.idx=0;
+  examStartTimer();examRender();
+}
+function examStartTimer(){
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  if(!EX)return;
+  const q=EX.qs[EX.idx];
+  EX.timePerQ=(q&&q.kind==='photo')?30:10;
+  EX.timeLeft=EX.timePerQ;
+  EX.qStartedAt=Date.now();
+  EX_TIMER=setInterval(function(){
+    if(!EX||EX.answered||EX.phase!=='question'){clearInterval(EX_TIMER);EX_TIMER=null;return}
+    EX.timeLeft=Math.max(0,EX.timePerQ-Math.floor((Date.now()-EX.qStartedAt)/1000));
+    // Sadece timer DOM'unu güncelle
+    const tFill=document.getElementById('exTFill');
+    if(tFill){
+      tFill.style.width=((EX.timeLeft/EX.timePerQ)*100)+'%';
+      tFill.classList.toggle('warn',EX.timeLeft<=Math.ceil(EX.timePerQ*0.4)&&EX.timeLeft>Math.ceil(EX.timePerQ*0.2));
+      tFill.classList.toggle('danger',EX.timeLeft<=Math.ceil(EX.timePerQ*0.2));
+    }
+    const tNum=document.querySelector('#exTNum .ex-timer-num');
+    if(tNum){
+      tNum.textContent=EX.timeLeft+'с';
+      tNum.classList.toggle('warn',EX.timeLeft<=Math.ceil(EX.timePerQ*0.4)&&EX.timeLeft>Math.ceil(EX.timePerQ*0.2));
+      tNum.classList.toggle('danger',EX.timeLeft<=Math.ceil(EX.timePerQ*0.2));
+    }
+    if(EX.timeLeft<=0)examTimeout();
+  },250);
+}
+function examTimeout(){
+  if(!EX||EX.answered)return;
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  EX.answered=true;EX.timedOut=true;EX.pickedIdx=-1;
+  EX.results.push({i:EX.idx,kind:EX.qs[EX.idx].kind,ok:false,timedOut:true});
+  if(tg)tg.HapticFeedback?.notificationOccurred('error');
+  examReportProgress(false);
+  examRender();
+}
+function examAnswer(i){
+  if(!EX||EX.answered||EX.phase!=='question')return;
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  EX.answered=true;EX.pickedIdx=i;EX.timedOut=false;
+  const q=EX.qs[EX.idx],ok=q.opts[i]===q.correct;
+  if(ok){EX.correct++;if(tg)tg.HapticFeedback?.notificationOccurred('success');}
+  else if(tg)tg.HapticFeedback?.notificationOccurred('error');
+  EX.results.push({i:EX.idx,kind:'know',ok:ok,timedOut:false});
+  examReportProgress(ok);
+  examRender();
+}
+function examPhotoCaptured(ev){
+  const f=ev.target.files&&ev.target.files[0];if(!f||!EX)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    // küçük preview için sıkıştır
+    const img=new Image();img.onload=function(){
+      const c=document.createElement('canvas');
+      const maxW=800,scale=Math.min(1,maxW/img.width);
+      c.width=img.width*scale;c.height=img.height*scale;
+      c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      EX.photos[EX.idx]=c.toDataURL('image/jpeg',0.7);
+      examRender();
+    };img.src=e.target.result;
+  };
+  reader.readAsDataURL(f);
+}
+function examPhotoConfirm(){
+  if(!EX||EX.answered)return;
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  EX.answered=true;
+  EX.correct++; // fotoğraf teslim edildi varsayılır (Phase 2'de owner onayına bağlanacak)
+  EX.results.push({i:EX.idx,kind:'photo',ok:true});
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  examReportProgress(true);
+  examRender();
+}
+function examReportProgress(ok){
+  if(!EX||!tg||!tg.sendData)return;
+  // Owner'a anlık bildirim — bu sendData app'i kapatır, dolayısıyla Phase 1'de kullanmıyoruz.
+  // Sadece sınav sonunda toplu raporlayacağız.
+}
+function examNext(){
+  if(!EX)return;
+  EX.idx++;EX.answered=false;EX.pickedIdx=-1;EX.timedOut=false;
+  if(EX.idx>=EX.qs.length){
+    EX.phase='done';
+    examFinish();
+  } else {
+    examStartTimer();
+  }
+  examRender();
+}
+function examFinish(){
+  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
+  if(!EX)return;
+  const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=80;
+  if(tg&&tg.sendData){
+    try{tg.sendData(JSON.stringify({
+      action:'exam_finish',invite_id:EX.inviteId,correct:EX.correct,total:total,score:score,passed:passed?1:0
+    }));}catch(e){console.warn('exam finish fail',e)}
+  }
+}
+
 function finishGame(){
-  const gs=getGameState(),cfg=RT_LEVELS[RT.level-1],pct=Math.round(RT.correct/RT.total*100),passed=pct>=cfg.pass;
+  const pct=Math.round(RT.correct/RT.total*100);
+  if(RT.mode==='exam'){
+    const passed=pct>=(RT.examPass||90);
+    saveLastExam({date:new Date().toISOString(),score:pct,correct:RT.correct,total:RT.total,passed:passed?1:0});
+    if(tg)tg.HapticFeedback?.notificationOccurred(passed?'success':'error');
+    RT._sent=true;
+    if(tg&&tg.sendData){
+      try{tg.sendData(JSON.stringify({
+        action:'rt_exam',correct:RT.correct,total:RT.total,score:pct,passed:passed?1:0
+      }));}catch(e){console.warn('rt exam send fail',e);}
+    }
+    return;
+  }
+  const gs=getGameState(),cfg=RT_LEVELS[RT.level-1],passed=pct>=cfg.pass;
   gs.xp=(gs.xp||0)+RT.xp;
   if(RT.maxStreak>(gs.bestStreak||0))gs.bestStreak=RT.maxStreak;
   if(passed&&RT.level>=gs.level){gs.level=Math.min(RT_LEVELS.length,RT.level+1);gs.maxLevel=Math.max(gs.maxLevel||1,gs.level);}
@@ -2973,6 +3394,10 @@ function finishGame(){
 }
 
 render();
+// Resmi sınav daveti varsa otomatik fullscreen aç
+if(examShouldOpen()){
+  try{examOpen()}catch(e){console.warn('exam open fail',e)}
+}
 </script>
 </body>
 </html>

@@ -191,6 +191,26 @@ def get_db():
         max_streak INTEGER,
         passed INTEGER,
         played_at TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS rt_exams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        correct INTEGER,
+        total INTEGER,
+        score INTEGER,
+        passed INTEGER,
+        taken_at TEXT)""")
+    # Resmi sınav daveti (owner → barista)
+    db.execute("""CREATE TABLE IF NOT EXISTS rt_exam_invites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        barista_id INTEGER,
+        owner_id INTEGER,
+        owner_name TEXT,
+        status TEXT DEFAULT 'pending',
+        score INTEGER,
+        correct INTEGER,
+        total INTEGER,
+        created_at TEXT,
+        finished_at TEXT)""")
     db.commit()
     return db
 
@@ -601,6 +621,15 @@ def build_webapp_url(base_url, user_id, name, db):
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
     desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
+    # Resmi sınav daveti — beklemede mi?
+    pending_invite = db.execute(
+        "SELECT id, owner_name, created_at FROM rt_exam_invites "
+        "WHERE barista_id=? AND status IN ('pending','active') ORDER BY id DESC LIMIT 1",
+        (user_id,)).fetchone()
+    pending_exam = (
+        {"id": pending_invite["id"], "by": pending_invite["owner_name"] or "Шеф", "at": pending_invite["created_at"]}
+        if pending_invite else None
+    )
     # Recipe trainer — bu kullanıcının progress'ı
     rt_row = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (user_id,)).fetchone()
     rt_self = {
@@ -627,6 +656,7 @@ def build_webapp_url(base_url, user_id, name, db):
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
         f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
+        f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"ts={ts}",
     ]
     if role == "owner":
@@ -643,6 +673,9 @@ def build_webapp_url(base_url, user_id, name, db):
             rt_sess = db.execute(
                 "SELECT level, correct, total, passed, played_at FROM rt_sessions "
                 "WHERE user_id=? ORDER BY id DESC LIMIT 5", (b["user_id"],)).fetchall()
+            rt_exam = db.execute(
+                "SELECT score, passed, taken_at FROM rt_exams "
+                "WHERE user_id=? ORDER BY id DESC LIMIT 1", (b["user_id"],)).fetchone()
             rt_data = {
                 "lvl": rtp["level"] if rtp else 1,
                 "max": rtp["max_level"] if rtp else 1,
@@ -653,6 +686,7 @@ def build_webapp_url(base_url, user_id, name, db):
                 "tq": rtp["total_questions"] if rtp else 0,
                 "lp": rtp["last_played_at"] if rtp else None,
                 "rec": [{"l":r["level"],"c":r["correct"],"t":r["total"],"p":r["passed"],"d":r["played_at"]} for r in rt_sess],
+                "exam": ({"s":rt_exam["score"],"p":rt_exam["passed"],"d":rt_exam["taken_at"]} if rt_exam else None),
             }
             baristas.append({
                 "id": b["user_id"], "n": real_name,
@@ -2651,6 +2685,198 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"✏️ Имя обновлено\n\n"
                 f"@{md_safe(uname)} → *{md_safe(shown)}*",
                 parse_mode="Markdown")
+
+        # ─── Owner: Resmi sınav daveti (uzaktan) ───
+        elif action == "exam_invite":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может назначать зачёт.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            if not target_id:
+                await update.message.reply_text("❌ Укажите бариста.")
+                return
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Бариста не найден.")
+                return
+            # Aktif daveti varsa engelle
+            existing = db.execute(
+                "SELECT id FROM rt_exam_invites WHERE barista_id=? AND status IN ('pending','active')",
+                (target_id,)).fetchone()
+            if existing:
+                await update.message.reply_text("⚠️ У этого бариста уже есть активная сессия.")
+                return
+            now = datetime.now(TZ).isoformat()
+            cur = db.execute(
+                "INSERT INTO rt_exam_invites (barista_id, owner_id, owner_name, status, created_at) "
+                "VALUES (?,?,?,'pending',?)",
+                (target_id, user.id, user.first_name, now))
+            db.commit()
+            invite_id = cur.lastrowid
+            log_action(db, "exam_invite", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id), {"invite_id": invite_id})
+            # Baristaya bildirim + taze web_app butonu (kolay erişim)
+            try:
+                shown = display_name_for(db, target_id, fallback=target_row["name"])
+                await context.bot.send_message(
+                    target_id,
+                    f"🎓 *ОФИЦИАЛЬНЫЙ ЗАЧЁТ*\n\n"
+                    f"От: *{md_safe(user.first_name)}*\n\n"
+                    f"⚠️ Перед началом убедитесь:\n"
+                    f"🔋 Заряд телефона ≥ 50%\n"
+                    f"📷 Камера работает\n"
+                    f"🟢 Вы в смене\n\n"
+                    f"После начала экран нельзя закрыть до окончания.\n\n"
+                    f"Нажмите *☕ Открыть Caffelito* ниже, и зачёт запустится автоматически.",
+                    parse_mode="Markdown")
+                # Taze webapp butonu — barista tek tuşla girsin
+                if WEBAPP_URL:
+                    fresh_url = build_webapp_url(WEBAPP_URL, target_id, target_row["name"] or "Бариста", db)
+                    kb = ReplyKeyboardMarkup(
+                        [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=fresh_url))]],
+                        resize_keyboard=True)
+                    await context.bot.send_message(target_id, "👇 Откройте, чтобы начать зачёт", reply_markup=kb)
+            except Exception as e:
+                logger.warning(f"exam invite notify failed: {e}")
+                await update.message.reply_text("⚠️ Не удалось отправить уведомление баристе.")
+                return
+            await update.message.reply_text(
+                f"✅ Зачёт назначен\n\nКому: {display_name_for(db, target_id)}\n"
+                f"Уведомление отправлено. Ожидание начала…")
+
+        # ─── Owner: davet iptali ───
+        elif action == "exam_invite_cancel":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                return
+            invite_id = int(data.get("invite_id", 0) or 0)
+            if not invite_id:
+                return
+            db.execute("UPDATE rt_exam_invites SET status='cancelled' WHERE id=? AND status IN ('pending','active')",
+                       (invite_id,))
+            db.commit()
+            await update.message.reply_text("🚫 Зачёт отменён.")
+
+        # ─── Barista: zaten resmi sınav cevabı (her sorudan sonra opsiyonel canlı log) ───
+        elif action == "exam_progress":
+            db = get_db()
+            invite_id = int(data.get("invite_id", 0) or 0)
+            inv = db.execute("SELECT * FROM rt_exam_invites WHERE id=? AND barista_id=?",
+                             (invite_id, user.id)).fetchone()
+            if not inv:
+                return
+            db.execute("UPDATE rt_exam_invites SET status='active' WHERE id=?", (invite_id,))
+            db.commit()
+            # Owner'a canlı bildirim (opsiyonel — Phase 2'de daha detaylı)
+            try:
+                shown = display_name_for(db, user.id)
+                idx = int(data.get("idx", 0))
+                total = int(data.get("total", 0))
+                kind = data.get("kind", "")
+                ok = data.get("ok")
+                emoji = "✅" if ok else ("📷" if kind == "photo" else "❌")
+                await context.bot.send_message(
+                    inv["owner_id"],
+                    f"{emoji} {md_safe(shown)} · {idx}/{total} · {kind}",
+                    parse_mode="Markdown")
+            except Exception:
+                pass
+
+        # ─── Barista: resmi sınavı bitirir ───
+        elif action == "exam_finish":
+            db = get_db()
+            invite_id = int(data.get("invite_id", 0) or 0)
+            correct = int(data.get("correct", 0) or 0)
+            total = int(data.get("total", 0) or 0)
+            score = int(data.get("score", 0) or 0)
+            passed = 1 if data.get("passed") else 0
+            now = datetime.now(TZ).isoformat()
+            inv = db.execute("SELECT * FROM rt_exam_invites WHERE id=? AND barista_id=?",
+                             (invite_id, user.id)).fetchone()
+            if not inv:
+                # Davet yoksa basit kayıt
+                db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
+                           "VALUES (?,?,?,?,?,?)",
+                           (user.id, correct, total, score, passed, now))
+                db.commit()
+                return
+            db.execute("UPDATE rt_exam_invites SET status='done', score=?, correct=?, total=?, finished_at=? WHERE id=?",
+                       (score, correct, total, now, invite_id))
+            db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
+                       "VALUES (?,?,?,?,?,?)",
+                       (user.id, correct, total, score, passed, now))
+            db.commit()
+            log_action(db, "exam_finish", user.id, user.first_name, user.id, user.first_name,
+                       {"score": score, "passed": passed, "invite_id": invite_id})
+            # Owner'a sonuç bildirimi
+            try:
+                shown = display_name_for(db, user.id, fallback=user.first_name)
+                msg = (
+                    f"🎓 *Зачёт завершён*\n\n"
+                    f"Бариста: *{md_safe(shown)}*\n"
+                    f"Результат: *{score}%* ({correct}/{total})\n"
+                    f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
+                )
+                await context.bot.send_message(inv["owner_id"], msg, parse_mode="Markdown")
+            except Exception as e:
+                logger.warning(f"exam finish notify failed: {e}")
+            # Baristaya tebrik
+            try:
+                if passed:
+                    await update.message.reply_text(
+                        f"🏆 *Зачёт сдан!* {score}%\n\nМолодец!", parse_mode="Markdown")
+                else:
+                    await update.message.reply_text(f"💪 Не сдан · {score}%\n\nПродолжайте тренироваться.")
+            except Exception:
+                pass
+
+        # ─── Resmi Sınav (Зачёт) — sertifika kaydı + owner bildirimi ───
+        elif action == "rt_exam":
+            db = get_db()
+            correct = int(data.get("correct", 0) or 0)
+            total = int(data.get("total", 0) or 0)
+            score = int(data.get("score", 0) or 0)
+            passed = 1 if data.get("passed") else 0
+            now = datetime.now(TZ).isoformat()
+            db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
+                       "VALUES (?,?,?,?,?,?)",
+                       (user.id, correct, total, score, passed, now))
+            db.commit()
+            log_action(db, "exam_taken", user.id, user.first_name, user.id, user.first_name,
+                       {"score": score, "passed": passed})
+            # Owner'lara bildirim — kim, ne zaman, sonuç
+            try:
+                shown = display_name_for(db, user.id, fallback=user.first_name)
+                owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
+                msg_owner = (
+                    f"🎓 *Зачёт пройден!*\n\n"
+                    f"Бариста: *{md_safe(shown)}*\n"
+                    f"Результат: *{score}%* ({correct}/{total})\n"
+                    f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
+                )
+                for o in owners:
+                    try:
+                        await context.bot.send_message(o["user_id"], msg_owner, parse_mode="Markdown")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"exam notify owners failed: {e}")
+            # Baristaya tebrik/teselli mesajı
+            try:
+                if passed:
+                    await update.message.reply_text(
+                        f"🏆 *Зачёт сдан!*\n\n"
+                        f"Результат: *{score}%* ({correct}/{total})\n"
+                        f"Молодец — рецептура освоена!",
+                        parse_mode="Markdown")
+                else:
+                    await update.message.reply_text(
+                        f"💪 Зачёт не пройден\n\n"
+                        f"Результат: {score}% ({correct}/{total})\n"
+                        f"Нужно 90%. Тренируйтесь и приходите завтра.")
+            except Exception:
+                pass
 
         # ─── Recipe Trainer — session bitince progress kaydı ───
         elif action == "rt_session":
