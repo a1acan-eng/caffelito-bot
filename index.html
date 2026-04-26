@@ -2845,25 +2845,24 @@ function rGame(m,b){
       h+='<div class="'+cls+'" onclick="'+(locked?'':'rtStart('+L.n+')')+'"><div class="rt-lvl-badge">'+badge+'</div><div class="rt-lvl-n">УР. '+L.n+'</div><div class="rt-lvl-t">'+L.t+'</div><div class="rt-lvl-s">'+L.d+' · '+L.q+' вопр.</div></div>';
     });
     h+='</div>';
-    // Formal Exam (Зачёт) — Resmi sınav
-    const lastExam=getLastExam();
-    const canExamToday=!lastExam||(new Date(lastExam.date).toDateString()!==new Date().toDateString());
-    h+='<div class="sec" style="margin-top:18px">🎓 Официальный зачёт</div>';
-    h+='<div class="rt-exam-card '+(canExamToday?'':'rt-exam-locked')+'" onclick="'+(canExamToday?'rtStartExam()':'')+'">';
-    h+='<div class="rt-exam-l"><div class="rt-exam-ic">🏅</div></div>';
-    h+='<div class="rt-exam-c">';
-    h+='<div class="rt-exam-t">Зачётная сессия</div>';
-    h+='<div class="rt-exam-s">30 вопросов · 15 сек · 90% для зачёта<br>Подготовка к проверке центра</div>';
-    if(lastExam){
-      const dt=new Date(lastExam.date);
-      const dStr=dt.getDate()+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+dt.getFullYear();
-      const passed=lastExam.passed;
-      h+='<div class="rt-exam-last '+(passed?'ok':'no')+'">'+(passed?'🏆 Сдан':'❌ Провалено')+' · '+lastExam.score+'% · '+dStr+'</div>';
+    // Resmi sınav bilgi kartı — sadece owner davet edebilir, kullanıcı kendi başlatamaz
+    if(MY_ROLE!=='owner'){
+      h+='<div class="sec" style="margin-top:18px">🎓 Официальный зачёт</div>';
+      h+='<div class="rt-exam-card rt-exam-locked" style="cursor:default">';
+      h+='<div class="rt-exam-l"><div class="rt-exam-ic">🏅</div></div>';
+      h+='<div class="rt-exam-c">';
+      h+='<div class="rt-exam-t">Зачётная сессия</div>';
+      h+='<div class="rt-exam-s">Запускается шефом удалённо.<br>Тренируйтесь в уровнях, чтобы быть готовым.</div>';
+      const lastExam=getLastExam();
+      if(lastExam){
+        const dt=new Date(lastExam.date);
+        const dStr=dt.getDate()+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+dt.getFullYear();
+        h+='<div class="rt-exam-last '+(lastExam.passed?'ok':'no')+'">'+(lastExam.passed?'🏆 Последний сдан':'❌ Не сдан')+' · '+lastExam.score+'% · '+dStr+'</div>';
+      }
+      h+='</div>';
+      h+='<div class="rt-exam-r">⏳</div>';
+      h+='</div>';
     }
-    if(!canExamToday)h+='<div class="rt-exam-lock">⏳ Уже сдавали сегодня. Возвращайтесь завтра.</div>';
-    h+='</div>';
-    h+='<div class="rt-exam-r">'+(canExamToday?'▶':'🔒')+'</div>';
-    h+='</div>';
     // Owner için analytics bölümü
     if(MY_ROLE==='owner'&&BARISTAS&&BARISTAS.length){
       const trainees=BARISTAS.filter(x=>!x.arch);
@@ -2994,7 +2993,11 @@ function rGame(m,b){
   const ringR=15,ringC=2*Math.PI*ringR;
   const dash=ringC*(1-tLeft/tMax);
   const ringCls='rt-timer-ring'+(tLeft<=10?' warn':'')+(tLeft<=5?' danger':'');
-  let h='<div class="rt-q-bar"><span style="font-size:11px;font-weight:700;color:var(--t3)">УР.'+RT.level+'</span><div class="rt-q-prog"><div class="rt-q-fill" style="width:'+pct+'%"></div></div><span class="rt-q-hearts">'+'❤️'.repeat(RT.hearts)+'🤍'.repeat(3-RT.hearts)+'</span><div class="'+ringCls+'"><svg width="36" height="36" viewBox="0 0 36 36"><circle class="bg" cx="18" cy="18" r="'+ringR+'"></circle><circle class="fg" cx="18" cy="18" r="'+ringR+'" stroke-dasharray="'+ringC+'" stroke-dashoffset="'+dash+'"></circle></svg><div class="rt-timer-num">'+tLeft+'</div></div></div>';
+  // Exam modunda canlar yok, label farklı; pratik modunda 3 can
+  const isExam=RT.mode==='exam';
+  const heartsHtml=isExam?'<span style="font-size:10px;font-weight:700;color:var(--t3)">ЗАЧЁТ</span>':('<span class="rt-q-hearts">'+'❤️'.repeat(Math.max(0,Math.min(3,RT.hearts)))+'🤍'.repeat(Math.max(0,3-RT.hearts))+'</span>');
+  const lvlLabel=isExam?'ЗАЧЁТ':('УР.'+RT.level);
+  let h='<div class="rt-q-bar"><span style="font-size:11px;font-weight:700;color:var(--t3)">'+lvlLabel+'</span><div class="rt-q-prog"><div class="rt-q-fill" style="width:'+pct+'%"></div></div>'+heartsHtml+'<div class="'+ringCls+'"><svg width="36" height="36" viewBox="0 0 36 36"><circle class="bg" cx="18" cy="18" r="'+ringR+'"></circle><circle class="fg" cx="18" cy="18" r="'+ringR+'" stroke-dasharray="'+ringC+'" stroke-dashoffset="'+dash+'"></circle></svg><div class="rt-timer-num">'+tLeft+'</div></div></div>';
   h+='<div class="rt-q-card"><div class="rt-q-label">Вопрос '+(RT.idx+1)+' / '+RT.qs.length+' · ⚡️ '+RT.xp+' XP</div><div class="rt-q-text">'+q.text+'</div></div>';
   h+='<div class="rt-opts">';
   q.opts.forEach(function(opt,i){
