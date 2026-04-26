@@ -199,6 +199,18 @@ def get_db():
         score INTEGER,
         passed INTEGER,
         taken_at TEXT)""")
+    # Borç (avans) talepleri — barista şeften ister
+    db.execute("""CREATE TABLE IF NOT EXISTS loans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        barista_id INTEGER,
+        amount INTEGER,
+        reason TEXT,
+        status TEXT DEFAULT 'pending',
+        decided_by INTEGER,
+        decided_at TEXT,
+        decision_note TEXT,
+        created_at TEXT,
+        repaid INTEGER DEFAULT 0)""")
     # Resmi sınav daveti (owner → barista)
     db.execute("""CREATE TABLE IF NOT EXISTS rt_exam_invites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -621,6 +633,27 @@ def build_webapp_url(base_url, user_id, name, db):
     }
     # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
     desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
+    # Avans talepleri — barista kendisininkiler, owner pending olanların hepsi
+    if role == "owner":
+        loan_rows = db.execute(
+            "SELECT l.*, u.name as bn, u.display_name as bdn FROM loans l "
+            "LEFT JOIN users u ON u.user_id = l.barista_id "
+            "WHERE l.status='pending' ORDER BY l.id DESC LIMIT 20").fetchall()
+        loans_data = [{
+            "id": r["id"], "uid": r["barista_id"],
+            "name": (r["bdn"] or r["bn"] or "?"),
+            "amount": r["amount"], "reason": r["reason"] or "",
+            "status": r["status"], "at": r["created_at"]
+        } for r in loan_rows]
+    else:
+        loan_rows = db.execute(
+            "SELECT * FROM loans WHERE barista_id=? ORDER BY id DESC LIMIT 10",
+            (user_id,)).fetchall()
+        loans_data = [{
+            "id": r["id"], "amount": r["amount"], "reason": r["reason"] or "",
+            "status": r["status"], "at": r["created_at"],
+            "decision_note": r["decision_note"] or ""
+        } for r in loan_rows]
     # Resmi sınav daveti — beklemede mi?
     pending_invite = db.execute(
         "SELECT id, owner_name, created_at FROM rt_exam_invites "
@@ -657,6 +690,7 @@ def build_webapp_url(base_url, user_id, name, db):
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
         f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
         f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
+        f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     if role == "owner":
@@ -1712,6 +1746,65 @@ async def show_report(message, chat_id):
 
 
 # ═══════════════════════════════════════
+#  BORÇ (LOAN) HELPER
+# ═══════════════════════════════════════
+
+async def _decide_loan(context, db, actor, loan_id, decision, note, reply_fn):
+    """Owner tarafından borç talebini sonuçlandırır.
+    decision: 'approve' veya 'reject'
+    """
+    row = db.execute("SELECT * FROM loans WHERE id=?", (loan_id,)).fetchone()
+    if not row:
+        await reply_fn("❌ Запрос не найден.")
+        return
+    if row["status"] != "pending":
+        await reply_fn(f"⚠️ Этот запрос уже {row['status']}.")
+        return
+    if decision not in ("approve", "reject"):
+        return
+    new_status = "approved" if decision == "approve" else "rejected"
+    now = datetime.now(TZ).isoformat()
+    db.execute(
+        "UPDATE loans SET status=?, decided_by=?, decided_at=?, decision_note=? WHERE id=?",
+        (new_status, actor.id, now, note or None, loan_id))
+    if decision == "approve":
+        # Onaylanmış borç, baristanın net maaşından düşecek (avans olarak)
+        period = current_period()
+        db.execute(
+            "INSERT INTO payments (user_id, period, amount, kind, note, paid_by, paid_by_name, paid_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (row["barista_id"], period, row["amount"], "loan",
+             f"Аванс: {row['reason']}", actor.id, actor.first_name, now))
+    db.commit()
+    log_action(db, "loan_" + decision, actor.id, actor.first_name,
+               row["barista_id"], display_name_for(db, row["barista_id"]),
+               {"loan_id": loan_id, "amount": row["amount"], "note": note})
+    shown = display_name_for(db, row["barista_id"])
+    # Bariste bildir
+    try:
+        if decision == "approve":
+            await context.bot.send_message(
+                row["barista_id"],
+                f"✅ *Аванс одобрен*\n\n"
+                f"Сумма: *{fmt_sum(row['amount'])}* сум\n"
+                f"Будет вычтена из ближайшей зарплаты.\n"
+                + (f"\nОт шефа: {md_safe(note)}" if note else ""),
+                parse_mode="Markdown")
+        else:
+            await context.bot.send_message(
+                row["barista_id"],
+                f"❌ *Запрос аванса отклонён*\n\n"
+                f"Сумма: {fmt_sum(row['amount'])} сум\n"
+                + (f"Причина: {md_safe(note)}" if note else "Без комментария"),
+                parse_mode="Markdown")
+    except Exception:
+        pass
+    await reply_fn(
+        ("✅ Аванс одобрен" if decision == "approve" else "❌ Запрос отклонён") +
+        f"\n\nКому: {md_safe(shown)}\nСумма: {fmt_sum(row['amount'])} сум")
+
+
+# ═══════════════════════════════════════
 #  CALLBACK HANDLER
 # ═══════════════════════════════════════
 
@@ -1721,6 +1814,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "noop":
+        return
+
+    # ─── Borç onay/red butonları (inline) ───
+    if data.startswith("loan_ok:") or data.startswith("loan_no:"):
+        try:
+            loan_id = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        decision = "approve" if data.startswith("loan_ok:") else "reject"
+        db = get_db()
+        if get_role(db, query.from_user.id) != "owner":
+            await query.edit_message_text("❌ Только владелец может решать.")
+            return
+        async def _reply(txt):
+            try: await query.edit_message_text(txt, parse_mode="Markdown")
+            except Exception:
+                try: await context.bot.send_message(query.message.chat_id, txt, parse_mode="Markdown")
+                except: pass
+        await _decide_loan(context, db, query.from_user, loan_id, decision, "", _reply)
         return
 
     # ─── Main Menu ───
@@ -2685,6 +2797,68 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"✏️ Имя обновлено\n\n"
                 f"@{md_safe(uname)} → *{md_safe(shown)}*",
                 parse_mode="Markdown")
+
+        # ─── Borç talebi: barista istek gönderir ───
+        elif action == "loan_request":
+            db = get_db()
+            amount = int(data.get("amount", 0) or 0)
+            reason = (data.get("reason") or "").strip()
+            if amount <= 0 or amount > 5_000_000:
+                await update.message.reply_text("❌ Сумма некорректна.")
+                return
+            if not reason:
+                await update.message.reply_text("❌ Укажите причину.")
+                return
+            # Aynı kullanıcının pending talebi varsa engelle
+            existing = db.execute("SELECT id FROM loans WHERE barista_id=? AND status='pending'",
+                                  (user.id,)).fetchone()
+            if existing:
+                await update.message.reply_text("⚠️ У вас уже есть запрос в ожидании.")
+                return
+            now = datetime.now(TZ).isoformat()
+            cur = db.execute(
+                "INSERT INTO loans (barista_id, amount, reason, status, created_at) "
+                "VALUES (?,?,?,'pending',?)",
+                (user.id, amount, reason, now))
+            db.commit()
+            loan_id = cur.lastrowid
+            log_action(db, "loan_request", user.id, user.first_name, user.id, user.first_name,
+                       {"amount": amount, "reason": reason})
+            shown = display_name_for(db, user.id, fallback=user.first_name)
+            # Owner'lara bildir
+            owners = db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall()
+            for o in owners:
+                if o["user_id"] == user.id:
+                    continue
+                try:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Одобрить", callback_data=f"loan_ok:{loan_id}"),
+                         InlineKeyboardButton("❌ Отклонить", callback_data=f"loan_no:{loan_id}")]
+                    ])
+                    await context.bot.send_message(
+                        o["user_id"],
+                        f"💸 *Запрос аванса*\n\n"
+                        f"От: *{md_safe(shown)}*\n"
+                        f"Сумма: *{fmt_sum(amount)}* сум\n"
+                        f"Причина: {md_safe(reason)}",
+                        parse_mode="Markdown",
+                        reply_markup=kb)
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                f"✅ Запрос отправлен\n\nСумма: {fmt_sum(amount)} сум\nЖдите решения шефа.")
+
+        # ─── Owner: borç onayla/reddet (webapp üzerinden) ───
+        elif action == "loan_decide":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            loan_id = int(data.get("loan_id", 0) or 0)
+            decision = data.get("decision", "")  # 'approve' or 'reject'
+            note = (data.get("note") or "").strip()
+            await _decide_loan(context, db, user, loan_id, decision, note,
+                               update.message.reply_text)
 
         # ─── Owner: Resmi sınav daveti (uzaktan) ───
         elif action == "exam_invite":

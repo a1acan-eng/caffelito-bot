@@ -83,15 +83,13 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 .tab.on{color:#5a3e00;background:var(--yellow);box-shadow:0 2px 8px rgba(212,160,32,.35),inset 0 0 0 1px var(--gold-border)}
 .tab.on .tab-ic{filter:none}
 .tab:active{transform:scale(.94)}
-@media (prefers-color-scheme: dark){
-  .tabs{background:rgba(18,18,20,.72);border-color:rgba(255,255,255,.08)}
-  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
-    .tabs{background:rgba(18,18,20,.96)}
-  }
-  .tab{color:rgba(255,255,255,.9)}
-  .tab-ic{filter:none}
-  .tab.on{color:#3a2800;background:#ffd257;box-shadow:0 2px 10px rgba(255,200,60,.35),inset 0 0 0 1px rgba(255,210,87,.5)}
+[data-theme="dark"] .tabs{background:rgba(18,18,20,.72);border-color:rgba(255,255,255,.08)}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
+  [data-theme="dark"] .tabs{background:rgba(18,18,20,.96)}
 }
+[data-theme="dark"] .tab{color:rgba(255,255,255,.9)}
+[data-theme="dark"] .tab-ic{filter:none}
+[data-theme="dark"] .tab.on{color:#3a2800;background:#ffd257;box-shadow:0 2px 10px rgba(255,200,60,.35),inset 0 0 0 1px rgba(255,210,87,.5)}
 body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .wrap{padding:14px 18px}
 .alert{background:var(--yellow-bg);border:1px solid var(--yellow-border);border-radius:var(--r);padding:12px 16px;margin-bottom:14px;font-size:12px;font-weight:500;line-height:1.5}
@@ -296,6 +294,44 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .act-mini-r{font-size:14px;font-weight:800;color:#065f46;font-variant-numeric:tabular-nums}
 /* ─── Bahşiş kartı ─── */
 .tip-card{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #6ee7b7;border-radius:12px;padding:11px 14px;margin-bottom:12px;gap:10px}
+.loan-card{background:linear-gradient(135deg,#fef9c3,#fde68a);border:1px solid var(--gold-border);border-radius:14px;padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:transform .15s;box-shadow:0 4px 14px rgba(212,160,32,.12)}
+.loan-card:active{transform:scale(.985)}
+.loan-l{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.loan-i{font-size:26px;flex-shrink:0}
+.loan-t{font-size:13px;font-weight:800;color:#5a3e00}
+.loan-s{font-size:11px;font-weight:600;color:#8a6a1a;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:230px}
+.loan-arr{color:#8a6a1a;font-size:22px;font-weight:800}
+.loan-hist{margin-bottom:10px;background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.loan-hist-row{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;font-size:12px;font-weight:600;color:var(--t1);border-bottom:1px solid var(--border);gap:10px}
+.loan-hist-row:last-child{border-bottom:none}
+.loan-hist-row.ok{background:rgba(16,185,129,.06)}
+.loan-hist-row.no{background:rgba(239,68,68,.06)}
+.loan-hist-row.pn{background:rgba(245,158,11,.06)}
+.loan-hist-row > span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loan-st{font-weight:800;font-size:11px;flex-shrink:0}
+.loan-hist-row.ok .loan-st{color:#10b981}
+.loan-hist-row.no .loan-st{color:#ef4444}
+.loan-hist-row.pn .loan-st{color:#f59e0b}
+.loan-form-card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:18px;margin-bottom:12px}
+.loan-amt-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 0}
+.loan-amt-preset{background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:10px 4px;font-size:12px;font-weight:700;color:var(--t1);cursor:pointer;text-align:center;transition:all .15s}
+.loan-amt-preset.on{background:var(--yellow);border-color:var(--gold);color:#5a3e00}
+.loan-amt-preset:active{transform:scale(.96)}
+.loan-amt-input{width:100%;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px 16px;font-size:18px;font-weight:800;color:var(--t1);text-align:center;font-variant-numeric:tabular-nums;box-sizing:border-box}
+.loan-reason{width:100%;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--t1);margin-top:10px;resize:none;font-family:inherit;box-sizing:border-box}
+.loan-review-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:8px}
+.loan-review-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px}
+.loan-review-name{font-size:14px;font-weight:800;color:var(--t1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loan-review-amt{font-size:18px;font-weight:900;color:var(--gold2);flex-shrink:0}
+.loan-review-reason{font-size:12px;color:var(--t2);line-height:1.4;margin:6px 0 12px}
+.loan-review-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.loan-act-ok,.loan-act-no{padding:12px;border:none;border-radius:10px;font-size:13px;font-weight:800;cursor:pointer;transition:transform .15s}
+.loan-act-ok{background:#10b981;color:#fff}
+.loan-act-no{background:#ef4444;color:#fff}
+.loan-act-ok:active,.loan-act-no:active{transform:scale(.97)}
+[data-theme="dark"] .loan-hist-row.ok{background:rgba(16,185,129,.14)}
+[data-theme="dark"] .loan-hist-row.no{background:rgba(239,68,68,.14)}
+[data-theme="dark"] .loan-hist-row.pn{background:rgba(245,158,11,.14)}
 .tip-l{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
 .tip-i{font-size:22px;flex-shrink:0}
 .tip-t{font-size:11px;font-weight:700;color:#047857;text-transform:uppercase;letter-spacing:.5px}
@@ -508,16 +544,14 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .rt-an-last{font-size:10px;color:var(--t3);margin-top:6px;font-weight:600}
 .rt-trend-ic{font-size:16px}
 .rt-trend-up{color:#10b981}.rt-trend-down{color:#ef4444}.rt-trend-flat{color:var(--t3)}
-@media (prefers-color-scheme: dark){
-  .rt-an-chip.ok{background:rgba(16,185,129,.15)}
-  .rt-an-chip.no{background:rgba(239,68,68,.15)}
-  .rt-lvl.done{background:rgba(16,185,129,.12)}
-  .rt-opt.correct{background:rgba(16,185,129,.15)}
-  .rt-opt.wrong{background:rgba(239,68,68,.15)}
-  .rt-opt.reveal{background:rgba(16,185,129,.1)}
-  .rt-feedback.ok{background:rgba(16,185,129,.15)}
-  .rt-feedback.no{background:rgba(239,68,68,.15)}
-}
+[data-theme="dark"] .rt-an-chip.ok{background:rgba(16,185,129,.15)}
+[data-theme="dark"] .rt-an-chip.no{background:rgba(239,68,68,.15)}
+[data-theme="dark"] .rt-lvl.done{background:rgba(16,185,129,.12)}
+[data-theme="dark"] .rt-opt.correct{background:rgba(16,185,129,.15)}
+[data-theme="dark"] .rt-opt.wrong{background:rgba(239,68,68,.15)}
+[data-theme="dark"] .rt-opt.reveal{background:rgba(16,185,129,.1)}
+[data-theme="dark"] .rt-feedback.ok{background:rgba(16,185,129,.15)}
+[data-theme="dark"] .rt-feedback.no{background:rgba(239,68,68,.15)}
 /* ─── Passcode (Wallet style) ─── */
 #pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
 #pass-overlay .pass-icon{width:96px;height:96px;margin-bottom:16px;border-radius:24px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff}
@@ -913,6 +947,9 @@ let RT_SELF={};
 try{RT_SELF=JSON.parse(decodeURIComponent(HP.get('rt')||'{}'))}catch(e){RT_SELF={}}
 let PENDING_EXAM=null;
 try{const _ex=decodeURIComponent(HP.get('exam')||'');if(_ex&&_ex!=='null'&&_ex!=='""')PENDING_EXAM=JSON.parse(_ex);}catch(e){PENDING_EXAM=null}
+let LOANS=[];
+try{LOANS=JSON.parse(decodeURIComponent(HP.get('loans')||'[]'))}catch(e){LOANS=[]}
+let loanDraft={amount:'',reason:''};
 let LOGS=[];
 try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -1310,6 +1347,8 @@ function rM(m,b){
   if(mView==='pay')return rMPay(m,b);
   if(mView==='tips')return rMTips(m,b);
   if(mView==='settings')return rMSettings(m,b);
+  if(mView==='loanRequest')return rMLoanRequest(m,b);
+  if(mView==='loanReview')return rMLoanReview(m,b);
   return rMMain(m,b);
 }
 
@@ -1410,6 +1449,27 @@ function rMMain(m,b){
     +(MY_ROLE==='owner'?'<button class="tip-btn" onclick="openTips()">+ Раздать</button>':'')
   +'</div>';
 
+  // ── Аванс mini-kartı (sadece barista) ──
+  if(MY_ROLE!=='owner'){
+    const myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
+    const lastLoans=(LOANS||[]).slice(0,3);
+    h+='<div class="loan-card" onclick="'+(myPending?'':'openLoanRequest()')+'" '+(myPending?'style="cursor:default"':'')+'>'
+      +'<div class="loan-l"><div class="loan-i">💸</div>'
+      +'<div><div class="loan-t">'+(myPending?'⏳ Запрос в обработке':'Запросить аванс у шефа')+'</div>'
+      +'<div class="loan-s">'+(myPending?fmt(myPending.amount)+' сум · '+escH(myPending.reason||''):'Анонимно — только вы и шеф')+'</div></div></div>'
+      +(myPending?'':'<div class="loan-arr">›</div>')
+      +'</div>';
+    if(lastLoans.length){
+      h+='<div class="loan-hist">';
+      lastLoans.forEach(function(l){
+        const stCls=l.status==='approved'?'ok':(l.status==='rejected'?'no':'pn');
+        const stTxt=l.status==='approved'?'✓ одобрен':(l.status==='rejected'?'✗ отклонён':'⏳ в ожидании');
+        h+='<div class="loan-hist-row '+stCls+'"><span>'+fmt(l.amount)+' сум · '+escH((l.reason||'').slice(0,40))+'</span><span class="loan-st">'+stTxt+'</span></div>';
+      });
+      h+='</div>';
+    }
+  }
+
   // ── Günlük/haftalık özet (sadece basit istatistik) ──
   const stats=calcQuickStats(s.shifts||[]);
   h+='<div class="stat-grid">'
@@ -1429,6 +1489,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
         +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
+        +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\'prices\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div></div>'
       +'</div>'
     +'</div>';
@@ -2376,6 +2437,72 @@ function saveTips(){
 // ═══════════════════════════════════════
 //  SETTINGS · Цены / Имена / Логи (owner)
 // ═══════════════════════════════════════
+function openLoanRequest(){mView='loanRequest';loanDraft={amount:'',reason:''};render()}
+function setLoanAmt(v){loanDraft.amount=String(v);render()}
+function rMLoanRequest(m,b){
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">💸 Запросить аванс у шефа</div>';
+  h+='<div class="loan-form-card">';
+  h+='<div style="font-size:11px;color:var(--t3);font-weight:700;letter-spacing:.5px">СУММА (СУМ)</div>';
+  h+='<div class="loan-amt-presets">';
+  [200000,500000,1000000,2000000].forEach(function(v){
+    const sel=String(v)===String(loanDraft.amount);
+    h+='<div class="loan-amt-preset '+(sel?'on':'')+'" onclick="setLoanAmt('+v+')">'+fmt(v)+'</div>';
+  });
+  h+='</div>';
+  h+='<input class="loan-amt-input" type="number" inputmode="numeric" placeholder="0" value="'+(loanDraft.amount||'')+'" oninput="loanDraft.amount=this.value">';
+  h+='<div style="font-size:11px;color:var(--t3);font-weight:700;letter-spacing:.5px;margin-top:14px">ПРИЧИНА</div>';
+  h+='<textarea class="loan-reason" rows="3" placeholder="Например: срочно нужны деньги до зарплаты — лекарства" oninput="loanDraft.reason=this.value">'+escH(loanDraft.reason||'')+'</textarea>';
+  h+='<div style="font-size:11px;color:var(--t3);margin-top:12px;line-height:1.4">⚠️ Сумма будет вычтена из ближайшей зарплаты после одобрения шефом.</div>';
+  h+='</div>';
+  const amt=parseInt(loanDraft.amount)||0,reasonOk=(loanDraft.reason||'').trim().length>=3;
+  const ok=amt>0&&reasonOk;
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  b.innerHTML='<button class="mbtn" '+(ok?'':'disabled')+' onclick="sendLoanRequest()">'+(ok?'💸 Отправить шефу · '+fmt(amt)+' сум':(amt?'Укажите причину':'Введите сумму'))+'</button>';
+}
+function sendLoanRequest(){
+  const amt=parseInt(loanDraft.amount)||0,reason=(loanDraft.reason||'').trim();
+  if(amt<=0||!reason)return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'loan_request',amount:amt,reason:reason}))}catch(e){console.warn(e)}}
+  toast('💸 Запрос отправлен шефу');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  loanDraft={amount:'',reason:''};
+  mView='main';render();
+}
+function rMLoanReview(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">💸 Запросы аванса · '+(LOANS&&LOANS.length||0)+'</div>';
+  if(!LOANS||!LOANS.length){
+    h+='<div class="empty-mini" style="text-align:center;padding:30px;color:var(--t3);font-size:13px">Нет запросов в ожидании</div>';
+  } else {
+    LOANS.forEach(function(l){
+      let dStr='';try{const d=new Date(l.at);dStr=d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}catch(e){}
+      h+='<div class="loan-review-card">';
+      h+='<div class="loan-review-head"><div class="loan-review-name">'+escH(l.name)+'</div><div class="loan-review-amt">'+fmt(l.amount)+' сум</div></div>';
+      h+='<div style="font-size:10px;color:var(--t3);font-weight:600">'+dStr+'</div>';
+      h+='<div class="loan-review-reason">«'+escH(l.reason)+'»</div>';
+      h+='<div class="loan-review-actions">';
+      h+='<button class="loan-act-ok" onclick="decideLoan('+l.id+',\'approve\')">✓ Одобрить</button>';
+      h+='<button class="loan-act-no" onclick="decideLoan('+l.id+',\'reject\')">✗ Отклонить</button>';
+      h+='</div></div>';
+    });
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+function decideLoan(id,decision){
+  const note=decision==='reject'?(prompt('Причина отказа (опц.):')||''):'';
+  if(decision==='reject'&&note===null)return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'loan_decide',loan_id:id,decision:decision,note:note||''}))}catch(e){console.warn(e)}}
+  // Lokal güncelle: listeden çıkar
+  for(let i=LOANS.length-1;i>=0;i--){if(LOANS[i].id===id)LOANS.splice(i,1)}
+  toast(decision==='approve'?'✓ Одобрено':'✗ Отклонено');
+  if(tg)tg.HapticFeedback?.notificationOccurred(decision==='approve'?'success':'warning');
+  render();
+}
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
