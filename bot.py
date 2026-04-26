@@ -2193,7 +2193,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Неверные данные штрафа.")
                 return
             split = bool(data.get("split"))
-            per_target = (amount // len(targets)) if split and len(targets) > 1 else amount
+            chef_share = bool(data.get("chef_share"))  # Şef %50 öder
+            # Şef paylaşırsa toplam tutarın yarısı baristalara dağılır
+            barista_pool = amount // 2 if chef_share else amount
+            chef_amount = amount - barista_pool if chef_share else 0
+            per_target = (barista_pool // len(targets)) if split and len(targets) > 1 else barista_pool
             period = current_period()
             sent_to = []
             for tid in targets:
@@ -2223,18 +2227,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         parse_mode="Markdown")
                 except Exception as e:
                     logger.warning(f"Notify fine failed: {e}")
+            # Şef payı — owner kendi üstüne %50 ceza yazar (iyilik kuralı)
+            if chef_share and chef_amount > 0:
+                chef_reason = reason + " (50% шефа)"
+                db.execute(
+                    "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (user.id, chef_amount, chef_reason, ftype, period,
+                     user.id, user.first_name, now.isoformat()))
+                log_action(db, "fine_add", user.id, user.first_name,
+                           user.id, user.first_name,
+                           {"amount": chef_amount, "reason": chef_reason, "type": ftype, "chef_share": True})
             db.commit()
+            tail = (f"\n🍴 Шеф взял на себя: -{fmt_sum(chef_amount)} сум" if chef_share and chef_amount > 0 else "")
             if split and len(sent_to) > 1:
                 await update.message.reply_text(
                     f"⚠️ Штраф разделён на {len(sent_to)} человек\n"
                     f"По {fmt_sum(per_target)} сум каждому\n"
-                    f"Причина: {reason}")
+                    f"Причина: {reason}" + tail)
             elif sent_to:
                 await update.message.reply_text(
                     f"⚠️ Штраф добавлен\n\n"
                     f"Кому: {display_name_for(db, sent_to[0]['user_id'])}\n"
                     f"Сумма: -{fmt_sum(per_target)} сум\n"
-                    f"Причина: {reason}")
+                    f"Причина: {reason}" + tail)
 
         elif action == "pay":
             db = get_db()
