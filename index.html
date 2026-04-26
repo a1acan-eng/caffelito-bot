@@ -78,7 +78,7 @@ body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
   .tabs{background:rgba(255,255,255,.94)}
 }
-.tab{flex:1;min-width:0;padding:8px 2px 7px;text-align:center;font-size:9.5px;font-weight:700;color:var(--t3);border-radius:999px;cursor:pointer;transition:all .28s cubic-bezier(.2,.7,.2,1);letter-spacing:0;white-space:nowrap;overflow:hidden;display:flex;flex-direction:column;align-items:center;gap:2px;line-height:1}
+.tab{flex:1;min-width:0;padding:8px 2px 7px;text-align:center;font-size:9.5px;font-weight:700;color:#3a3a3c;border-radius:999px;cursor:pointer;transition:all .28s cubic-bezier(.2,.7,.2,1);letter-spacing:0;white-space:nowrap;overflow:hidden;display:flex;flex-direction:column;align-items:center;gap:2px;line-height:1}
 .tab-ic{font-size:17px;line-height:1;filter:grayscale(.15)}
 .tab.on{color:#5a3e00;background:var(--yellow);box-shadow:0 2px 8px rgba(212,160,32,.35),inset 0 0 0 1px var(--gold-border)}
 .tab.on .tab-ic{filter:none}
@@ -389,6 +389,29 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .rt-result-t{font-size:22px;font-weight:800;color:var(--t1)}
 .rt-result-s{font-size:14px;color:var(--t3);margin-top:4px}
 .rt-result-score{font-size:40px;font-weight:900;color:var(--gold2);margin-top:14px}
+.rt-ready{text-align:center;padding:32px 20px;background:linear-gradient(135deg,#fef3c7,#fde68a);border-radius:24px;border:1px solid var(--gold-border);margin-bottom:14px}
+.rt-ready-ic{font-size:64px;margin-bottom:8px;animation:bounce 1.4s ease infinite}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.rt-ready-t{font-size:24px;font-weight:900;color:#5a3e00;letter-spacing:.3px}
+.rt-ready-s{font-size:13px;font-weight:600;color:#8a6a1a;margin-top:6px;line-height:1.45}
+.rt-ready-rules{display:grid;gap:8px;text-align:left;margin-top:18px;background:rgba(255,255,255,.55);border-radius:14px;padding:12px}
+.rt-rule{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:#5a3e00}
+.rt-rule-ic{font-size:20px;width:30px;text-align:center}
+.rt-go-btn{width:100%;padding:16px;background:#5a3e00;color:#fff;border:none;border-radius:16px;font-size:15px;font-weight:800;cursor:pointer;margin-top:12px;letter-spacing:.5px;text-transform:uppercase;transition:transform .15s}
+.rt-go-btn:active{transform:scale(.98)}
+.rt-cancel{width:100%;padding:12px;background:transparent;color:var(--t3);border:none;font-size:13px;font-weight:600;cursor:pointer;margin-top:6px}
+.rt-timer-ring{position:relative;width:36px;height:36px;flex-shrink:0}
+.rt-timer-ring svg{transform:rotate(-90deg)}
+.rt-timer-ring circle{fill:none;stroke-width:3.5}
+.rt-timer-ring .bg{stroke:var(--border2)}
+.rt-timer-ring .fg{stroke:var(--gold);stroke-linecap:round;transition:stroke-dashoffset .25s linear,stroke .25s}
+.rt-timer-ring.warn .fg{stroke:#f59e0b}
+.rt-timer-ring.danger .fg{stroke:#ef4444;animation:pulse 1s ease infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.rt-timer-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums}
+.rt-q-bar{padding:8px 12px}
+.rt-bonus-fly{position:fixed;left:50%;top:40%;transform:translateX(-50%);font-size:24px;font-weight:900;color:#10b981;pointer-events:none;animation:fly .9s ease-out forwards;z-index:1000}
+@keyframes fly{0%{opacity:0;transform:translate(-50%,0) scale(.6)}30%{opacity:1;transform:translate(-50%,-10px) scale(1.15)}100%{opacity:0;transform:translate(-50%,-50px) scale(1)}}
 .rt-an-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:8px}
 .rt-an-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px}
 .rt-an-name{font-size:14px;font-weight:800;color:var(--t1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -852,7 +875,7 @@ if(!MY_UID)tab='order';
 let mView='main'; // main | shiftEnd | shift | fine | baristas | transfer | pay | shiftDetail | activeBaristas | tips | settings
 let shiftDraft={hours:'',drinks:{},note:''};
 let endDraft={drinks:{},desserts:{},note:'',endTime:''};   // Vardiya bitirme taslağı (endTime boşsa ŞİMDİ)
-let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};
+let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};
 let payTarget=0;
 let detailShift=null;                      // Tıklanan vardiya kaydı
 let tipDraft={total:'',distributions:{},note:'',mode:'equal'}; // equal|custom
@@ -1388,7 +1411,7 @@ function rMMain(m,b){
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
 function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:''};render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
-function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};render()}
+function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};render()}
 function openTips(){mView='tips';tipDraft={total:'',distributions:{},note:'',mode:'equal'};render()}
 
 // Hızlı istatistik (bugün/hafta) — bitmiş vardiyalardan
@@ -1898,6 +1921,11 @@ function rMFine(m,b){
     +'<div><div class="split-toggle-t">⚖️ Разделить на нескольких</div><div class="split-toggle-s">'+(fineDraft.split?'Сумма поделится поровну':'Полная сумма каждому выбранному')+'</div></div>'
     +'<div class="tg-sw '+(fineDraft.split?'on':'')+'"></div>'
   +'</div>';
+  // Şef %50 öder toggle (sadece denetim/проверка cezalarında öneri)
+  h+='<div class="split-toggle '+(fineDraft.chefShare?'on':'')+'" style="margin-top:6px" onclick="fineDraft.chefShare=!fineDraft.chefShare;render()">'
+    +'<div><div class="split-toggle-t">🍴 Шеф платит 50%</div><div class="split-toggle-s">'+(fineDraft.chefShare?'Половина суммы — на шефа (вы)':'Бариста платят полную сумму')+'</div></div>'
+    +'<div class="tg-sw '+(fineDraft.chefShare?'on':'')+'"></div>'
+  +'</div>';
   if(isInsp&&!fineDraft.split){
     h+='<div class="refresh-hint" style="margin-top:0">💡 Это проверка — обычно штраф делится между баристами в смене.</div>';
   }
@@ -1922,11 +1950,16 @@ function rMFine(m,b){
 
   // Toplam
   const cnt=fineDraft.targets.length;
-  const per=(fineDraft.split&&cnt>1)?Math.floor(fineDraft.amount/cnt):fineDraft.amount;
+  const totalAmt=fineDraft.amount;
+  const baristaPool=fineDraft.chefShare?Math.floor(totalAmt/2):totalAmt;
+  const chefAmt=fineDraft.chefShare?(totalAmt-baristaPool):0;
+  const per=(fineDraft.split&&cnt>1)?Math.floor(baristaPool/cnt):baristaPool;
   h+='<div class="sf-total">'
     +'<div class="sf-tot-row"><span>Получателей</span><span>'+cnt+'</span></div>'
-    +(fineDraft.split&&cnt>1?'<div class="sf-tot-row"><span>Общая сумма</span><span>-'+fmt(fineDraft.amount)+'</span></div>':'')
-    +'<div class="sf-tot-big"><span>'+(fineDraft.split&&cnt>1?'Каждому':'Штраф')+'</span><span id="fnAmt">-'+fmt(per)+' сум</span></div>'
+    +(fineDraft.chefShare?'<div class="sf-tot-row"><span>Полная сумма</span><span>-'+fmt(totalAmt)+'</span></div>':'')
+    +(fineDraft.chefShare?'<div class="sf-tot-row" style="color:#f59e0b"><span>🍴 Доля шефа (вы)</span><span>-'+fmt(chefAmt)+'</span></div>':'')
+    +(fineDraft.split&&cnt>1?'<div class="sf-tot-row"><span>На баристов</span><span>-'+fmt(baristaPool)+'</span></div>':'')
+    +'<div class="sf-tot-big"><span>'+(fineDraft.split&&cnt>1?'Каждому':'Штраф бариста')+'</span><span id="fnAmt">-'+fmt(per)+' сум</span></div>'
   +'</div>';
 
   h+='<div class="footer">XSYN</div>';
@@ -1934,7 +1967,7 @@ function rMFine(m,b){
   b.style.display='block';
   const reasonOk=(fineDraft.reason||'').trim().length>0;
   const ok=cnt>0&&fineDraft.amount>0&&reasonOk;
-  b.innerHTML='<button class="mbtn" id="fnBtn" '+(ok?'':'disabled')+' onclick="saveFine()">'+(ok?'⚠️ Записать штраф · -'+fmt(per)+' сум'+(fineDraft.split&&cnt>1?' × '+cnt:''):(reasonOk?'Выберите получателей':'Укажите причину'))+'</button>';
+  b.innerHTML='<button class="mbtn" id="fnBtn" '+(ok?'':'disabled')+' onclick="saveFine()">'+(ok?'⚠️ Записать штраф · -'+fmt(per)+' сум'+(fineDraft.split&&cnt>1?' × '+cnt:'')+(fineDraft.chefShare?' (+ вы -'+fmt(chefAmt)+')':''):(reasonOk?'Выберите получателей':'Укажите причину'))+'</button>';
 }
 
 function toggleFineTarget(uid){
@@ -1973,18 +2006,27 @@ function saveFine(){
     if(!reason)toast('❌ Причина обязательна');
     return;
   }
+  const chefShare=!!fineDraft.chefShare;
+  const totalAmt=fineDraft.amount;
+  const baristaPool=chefShare?Math.floor(totalAmt/2):totalAmt;
+  const chefAmt=chefShare?(totalAmt-baristaPool):0;
   const split=fineDraft.split&&cnt>1;
-  const per=split?Math.floor(fineDraft.amount/cnt):fineDraft.amount;
-  // Lokal güncelleme
+  const per=split?Math.floor(baristaPool/cnt):baristaPool;
+  // Lokal güncelleme — baristalar
   fineDraft.targets.forEach(function(uid){
     const t=BARISTAS.find(function(x){return x.id===uid});
     if(t){t.f=(t.f||0)+per;t.net=(t.net||0)-per}
   });
-  const payload={action:'fine',targets:fineDraft.targets,amount:fineDraft.amount,reason:reason,type:fineDraft.type,split:split};
-  toast(split?('⚠️ Штраф разделён · '+cnt+' чел.'):'⚠️ Штраф записан');
+  // Lokal güncelleme — şefin (kendi) payı
+  if(chefShare&&chefAmt>0){
+    const me=BARISTAS.find(function(x){return x.id===MY_UID});
+    if(me){me.f=(me.f||0)+chefAmt;me.net=(me.net||0)-chefAmt}
+  }
+  const payload={action:'fine',targets:fineDraft.targets,amount:totalAmt,reason:reason,type:fineDraft.type,split:split,chef_share:chefShare};
+  toast(chefShare?('🍴 Штраф разделён со шефом'):(split?('⚠️ Штраф разделён · '+cnt+' чел.'):'⚠️ Штраф записан'));
   if(tg)tg.HapticFeedback?.notificationOccurred('warning');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
-  fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false};
+  fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};
   mView='main';
   render();
 }
@@ -2771,11 +2813,29 @@ function rGame(m,b){
     m.innerHTML=h;b.style.display='none';return;
   }
   // active session
+  if(RT.ready){
+    // "Готов?" intro ekranı
+    const cfg=RT_LEVELS[RT.level-1];
+    let h='<div class="rt-ready">';
+    h+='<div class="rt-ready-ic">☕</div>';
+    h+='<div class="rt-ready-t">Готов?</div>';
+    h+='<div class="rt-ready-s">Уровень '+RT.level+' · «'+cfg.t+'»<br>'+cfg.q+' вопросов · нужно '+cfg.pass+'% для прохождения</div>';
+    h+='<div class="rt-ready-rules">';
+    h+='<div class="rt-rule"><div class="rt-rule-ic">⏱</div>30 секунд на вопрос — или потеря сердца</div>';
+    h+='<div class="rt-rule"><div class="rt-rule-ic">⚡️</div>Чем быстрее — тем больше XP</div>';
+    h+='<div class="rt-rule"><div class="rt-rule-ic">❤️</div>3 жизни — больше нельзя ошибаться</div>';
+    if(RT.level>=4)h+='<div class="rt-rule"><div class="rt-rule-ic">🎭</div>Будут вопросы-ловушки!</div>';
+    h+='</div>';
+    h+='<button class="rt-go-btn" onclick="rtBegin()">Начать ▸</button>';
+    h+='<button class="rt-cancel" onclick="rtAbort()">Отмена</button>';
+    h+='</div>';
+    m.innerHTML=h;b.style.display='none';return;
+  }
   if(RT.done){
     const pct=Math.round(RT.correct/RT.total*100);
     const cfg=RT_LEVELS[RT.level-1];
     const passed=pct>=cfg.pass;
-    let h='<div class="rt-result"><div class="rt-result-ic">'+(passed?'🏆':'💪')+'</div><div class="rt-result-t">'+(passed?'Уровень пройден!':'Попробуй ещё раз')+'</div><div class="rt-result-s">'+RT.correct+' из '+RT.total+' верно · '+pct+'%</div><div class="rt-result-score">+'+RT.xp+' XP</div></div>';
+    let h='<div class="rt-result"><div class="rt-result-ic">'+(passed?'🏆':'💪')+'</div><div class="rt-result-t">'+(passed?'Уровень пройден!':'Попробуй ещё раз')+'</div><div class="rt-result-s">'+RT.correct+' из '+RT.total+' верно · '+pct+'% · ⚡️ '+RT.timeBonus+' XP за скорость</div><div class="rt-result-score">+'+RT.xp+' XP</div></div>';
     if(passed&&RT.level<RT_LEVELS.length){
       h+='<button class="rt-next" onclick="rtStart('+(RT.level+1)+')">Следующий уровень ▸</button>';
     }
@@ -2785,8 +2845,13 @@ function rGame(m,b){
   }
   const q=RT.qs[RT.idx],cfg=RT_LEVELS[RT.level-1];
   const pct=(RT.idx/RT.qs.length)*100;
-  let h='<div class="rt-q-bar"><span style="font-size:11px;font-weight:700;color:var(--t3)">УР.'+RT.level+'</span><div class="rt-q-prog"><div class="rt-q-fill" style="width:'+pct+'%"></div></div><span class="rt-q-hearts">'+'❤️'.repeat(RT.hearts)+'🤍'.repeat(3-RT.hearts)+'</span></div>';
-  h+='<div class="rt-q-card"><div class="rt-q-label">Вопрос '+(RT.idx+1)+' / '+RT.qs.length+'</div><div class="rt-q-text">'+q.text+'</div></div>';
+  // Timer ring
+  const tLeft=Math.max(0,RT.timeLeft||0),tMax=RT.timePerQ||30;
+  const ringR=15,ringC=2*Math.PI*ringR;
+  const dash=ringC*(1-tLeft/tMax);
+  const ringCls='rt-timer-ring'+(tLeft<=10?' warn':'')+(tLeft<=5?' danger':'');
+  let h='<div class="rt-q-bar"><span style="font-size:11px;font-weight:700;color:var(--t3)">УР.'+RT.level+'</span><div class="rt-q-prog"><div class="rt-q-fill" style="width:'+pct+'%"></div></div><span class="rt-q-hearts">'+'❤️'.repeat(RT.hearts)+'🤍'.repeat(3-RT.hearts)+'</span><div class="'+ringCls+'"><svg width="36" height="36" viewBox="0 0 36 36"><circle class="bg" cx="18" cy="18" r="'+ringR+'"></circle><circle class="fg" cx="18" cy="18" r="'+ringR+'" stroke-dasharray="'+ringC+'" stroke-dashoffset="'+dash+'"></circle></svg><div class="rt-timer-num">'+tLeft+'</div></div></div>';
+  h+='<div class="rt-q-card"><div class="rt-q-label">Вопрос '+(RT.idx+1)+' / '+RT.qs.length+' · ⚡️ '+RT.xp+' XP</div><div class="rt-q-text">'+q.text+'</div></div>';
   h+='<div class="rt-opts">';
   q.opts.forEach(function(opt,i){
     let cls='rt-opt';
@@ -2796,29 +2861,98 @@ function rGame(m,b){
   h+='</div>';
   if(RT.answered){
     const ok=q.opts[RT.pickedIdx]===q.correct;
-    h+='<div class="rt-feedback '+(ok?'ok':'no')+'">'+(ok?'✓ Верно! +10 XP':'✗ Правильный ответ: '+q.correct)+'</div>';
+    let fb='';
+    if(ok){
+      fb='✓ Верно! +'+RT.lastGain+' XP';
+      if(RT.lastSpeed>=8)fb+=' · ⚡️ молниеносно!';
+      else if(RT.lastSpeed>=5)fb+=' · быстро!';
+    } else {
+      fb=RT.timedOut?'⏱ Время вышло! Правильно: '+q.correct:'✗ Правильный ответ: '+q.correct;
+    }
+    h+='<div class="rt-feedback '+(ok?'ok':'no')+'">'+fb+'</div>';
     h+='<button class="rt-next" onclick="rtNext()">'+(RT.idx+1>=RT.qs.length?'Завершить':'Дальше')+' ▸</button>';
   }
   m.innerHTML=h;b.style.display='none';
 }
+let RT_TIMER=null;
+function rtClearTimer(){if(RT_TIMER){clearInterval(RT_TIMER);RT_TIMER=null}}
+function rtUpdateTimerDom(){
+  const ring=document.querySelector('.rt-timer-ring');if(!ring||!RT)return;
+  const tLeft=Math.max(0,RT.timeLeft||0),tMax=RT.timePerQ||30;
+  const ringR=15,ringC=2*Math.PI*ringR;
+  const dash=ringC*(1-tLeft/tMax);
+  ring.classList.toggle('warn',tLeft<=10&&tLeft>5);
+  ring.classList.toggle('danger',tLeft<=5);
+  const fg=ring.querySelector('.fg');if(fg)fg.setAttribute('stroke-dashoffset',dash);
+  const num=ring.querySelector('.rt-timer-num');if(num)num.textContent=tLeft;
+}
+function rtStartTimer(){
+  rtClearTimer();
+  if(!RT)return;
+  RT.timePerQ=30;RT.timeLeft=30;RT.qStartedAt=Date.now();
+  RT_TIMER=setInterval(function(){
+    if(!RT||RT.answered||RT.done){rtClearTimer();return}
+    RT.timeLeft=Math.max(0,RT.timePerQ-Math.floor((Date.now()-RT.qStartedAt)/1000));
+    rtUpdateTimerDom();
+    if(RT.timeLeft<=0){rtTimeout();return}
+  },250);
+}
+function rtTimeout(){
+  if(!RT||RT.answered)return;
+  rtClearTimer();
+  RT.answered=true;RT.pickedIdx=-1;RT.timedOut=true;
+  RT.streak=0;RT.hearts=Math.max(0,RT.hearts-1);
+  if(tg)tg.HapticFeedback?.notificationOccurred('error');
+  render();
+}
 function rtStart(level){
-  RT={level:level,qs:rtBuildSession(level),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:3,answered:false,pickedIdx:-1,done:false,total:0};
+  rtClearTimer();
+  RT={level:level,qs:rtBuildSession(level),idx:0,correct:0,xp:0,streak:0,maxStreak:0,hearts:3,answered:false,pickedIdx:-1,done:false,total:0,ready:true,timeBonus:0,lastGain:0,lastSpeed:0,timedOut:false,timePerQ:30,timeLeft:30};
   RT.total=RT.qs.length;
   render();
 }
+function rtBegin(){
+  if(!RT)return;
+  RT.ready=false;
+  rtStartTimer();
+  render();
+}
+function rtAbort(){rtClearTimer();RT=null;render();}
+function showBonusFly(txt){
+  try{
+    const el=document.createElement('div');
+    el.className='rt-bonus-fly';el.textContent=txt;
+    document.body.appendChild(el);
+    setTimeout(function(){el.remove()},900);
+  }catch(e){}
+}
 function rtAnswer(i){
   if(!RT||RT.answered)return;
-  RT.answered=true;RT.pickedIdx=i;
+  rtClearTimer();
+  RT.answered=true;RT.pickedIdx=i;RT.timedOut=false;
   const q=RT.qs[RT.idx],ok=q.opts[i]===q.correct;
-  if(ok){RT.correct++;RT.xp+=10;RT.streak++;if(RT.streak>RT.maxStreak)RT.maxStreak=RT.streak;if(tg)tg.HapticFeedback?.notificationOccurred('success');}
+  const elapsed=Math.min(30,(Date.now()-RT.qStartedAt)/1000);
+  const speedSec=Math.max(0,30-elapsed); // hızlı cevap → daha çok puan
+  if(ok){
+    const base=10;
+    const speedBonus=Math.round(speedSec*0.7); // max ~21 ekstra
+    const gain=base+speedBonus;
+    RT.correct++;RT.xp+=gain;RT.lastGain=gain;RT.lastSpeed=Math.round(speedSec/3);
+    RT.timeBonus+=speedBonus;
+    RT.streak++;if(RT.streak>RT.maxStreak)RT.maxStreak=RT.streak;
+    if(tg)tg.HapticFeedback?.notificationOccurred('success');
+    showBonusFly('+'+gain);
+  }
   else{RT.streak=0;RT.hearts=Math.max(0,RT.hearts-1);if(tg)tg.HapticFeedback?.notificationOccurred('error');}
   render();
 }
 function rtNext(){
   if(!RT)return;
+  rtClearTimer();
   if(RT.hearts<=0){RT.done=true;finishGame();render();return;}
-  RT.idx++;RT.answered=false;RT.pickedIdx=-1;
+  RT.idx++;RT.answered=false;RT.pickedIdx=-1;RT.timedOut=false;
   if(RT.idx>=RT.qs.length){RT.done=true;finishGame();}
+  else{rtStartTimer();}
   render();
 }
 function finishGame(){
