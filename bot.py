@@ -2078,6 +2078,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if action == "order":
             from html import escape as esc_html
+            import re as _re
+            def _clean(name):
+                # Parantez içindeki birim/açıklamaları kaldır: "Молоко 3.2% (1 уп)" → "Молоко 3.2%"
+                return _re.sub(r'\s*\([^)]*\)', '', str(name or '')).strip()
             total = data.get("c", 0)
             groups = data.get("g", [])
 
@@ -2093,13 +2097,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 for group_str in groups:
                     parts = group_str.split('|')
                     cat_name = parts[0] if parts else "Прочее"
-                    text += f"\n<b>{esc_html(cat_name)}:</b>\n"
+                    text += f"\n<b>{esc_html(_clean(cat_name))}:</b>\n"
                     for item_str in parts[1:]:
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
-                            text += f"<b>  — {esc_html(iname)}:  {iqty}x</b>\n"
+                            text += f"<b>  — {esc_html(_clean(iname))}:  {iqty}x</b>\n"
                         else:
-                            text += f"<b>  — {esc_html(item_str)}</b>\n"
+                            text += f"<b>  — {esc_html(_clean(item_str))}</b>\n"
             else:
                 # Eski format desteği
                 items = data.get("items") or data.get("i", {})
@@ -2107,7 +2111,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 total = sum(items.values()) if items else total
                 for pid, qty in items.items():
                     name = names_from_app.get(pid) or NAMES.get(pid, pid)
-                    text += f"<b>  — {esc_html(name)}:  {qty}x</b>\n"
+                    text += f"<b>  — {esc_html(_clean(name))}:  {qty}x</b>\n"
 
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
