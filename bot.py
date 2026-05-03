@@ -2094,10 +2094,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if groups:
                 # Yeni kompakt format: ["Кофе|Эспрессо:1|Колумбия:3", ...]
+                # Kategori başlıkları gösterilmiyor — gruplar arası boşlukla ayrılır
                 for group_str in groups:
                     parts = group_str.split('|')
-                    cat_name = parts[0] if parts else "Прочее"
-                    text += f"\n<b>{esc_html(_clean(cat_name))}:</b>\n"
+                    text += "\n\n"  # kategori arası uzun boşluk
                     for item_str in parts[1:]:
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
