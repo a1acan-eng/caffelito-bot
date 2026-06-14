@@ -3480,12 +3480,20 @@ async def web_options(request):
     return _cors(web.Response(text=""))
 
 
+async def _read_json(request):
+    """Gövdeyi içerik tipinden bağımsız oku (text/plain de olabilir → CORS preflight'ı atlamak için)."""
+    try:
+        raw = await request.text()
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return None
+
+
 async def api_state(request):
     """POST {initData} → kullanıcının state'ini hash-payload formatında döner.
     İstemci bunu location.hash'e yazar; mevcut JS değişmeden okur."""
-    try:
-        body = await request.json()
-    except Exception:
+    body = await _read_json(request)
+    if body is None:
         return _cors(web.json_response({"error": "bad json"}, status=400))
     user = validate_init_data(body.get("initData", ""))
     if not user:
@@ -3498,9 +3506,8 @@ async def api_state(request):
 async def api_action(request):
     """POST {initData, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
     initData imzası doğrulanır, sonra handle_webapp_data değiştirilmeden çağrılır."""
-    try:
-        body = await request.json()
-    except Exception:
+    body = await _read_json(request)
+    if body is None:
         return _cors(web.json_response({"error": "bad json"}, status=400))
     user = validate_init_data(body.get("initData", ""))
     if not user:

@@ -618,21 +618,22 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
-// ═══ YOL B: ana ekran/link ile açılınca (hash yoksa) state'i backend'den çek ═══
-// Klavye butonundan açılınca hash zaten dolu olur → bu blok atlanır (geriye uyumlu).
+// ═══ YOL B: API her zaman Railway backend'ine (sabit adres) gider ═══
+// Sayfa github.io'dan da açılsa Railway'e ulaşır (backend orada). text/plain
+// kullanıyoruz ki cross-origin'de CORS preflight tetiklenmesin.
+var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
+// Açılışta state'i backend'den çek (hash'e GÜVENME — eski/kırpık olabilir).
 (function(){
   try{
     var initData=(tg&&tg.initData)?tg.initData:'';
     if(!initData)return; // Telegram dışında açıldıysa (tarayıcı testi) mevcut hash/demo kalsın
-    // Telegram içindeyse HER açılışta taze state çek — eski hash'e GÜVENME.
-    // (Ana ekran ikonu veya Telegram cache'i role=barista gibi eski veriyi taşıyabilir.)
     var xhr=new XMLHttpRequest();
-    xhr.open('POST','/api/state',false); // senkron: kalan kod hash'i okumadan önce hazır olsun
-    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.open('POST',API_BASE+'/api/state',false); // senkron: kalan kod hash'i okumadan önce hazır olsun
+    xhr.setRequestHeader('Content-Type','text/plain;charset=UTF-8');
     xhr.send(JSON.stringify({initData:initData}));
     if(xhr.status===200&&xhr.responseText){
       window.location.hash=xhr.responseText; // taze rol/veri
-    }
+    }else{console.error('state http',xhr.status);}
   }catch(e){console.error('state load failed',e);}
 })();
 // ═══ YOL B: tg.sendData()'yı HTTP /api/action'a yönlendir (ana ekrandan da çalışsın) ═══
@@ -642,7 +643,7 @@ if(tg){
     try{
       var initData=tg.initData||'';
       if(!initData){if(_origSend)return _origSend(dataStr);return;}
-      fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+      fetch(API_BASE+'/api/action',{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},
         body:JSON.stringify({initData:initData,data:dataStr})})
         .then(function(r){return r.json();})
         .then(function(res){
