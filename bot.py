@@ -756,11 +756,13 @@ def build_hash_payload(db, user_id, name):
 
 
 def build_webapp_url(base_url, user_id, name, db):
-    """Klavye-butonu akışı için tam WebApp URL'i — state'i hash'e gömer."""
+    """Yol B: URL'e DEV hash GÖMÜLMEZ. State artık HTTP /api/state'ten geliyor.
+    Hash'i gömmek owner'da (çok barista) Telegram buton-URL limitini aşıyordu
+    ('Слишком много данных' hatası) ve URL kırpılınca aktif vardiya kayboluyordu.
+    Sadece cache-buster ?v= ekliyoruz ki her açılışta TAZE HTML yüklensin."""
     ts = int(datetime.now(TZ).timestamp())
-    payload = build_hash_payload(db, user_id, name)
     sep = "&" if "?" in base_url else "?"
-    return base_url + f"{sep}v={ts}" + "#" + payload
+    return base_url + f"{sep}v={ts}"
 
 # ═══════════════════════════════════════
 #  ПРОДУКЦИЯ СКЛАДА (Sipariş Listesi)
