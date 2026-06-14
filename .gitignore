@@ -1,0 +1,14 @@
+# Secrets / yerel ayarlar — ASLA commit etme
+.env
+secrets.ps1
+start_local.ps1
+
+# Veritabanı
+*.db
+caffelito.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

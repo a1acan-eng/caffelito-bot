@@ -618,6 +618,42 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
+// ═══ YOL B: ana ekran/link ile açılınca (hash yoksa) state'i backend'den çek ═══
+// Klavye butonundan açılınca hash zaten dolu olur → bu blok atlanır (geriye uyumlu).
+(function(){
+  try{
+    var hasHash=(window.location.hash||'').indexOf('uid=')>=0;
+    if(hasHash)return;
+    var initData=(tg&&tg.initData)?tg.initData:'';
+    if(!initData)return; // Telegram dışında açıldıysa (tarayıcı testi) demo modda kal
+    var xhr=new XMLHttpRequest();
+    xhr.open('POST','/api/state',false); // senkron: kalan kod hash'i okumadan önce hazır olsun
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.send(JSON.stringify({initData:initData}));
+    if(xhr.status===200&&xhr.responseText){
+      window.location.hash=xhr.responseText;
+    }
+  }catch(e){console.error('state load failed',e);}
+})();
+// ═══ YOL B: tg.sendData()'yı HTTP /api/action'a yönlendir (ana ekrandan da çalışsın) ═══
+if(tg){
+  var _origSend=tg.sendData?tg.sendData.bind(tg):null;
+  tg.sendData=function(dataStr){
+    try{
+      var initData=tg.initData||'';
+      if(!initData){if(_origSend)return _origSend(dataStr);return;}
+      fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({initData:initData,data:dataStr})})
+        .then(function(r){return r.json();})
+        .then(function(res){
+          // İşlem başarılı → app'i tazele (orijinalde sendData app'i kapatıp yeniden açtırıyordu)
+          if(res&&res.ok){setTimeout(function(){location.reload();},700);}
+          else{console.error('action error',res);}
+        })
+        .catch(function(e){console.error('action failed',e);if(_origSend)_origSend(dataStr);});
+    }catch(e){if(_origSend)_origSend(dataStr);}
+  };
+}
 // ─── Passcode auth (Wallet style, client-side SHA-256) ───
 (function(){
   const HP2=new URLSearchParams((window.location.hash||'').replace(/^#/,''));

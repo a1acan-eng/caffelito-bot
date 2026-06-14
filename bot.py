@@ -3,8 +3,10 @@ CAFFELITO TELEGRAM BOT ☕
 Заказ, Задачи, Уборка и ОКК контроль
 """
 
-import json, os, logging, sqlite3
+import json, os, logging, sqlite3, hmac, hashlib
 from datetime import datetime, timezone, timedelta
+from urllib.parse import parse_qsl
+from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     WebAppInfo, BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
@@ -611,8 +613,10 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
 
-def build_webapp_url(base_url, user_id, name, db):
-    """Build WebApp URL with user, role, summary, active shift and (for owner) baristas embedded in hash."""
+def build_hash_payload(db, user_id, name):
+    """URL-hash payload string'ini (uid=...&role=...&summary=...) üretir.
+    Hem klavye-butonu URL'i (build_webapp_url) hem de /api/state HTTP ucu (Yol B)
+    bu aynı payload'ı kullanır — böylece ana ekrandan açınca da aynı veri gelir."""
     from urllib.parse import quote
     upsert_user(db, user_id, name, None, None)
     role = get_role(db, user_id)
@@ -741,8 +745,15 @@ def build_webapp_url(base_url, user_id, name, db):
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
+    return "&".join(parts)
+
+
+def build_webapp_url(base_url, user_id, name, db):
+    """Klavye-butonu akışı için tam WebApp URL'i — state'i hash'e gömer."""
+    ts = int(datetime.now(TZ).timestamp())
+    payload = build_hash_payload(db, user_id, name)
     sep = "&" if "?" in base_url else "?"
-    return base_url + f"{sep}v={ts}" + "#" + "&".join(parts)
+    return base_url + f"{sep}v={ts}" + "#" + payload
 
 # ═══════════════════════════════════════
 #  ПРОДУКЦИЯ СКЛАДА (Sipariş Listesi)
@@ -3330,6 +3341,189 @@ async def sync_user_ui(bot, db, user_id: int):
 async def setup_commands(app):
     """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
     await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
+    # Yol B: Mini App'i + API'yi sunan HTTP sunucusunu başlat
+    await start_web_server(app)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  YOL B — HTTP BACKEND (Mini App'i ana ekrandan açabilmek için)
+#  Telegram kuralı: tg.sendData() sadece klavye-butonu akışında çalışır.
+#  Ana ekran/link ile açılınca veri ancak HTTP + initData imzasıyla
+#  güvenli şekilde gönderilebilir. Bu blok onu sağlar.
+# ═══════════════════════════════════════════════════════════════════
+
+def validate_init_data(init_data: str):
+    """Telegram WebApp initData imzasını doğrular. Geçerliyse user dict döner, değilse None.
+    Algoritma: secret = HMAC_SHA256('WebAppData', bot_token);
+               hash   = HMAC_SHA256(secret, data_check_string)."""
+    try:
+        if not init_data:
+            return None
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        recv_hash = pairs.pop("hash", None)
+        if not recv_hash:
+            return None
+        data_check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+        secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, recv_hash):
+            return None
+        return json.loads(pairs.get("user", "{}"))
+    except Exception as e:
+        logger.warning(f"initData validation error: {e}")
+        return None
+
+
+# ─── handle_webapp_data'yı değiştirmeden HTTP'den çağırabilmek için shim ───
+class _ShimUser:
+    def __init__(self, uid, first_name, username):
+        self.id = uid
+        self.first_name = first_name or "Бариста"
+        self.username = username
+        self.full_name = first_name or "Бариста"
+
+
+class _ShimChat:
+    def __init__(self, uid):
+        self.id = uid
+        self.type = "private"
+
+
+class _ShimWebAppData:
+    def __init__(self, data):
+        self.data = data
+
+
+class _ShimMessage:
+    def __init__(self, bot, chat_id, data):
+        self._bot = bot
+        self._chat_id = chat_id
+        self.web_app_data = _ShimWebAppData(data)
+
+    async def reply_text(self, text, **kwargs):
+        # reply_text → kullanıcının özel sohbetine normal mesaj
+        kwargs.pop("reply_to_message_id", None)
+        kwargs.pop("quote", None)
+        kwargs.pop("do_quote", None)
+        try:
+            return await self._bot.send_message(chat_id=self._chat_id, text=text, **kwargs)
+        except Exception as e:
+            logger.warning(f"shim reply_text failed: {e}")
+            return None
+
+
+class _ShimUpdate:
+    def __init__(self, bot, uid, first_name, username, data):
+        self.effective_user = _ShimUser(uid, first_name, username)
+        self.effective_chat = _ShimChat(uid)
+        self.message = _ShimMessage(bot, uid, data)
+        self.effective_message = self.message
+
+
+class _ShimContext:
+    def __init__(self, bot, bot_data):
+        self.bot = bot
+        self.bot_data = bot_data
+
+
+def _cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
+
+async def web_index(request):
+    """Mini App HTML'ini sun (aynı origin → CORS yok, hash gerekmez)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        return _cors(web.Response(text=html, content_type="text/html"))
+    except Exception as e:
+        return web.Response(text=f"index.html bulunamadı: {e}", status=500)
+
+
+async def web_image(request):
+    """nero.jpg gibi yerel görselleri sun."""
+    fname = request.match_info.get("fname", "")
+    if fname not in ("nero.jpg",):
+        return web.Response(status=404)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
+    if not os.path.exists(path):
+        return web.Response(status=404)
+    return web.FileResponse(path)
+
+
+async def web_health(request):
+    return web.Response(text="ok")
+
+
+async def web_options(request):
+    return _cors(web.Response(text=""))
+
+
+async def api_state(request):
+    """POST {initData} → kullanıcının state'ini hash-payload formatında döner.
+    İstemci bunu location.hash'e yazar; mevcut JS değişmeden okur."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _cors(web.json_response({"error": "bad json"}, status=400))
+    user = validate_init_data(body.get("initData", ""))
+    if not user:
+        return _cors(web.json_response({"error": "unauthorized"}, status=403))
+    db = get_db()
+    payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"))
+    return _cors(web.Response(text=payload, content_type="text/plain"))
+
+
+async def api_action(request):
+    """POST {initData, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
+    initData imzası doğrulanır, sonra handle_webapp_data değiştirilmeden çağrılır."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _cors(web.json_response({"error": "bad json"}, status=400))
+    user = validate_init_data(body.get("initData", ""))
+    if not user:
+        return _cors(web.json_response({"error": "unauthorized"}, status=403))
+    data_str = body.get("data")
+    if not data_str:
+        return _cors(web.json_response({"error": "no data"}, status=400))
+    tg_app = request.app["tg_app"]
+    shim_update = _ShimUpdate(
+        tg_app.bot, user["id"], user.get("first_name", "Бариста"),
+        user.get("username"), data_str)
+    shim_context = _ShimContext(tg_app.bot, tg_app.bot_data)
+    try:
+        await handle_webapp_data(shim_update, shim_context)
+    except Exception as e:
+        logger.error(f"api_action handle_webapp_data failed: {e}")
+        return _cors(web.json_response({"error": str(e)}, status=500))
+    return _cors(web.json_response({"ok": True}))
+
+
+async def start_web_server(app):
+    web_app = web.Application()
+    web_app["tg_app"] = app
+    web_app.add_routes([
+        web.get("/", web_index),
+        web.get("/index.html", web_index),
+        web.get("/health", web_health),
+        web.get("/{fname:.+\\.jpg}", web_image),
+        web.post("/api/state", api_state),
+        web.post("/api/action", api_action),
+        web.options("/api/state", web_options),
+        web.options("/api/action", web_options),
+    ])
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    app.bot_data["_web_runner"] = runner
+    logger.info(f"🌐 Web sunucusu açıldı: 0.0.0.0:{port}")
 
 
 def main():
