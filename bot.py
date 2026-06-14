@@ -301,6 +301,20 @@ def fmt_sum(n):
     return f"{int(n):,}".replace(",", ".")
 
 
+def fmt_hm(h):
+    """Ondalık saati okunabilir göster: 0.65 → '39м', 1.5 → '1ч 30м', 8 → '8ч'."""
+    n = float(h or 0)
+    if n <= 0:
+        return "0м"
+    total_min = round(n * 60)
+    hh, mm = divmod(total_min, 60)
+    if hh == 0:
+        return f"{mm}м"
+    if mm == 0:
+        return f"{hh}ч"
+    return f"{hh}ч {mm}м"
+
+
 def current_period():
     return datetime.now(TZ).strftime("%Y-%m")
 
@@ -2247,7 +2261,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # DM cevabı: kişisel — saatlik dahil net
             text = (f"🔴 *Смена закрыта!*\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
+                    f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
                     f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
             if sweets:
                 text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
@@ -2255,7 +2269,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                      f"💎 За смену: *{fmt_sum(total)}* сум\n"
                      f"━━━━━━━━━━━━━━━━━━\n"
                      f"📊 *Месяц {period}:*\n"
-                     f"Часы: {s['hours']:g}h | Смен: {s['shifts_count']}\n"
+                     f"Часы: {fmt_hm(s['hours'])} | Смен: {s['shifts_count']}\n"
                      f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*")
             if note:
                 text += f"\n📝 {note}"
@@ -2270,7 +2284,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     sales_bonus = drinks_bonus + dessert_bonus
                     gtext = (f"🔴 <b>{esc_html(user.first_name)}</b> закрыл(а) смену\n"
                              f"━━━━━━━━━━━━━━━━━━━━\n"
-                             f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({hours:g}h)\n"
+                             f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
                              f"🥤 Напитки: <b>{cups}</b> шт")
                     if sweets:
                         gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"

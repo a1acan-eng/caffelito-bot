@@ -1201,9 +1201,7 @@ function rTM(m,b){
       restKeys.concat(lastKeys).forEach(function(k){h+=buildUCard(k,src,todayKey,false);});
     }
   } else {
-    // Tarif Eğitmeni oyun kartı — Задачи'nın en üstünde
-    const gs=getGameState();
-    h+='<div class="rt-card" onclick="sub=\'__game__\';render()"><div class="rt-card-ic">🎯</div><div class="rt-card-info"><div class="rt-card-t">Тренажёр рецептов</div><div class="rt-card-s">Ур. '+gs.level+' · '+gs.xp+' XP · серия '+gs.bestStreak+'</div></div><div class="rt-card-arr">›</div></div>';
+    // Тренажёр рецептов kartı kaldırıldı (kullanıcı isteği) — giriş noktası yok.
     if(edit)h+='<div class="add-row"><input class="add-inp" id="ns" placeholder="Новый раздел"><button class="add-btn" onclick="aS()">+</button></div>';
     Object.keys(src).forEach(function(k){
       const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
@@ -3561,10 +3559,7 @@ function finishGame(){
 }
 
 render();
-// Resmi sınav daveti varsa otomatik fullscreen aç
-if(examShouldOpen()){
-  try{examOpen()}catch(e){console.warn('exam open fail',e)}
-}
+// Trenajör/sınav otomatik açılışı kaldırıldı (kullanıcı isteği).
 </script>
 </body>
 </html>
