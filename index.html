@@ -1238,8 +1238,8 @@ function mv(i,dir){if(!cat)return;const arr=P[cat].items,j=i+dir;if(j<0||j>=arr.
 function sO(){
   var tot=Object.values(ord).reduce(function(a,v){return a+v},0);
   if(!tot)return;
-  // Payload — tam ürün isimleriyle gönder (bot uzun mesajları parçalar).
-  // Sadece sendData 4096 byte limitini aşarsa kademeli kısaltmaya geç.
+  // Payload — tam ürün isimleriyle gönder. Artık HTTP (/api/action) kullanıyoruz,
+  // eski sendData 3800-byte limiti yok → isimleri KISALTMA. Bot uzun mesajları parçalar.
   var maxL=200; // pratik olarak hiçbir isim bunu aşmaz
   var ps;
   do{
@@ -1257,7 +1257,7 @@ function sO(){
     });
     ps=JSON.stringify({a:'o',g:g,c:tot});
     var bl=0;for(var i=0;i<ps.length;i++){bl+=ps.charCodeAt(i)>127?2:1}
-    if(bl<=3800)break;
+    if(bl<=900000)break; // HTTP büyük gövde kaldırır — pratikte hiç kısaltma olmaz
     maxL-=10;
   }while(maxL>=20);
   // Geçmiş kaydet (tam isimlerle)
