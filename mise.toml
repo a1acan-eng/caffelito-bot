@@ -1,0 +1,7 @@
+# Railway/Nixpacks build düzeltmesi.
+# Yeni mise sürümü (2026.x) python-build-standalone için GitHub artifact
+# attestation doğrulaması zorunlu kılıyor; imza bulamayınca build patlıyor
+# ("No GitHub artifact attestations found for python@..."). Bu ayar o
+# doğrulamayı kapatır — hata mesajının önerdiği resmi çözüm.
+[settings]
+python.github_attestations = false
