@@ -20,6 +20,12 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
+# Railway otomatik public domain'i tercih et: WEBAPP_URL boşsa VEYA eski github.io'yu
+# gösteriyorsa, uygulama+backend AYNI origin'den (Railway) gelsin. github.io'da backend
+# yok → /api/state oradan 405 döner ve rol "barista" sanılır (passcode bug'ı).
+_RW_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+if _RW_DOMAIN and (not WEBAPP_URL or "github.io" in WEBAPP_URL):
+    WEBAPP_URL = f"https://{_RW_DOMAIN}/"
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
 ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor (eski sistem — fallback)
@@ -31,6 +37,7 @@ TZ = timezone(timedelta(hours=5))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info(f"DB_PATH = {DB_PATH}")
+logger.info(f"WEBAPP_URL (etkin) = {WEBAPP_URL or '(bos)'}")
 
 # ─── Markdown güvenli escape (özel karakterler kullanıcı adında varsa parse hatası vermesin) ───
 def md_safe(text):
