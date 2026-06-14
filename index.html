@@ -622,16 +622,16 @@ const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
 // Klavye butonundan açılınca hash zaten dolu olur → bu blok atlanır (geriye uyumlu).
 (function(){
   try{
-    var hasHash=(window.location.hash||'').indexOf('uid=')>=0;
-    if(hasHash)return;
     var initData=(tg&&tg.initData)?tg.initData:'';
-    if(!initData)return; // Telegram dışında açıldıysa (tarayıcı testi) demo modda kal
+    if(!initData)return; // Telegram dışında açıldıysa (tarayıcı testi) mevcut hash/demo kalsın
+    // Telegram içindeyse HER açılışta taze state çek — eski hash'e GÜVENME.
+    // (Ana ekran ikonu veya Telegram cache'i role=barista gibi eski veriyi taşıyabilir.)
     var xhr=new XMLHttpRequest();
     xhr.open('POST','/api/state',false); // senkron: kalan kod hash'i okumadan önce hazır olsun
     xhr.setRequestHeader('Content-Type','application/json');
     xhr.send(JSON.stringify({initData:initData}));
     if(xhr.status===200&&xhr.responseText){
-      window.location.hash=xhr.responseText;
+      window.location.hash=xhr.responseText; // taze rol/veri
     }
   }catch(e){console.error('state load failed',e);}
 })();

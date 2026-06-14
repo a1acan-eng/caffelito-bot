@@ -3433,13 +3433,21 @@ def _cors(resp):
     return resp
 
 
+def _nocache(resp):
+    """Telegram/WebView eski sayfayı/state'i önbellekte tutmasın (rol değişince takılmasın)."""
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 async def web_index(request):
     """Mini App HTML'ini sun (aynı origin → CORS yok, hash gerekmez)."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
         with open(path, "r", encoding="utf-8") as f:
             html = f.read()
-        return _cors(web.Response(text=html, content_type="text/html"))
+        return _nocache(_cors(web.Response(text=html, content_type="text/html")))
     except Exception as e:
         return web.Response(text=f"index.html bulunamadı: {e}", status=500)
 
@@ -3475,7 +3483,7 @@ async def api_state(request):
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
     db = get_db()
     payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"))
-    return _cors(web.Response(text=payload, content_type="text/plain"))
+    return _nocache(_cors(web.Response(text=payload, content_type="text/plain")))
 
 
 async def api_action(request):
