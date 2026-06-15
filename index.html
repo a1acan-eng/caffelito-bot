@@ -584,7 +584,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
         <div class="clock" id="clk">--:--:--</div>
         <div class="clock-day" id="day">---</div>
       </div>
-      <button class="icon-btn" id="eBtn" onclick="toggleEdit()">&#9998;</button>
+      <button class="icon-btn" id="eBtn" onclick="toggleEdit()" style="display:none">&#9998;</button>
     </div>
   </div>
 </div>
@@ -800,7 +800,7 @@ function uC(){
 uC();setInterval(uC,1000);
 
 const DP_VER='6';
-const DT_VER='2'; // görev/temizlik listesi sürümü — artınca herkes yeni listeye güncellenir
+const DT_VER='3'; // görev/temizlik listesi sürümü — artınca herkes yeni listeye güncellenir
 const DP={
   "☕ Кофе":{icon:"☕",items:[
     {id:"it40",n:"Кофе Бразилия (упак, 0,25 кг)"},
@@ -1024,7 +1024,7 @@ uborka:{"Ежедневно":[{t:"Раковина",d:"Помыть ракови
 "ПТ Пятница":[{t:"Стеллажи с полками",d:"Внутри протереть — всё вытащить, протереть/помыть тару и полки, поставить всё обратно."},{t:"Стены и оборудование",d:"Помыть стены не двигая оборудование: за кофемолкой, за блендером, вокруг кофемашины и раковины. Магнит для ножей и ложек помыть вместе с ножами и ложками."}],
 "СБ Суббота":[{t:"Окна и двери",d:"Протереть оконные секции в зале кофейни и дверные стёкла."},{t:"Кофемолки, батч брю, термос",d:"Кофемолки снаружи. Носик очистить мягкой щёткой от излишков кофе, отмыть от грязи, протереть насухо. Ёмкость для кофе батч брю и термос с помпой замочить с химией на 10–15 мин, промыть большим количеством воды."}],
 "ВС Воскресенье":[{t:"Холодильник (молоко/заготовки)",d:"Полки и сам холодильник помыть, вытереть насухо, сложить всё обратно."},{t:"Ценники",d:"Протереть со всех сторон от пыли, особенно сверху."}],
-"Ежемесячно":[{t:"Дата — управляющим",d:"Дата выполнения назначается управляющим точки."},{t:"Разморозка холодильника",d:"Разморозить и помыть холодильник и морозильную камеру, протереть насухо."},{t:"Бойлер",d:"Помыть согласно инструкции по эксплуатации."},{t:"За оборудованием",d:"Уборка стенок за холодильниками, под и за кофемашиной."},{t:"Питчеры",d:"Замочить в лимонной кислоте на 10–15 минут, промыть большим количеством воды."},{t:"Светильники (со снятием)",d:"Снять, протереть влажной тряпкой, затем насухо и повесить на места."}]}};
+"Ежемесячно":[{t:"Разморозка холодильника",d:"Разморозить и помыть холодильник и морозильную камеру, протереть насухо."},{t:"Бойлер",d:"Помыть согласно инструкции по эксплуатации."},{t:"За оборудованием",d:"Уборка стенок за холодильниками, под и за кофемашиной."},{t:"Питчеры",d:"Замочить в лимонной кислоте на 10–15 минут, промыть большим количеством воды."},{t:"Светильники (со снятием)",d:"Снять, протереть влажной тряпкой, затем насухо и повесить на места."}]}};
 
 if(localStorage.getItem('cf5pv')!==DP_VER){localStorage.removeItem('cf5p');localStorage.setItem('cf5pv',DP_VER);}
 if(localStorage.getItem('cf5tv')!==DT_VER){localStorage.removeItem('cf5t');localStorage.setItem('cf5tv',DT_VER);}
@@ -1330,8 +1330,11 @@ items.forEach(function(item,i){const t=typeof item==='string'?item:item.t,d=type
 h+='<div class="task '+(st[i]?'done':'')+'" onclick="tgl('+i+')"><div class="chk">'+(st[i]?'&#10003;':'')+'</div><div class="task-body"><div class="task-t">'+t+'</div>'+(d?'<div class="task-d">'+d+'</div>':'')+'</div>'+(edit?'<div class="edit-btns">'+(i>0?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',-1)">&#9650;</button>':'')+(i<items.length-1?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',1)">&#9660;</button>':'')+'<button class="xbtn" onclick="event.stopPropagation();dTk('+i+')">&#10005;</button></div>':'')+'</div>'});
 h+='<div class="footer">XSYN</div>';
 m.innerHTML=h;b.style.display='block';
+// Kısmi tamamlamaya izin ver: en az 1 işaret varsa kaydedilebilir. Şef neyin
+// yapıldığını/eksik kaldığını görür. (Başka şubede kasa/batch brew olmayabilir.)
 if(done===total&&total)b.innerHTML='<button class="mbtn grn" onclick="svT()">Готово &mdash; сохранить</button>';
-else b.innerHTML='<button class="mbtn" disabled>'+done+'/'+total+' выполнено</button>'}
+else if(done>0)b.innerHTML='<button class="mbtn" onclick="svT()">Сохранить &middot; '+done+'/'+total+'</button>';
+else b.innerHTML='<button class="mbtn" disabled>Отметьте хотя бы одну</button>'}
 
 function tgl(i){const sk=tab+'_'+sub;ts[sk][i]=!ts[sk][i];if(tg)tg.HapticFeedback?.impactOccurred(ts[sk][i]?'medium':'light');render()}
 function aS(){const v=document.getElementById('ns')?.value?.trim();if(!v)return;if(!T[tab])T[tab]={};T[tab][v]=[];sT();iTS();render()}
@@ -1341,10 +1344,14 @@ function dTk(i){T[tab][sub].splice(i,1);sT();iTS();render()}
 function mvT(i,dir){if(!sub)return;const arr=T[tab][sub],j=i+dir;if(j<0||j>=arr.length)return;[arr[i],arr[j]]=[arr[j],arr[i]];sT();render()}
 
 function svT(){
-  const items=T[tab][sub]||[],comp=items.map(function(x){return typeof x==='string'?x:x.t});
-  hist.push({type:'task',category:tab+': '+sub,title:sub,completed:comp,date:new Date().toISOString(),user:tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста'});
+  const items=T[tab][sub]||[],st=ts[tab+'_'+sub]||[];
+  const titles=items.map(function(x){return typeof x==='string'?x:x.t});
+  // Sadece işaretliler tamamlandı; gerisi eksik (şef ikisini de görür)
+  const done=titles.filter(function(t,i){return st[i]});
+  const pend=titles.filter(function(t,i){return !st[i]});
+  hist.push({type:'task',category:tab+': '+sub,title:sub,completed:done,date:new Date().toISOString(),user:tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста'});
   localStorage.setItem('cf5h',JSON.stringify(hist));
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'tasks',category:tab+'_'+sub,completed:comp}));}catch(e){console.warn(e);}}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'tasks',category:tab+'_'+sub,completed:done,pending:pend,total:titles.length}));}catch(e){console.warn(e);}}
   toast(sub+' — готово!');ts[tab+'_'+sub]=new Array(items.length).fill(false);sub=null;render();
 }
 

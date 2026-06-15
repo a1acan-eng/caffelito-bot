@@ -2176,6 +2176,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         elif action == "tasks":
             completed = data.get("completed", [])
+            pending = data.get("pending", [])
+            total = data.get("total", len(completed) + len(pending))
             category = data.get("category", "")
 
             await update.message.reply_text("Задачи сохранены!")
@@ -2183,14 +2185,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if group_id:
                 try:
                     from html import escape as esc_html
-                    text = f"<b>ЗАДАЧИ ВЫПОЛНЕНЫ</b>\n"
+                    text = f"<b>ЗАДАЧИ — {len(completed)}/{total}</b>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n"
                     text += f"<b>{esc_html(user.first_name)}</b>\n"
                     text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
                     text += f"<i>{esc_html(category)}</i>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
                     for item in completed:
-                        text += f"  — {esc_html(item)}\n"
+                        text += f"  ✅ {esc_html(item)}\n"
+                    for item in pending:
+                        text += f"  ⬜ {esc_html(item)}\n"
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
