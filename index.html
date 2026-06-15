@@ -640,6 +640,13 @@ if(tg){
   applySafeTop();
   // Best practice: dikey kaydırırken yanlışlıkla kapanmayı önle (form/scroll için)
   try{tg.disableVerticalSwipes&&tg.disableVerticalSwipes()}catch(e){}
+  // BotFather gibi: SADECE mobilde fullscreen iste. Masaüstü/web → Fullsize (ortalı modal) kalır.
+  try{
+    var _plat=(tg.platform||'').toLowerCase();
+    if((_plat==='android'||_plat==='ios')&&tg.requestFullscreen&&!tg.isFullscreen){
+      tg.requestFullscreen();
+    }
+  }catch(e){}
   try{tg.onEvent&&tg.onEvent('safeAreaChanged',applySafeTop)}catch(e){}
   try{tg.onEvent&&tg.onEvent('contentSafeAreaChanged',applySafeTop)}catch(e){}
   try{tg.onEvent&&tg.onEvent('fullscreenChanged',applySafeTop)}catch(e){}
