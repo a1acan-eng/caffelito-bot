@@ -1456,11 +1456,15 @@ function rShift(m,b){
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
     h+='<div class="refresh-hint" style="margin-top:10px">Нажмите «Начать смену» как только пришли. Время прихода фиксируется автоматически.</div>';
     // Manuel saat girişi — telefon kapanmışsa veya unuttuysa
+    var _td=new Date();var _tdv=_td.getFullYear()+'-'+String(_td.getMonth()+1).padStart(2,'0')+'-'+String(_td.getDate()).padStart(2,'0');
     h+='<div style="margin-top:14px;padding:12px;border:1px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
-      +'<div style="font-size:12px;color:var(--t2);margin-bottom:8px">⏰ <b>Забыли начать вовремя?</b> Укажите фактическое время прихода:</div>'
+      +'<div style="font-size:12px;color:var(--t2);margin-bottom:8px">⏰ <b>Забыли начать вовремя?</b> Укажите дату и фактическое время прихода:</div>'
+      +'<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">📅 Дата прихода</div>'
+        +'<input type="date" id="cstDate" value="'+_tdv+'" max="'+_tdv+'" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:10px;font-size:15px;font-family:inherit"></div>'
+      +'<div style="font-size:11px;color:var(--t3);margin-bottom:4px">🕐 Время прихода</div>'
       +'<div style="display:flex;gap:8px;align-items:center">'
         +'<input type="time" id="cstStart" style="flex:1;padding:10px;border:1px solid #cbd5e1;border-radius:10px;font-size:15px;font-family:inherit">'
-        +'<button onclick="startShiftCustomTime()" style="padding:10px 14px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">Начать</button>'
+        +'<button onclick="startShiftCustomTime()" style="padding:10px 16px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">Начать</button>'
       +'</div>'
     +'</div>';
   }
@@ -1853,20 +1857,24 @@ function startShiftCustomTime(){
   const inp=document.getElementById('cstStart');
   if(!inp||!inp.value){toast('Укажите время');return}
   const hhmm=inp.value; // 'HH:MM'
-  // Bugün için datetime oluştur
+  // Tarih girişi (yoksa bugün)
+  const dInp=document.getElementById('cstDate');
   const now=new Date();
+  var Y=now.getFullYear(),Mo=now.getMonth(),D=now.getDate();
+  if(dInp&&dInp.value){var p=dInp.value.split('-');Y=parseInt(p[0]);Mo=parseInt(p[1])-1;D=parseInt(p[2]);}
   const [hh,mm]=hhmm.split(':').map(function(x){return parseInt(x)||0});
-  const customDt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+  const customDt=new Date(Y,Mo,D,hh,mm,0,0);
   // Geleceğe izin verme
   if(customDt-now>2*60*1000){toast('Время не может быть в будущем');return}
-  // 12 saatten eski izin verme (yanlışlıkla)
-  if(now-customDt>12*60*60*1000){
-    if(!confirm('Указано время более 12 часов назад. Продолжить?'))return;
+  // 24 saatten eski izin verme (yanlışlıkla — gece vardiyası için 24h)
+  if(now-customDt>24*60*60*1000){
+    if(!confirm('Указано время более суток назад. Продолжить?'))return;
   }
-  if(!confirm('Начать смену с '+hhmm+'?\nВремя прихода будет указано вручную.'))return;
+  var dtLabel=String(D).padStart(2,'0')+'.'+String(Mo+1).padStart(2,'0')+' '+hhmm;
+  if(!confirm('Начать смену с '+dtLabel+'?\nВремя прихода будет указано вручную.'))return;
   const customIso=customDt.toISOString();
   SUMMARY.active={start_time:customIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
-  toast('🟢 Смена началась с '+hhmm);
+  toast('🟢 Смена началась с '+dtLabel);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',start_time:customIso}))}catch(e){console.warn(e)}}
   render();
