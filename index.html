@@ -1098,6 +1098,11 @@ try{LOANS=JSON.parse(decodeURIComponent(HP.get('loans')||'[]'))}catch(e){LOANS=[
 let loanDraft={amount:'',reason:''};
 let LOGS=[];
 try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
+// Kasa: önceki vardiyanın "Осталось"u (yeni "Было" ön-doldurma için)
+let KASA_LAST={};
+try{KASA_LAST=JSON.parse(decodeURIComponent(HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
+const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
+let kasaExp=[];  // [{n,a}] harcama satırları
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
 let PRICES={};
 try{PRICES=JSON.parse(decodeURIComponent(HP.get('prices')||'{}'))}catch(e){PRICES={}}
@@ -1402,6 +1407,7 @@ function rShift(m,b){
   // mView içerikleri (shiftEnd) bu tab'da çalışsın
   if(mView==='shiftEnd')return rMShiftEnd(m,b);
   if(mView==='shift')return rMShift(m,b);
+  if(mView==='kasa')return rKasa(m,b);
 
   const s=SUMMARY||{};
   const active=s.active||null;
@@ -1440,6 +1446,9 @@ function rShift(m,b){
       +'</div>'
     +'</div>';
   }
+
+  // Kasa / Сменный отчёт butonu
+  h+='<button class="mbtn" style="margin-top:14px;background:var(--card2);color:var(--t1);border:1px solid var(--border2)" onclick="mView=\'kasa\';render()">📋 Сдать кассу (сменный отчёт)</button>';
 
   // Şu an çalışan diğer baristalar
   const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID});
@@ -1487,6 +1496,91 @@ function rShift(m,b){
 
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+}
+
+// ═══ KASA / Сменный отчёт ekranı ═══
+function rKasa(m,b){
+  let h='<button class="back" onclick="mView=\'main\';render()">&#8249; Назад</button>';
+  h+='<div class="sec">📋 Сменный отчёт · касса</div>';
+  h+='<div class="refresh-hint" style="margin-top:0">Стаканы: было (с прошлой смены) + завоз → осталось. «Продано» считается само.</div>';
+  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:52px;text-align:center">Было</div><div style="width:46px;text-align:center">Завоз</div><div style="width:52px;text-align:center">Ост.</div><div style="width:44px;text-align:center">Прод.</div></div>';
+  CUP_SIZES.forEach(function(nm,i){
+    var bylo=parseInt(KASA_LAST[nm])||0;
+    h+='<div style="display:flex;align-items:center;gap:4px;margin-bottom:6px">'
+      +'<div style="flex:1.3;font-size:12px;font-weight:600">'+nm+'</div>'
+      +'<input class="set-input" type="number" inputmode="numeric" id="kb_'+i+'" value="'+bylo+'" oninput="kasaCalc()" style="width:52px;text-align:center;padding:8px 2px">'
+      +'<input class="set-input" type="number" inputmode="numeric" id="kr_'+i+'" value="0" oninput="kasaCalc()" style="width:46px;text-align:center;padding:8px 2px">'
+      +'<input class="set-input" type="number" inputmode="numeric" id="ko_'+i+'" value="0" oninput="kasaCalc()" style="width:52px;text-align:center;padding:8px 2px">'
+      +'<div id="ks_'+i+'" style="width:44px;text-align:center;font-weight:800;color:var(--gold)">0</div>'
+    +'</div>';
+  });
+  h+='<div style="text-align:right;font-weight:700;font-size:13px;margin:6px 4px">Итого продано: <span id="ks_total">0</span> шт</div>';
+  h+='<div class="sec">💳 Безналичные оплаты</div>';
+  [['k_click','CLICK'],['k_payme','PAYME'],['k_karta','KARTA'],['k_terminal','TERMINAL']].forEach(function(p){
+    h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">'+p[1]+'</div></div><input class="set-input" type="number" inputmode="numeric" id="'+p[0]+'" value="0" oninput="kasaCalc()"></div>';
+  });
+  h+='<div class="sec">🧾 POS</div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Итого (Poster)</div></div><input class="set-input" type="number" inputmode="numeric" id="k_itogo" value="0" oninput="kasaCalc()"></div>';
+  h+='<div class="sec">💸 Расходы</div><div id="kexp"></div>';
+  h+='<button class="add-btn" style="width:100%;margin-top:4px" onclick="kasaAddExp()">+ Добавить расход</button>';
+  h+='<div class="sec">💵 Касса</div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Вышло (сосчитанные деньги)</div></div><input class="set-input" type="number" inputmode="numeric" id="k_vyshlo" value="0" oninput="kasaCalc()"></div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">На сдачи (остаётся в кассе)</div></div><input class="set-input" type="number" inputmode="numeric" id="k_sdachi" value="150000" oninput="kasaCalc()"></div>';
+  h+='<div style="background:var(--card2);border-radius:12px;padding:12px;margin-top:10px;font-size:13px">'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Безнал итого</span><b id="kt_cashless">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Считано (нал.)</span><b id="kt_schitano">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Расходы</span><b id="kt_exp">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border2);margin-top:4px;font-size:16px"><span><b>КАССА к сдаче</b></span><b id="kt_kassa" style="color:var(--green)">0</b></div>'
+  +'</div>';
+  h+='<textarea class="set-input" id="k_note" placeholder="Примечание (необяз.)" style="width:100%;margin-top:10px;min-height:48px"></textarea>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='block';
+  b.innerHTML='<button class="mbtn grn" onclick="submitKasa()">📤 Сдать кассу — отправить шефу</button>';
+  kasaRenderExp();kasaCalc();
+}
+function kasaRenderExp(){
+  var el=document.getElementById('kexp');if(!el)return;
+  var h='';
+  kasaExp.forEach(function(e,i){
+    h+='<div style="display:flex;gap:6px;margin-bottom:6px">'
+      +'<input class="set-input" type="text" id="ke_n_'+i+'" value="'+escH(e.n||'')+'" placeholder="название" oninput="kasaExp['+i+'].n=this.value" style="flex:1">'
+      +'<input class="set-input" type="number" inputmode="numeric" value="'+(e.a||0)+'" placeholder="сумма" oninput="kasaExp['+i+'].a=parseInt(this.value)||0;kasaCalc()" style="width:90px">'
+      +'<button class="xbtn" onclick="kasaDelExp('+i+')">&#10005;</button>'
+    +'</div>';
+  });
+  el.innerHTML=h;
+}
+function kasaAddExp(){kasaExp.push({n:'',a:0});kasaRenderExp();kasaCalc()}
+function kasaDelExp(i){kasaExp.splice(i,1);kasaRenderExp();kasaCalc()}
+function kasaNum(id){var el=document.getElementById(id);return el?(parseInt(el.value)||0):0}
+function kasaCalc(){
+  var total=0;
+  CUP_SIZES.forEach(function(nm,i){
+    var s=kasaNum('kb_'+i)+kasaNum('kr_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
+    var el=document.getElementById('ks_'+i);if(el)el.textContent=s;
+    total+=s;
+  });
+  var tt=document.getElementById('ks_total');if(tt)tt.textContent=total;
+  var cashless=kasaNum('k_click')+kasaNum('k_payme')+kasaNum('k_karta')+kasaNum('k_terminal');
+  var schitano=kasaNum('k_itogo')-cashless;
+  var exp=kasaExp.reduce(function(a,e){return a+(parseInt(e.a)||0)},0);
+  var kassa=kasaNum('k_vyshlo')-kasaNum('k_sdachi');
+  function setT(id,v){var el=document.getElementById(id);if(el)el.textContent=fmt(v)}
+  setT('kt_cashless',cashless);setT('kt_schitano',schitano);setT('kt_exp',exp);setT('kt_kassa',kassa);
+}
+function submitKasa(){
+  var cups=CUP_SIZES.map(function(nm,i){
+    var s=kasaNum('kb_'+i)+kasaNum('kr_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
+    return {n:nm,b:kasaNum('kb_'+i),r:kasaNum('kr_'+i),o:kasaNum('ko_'+i),s:s};
+  });
+  var payload={action:'cash_report',cups:cups,
+    itogo:kasaNum('k_itogo'),click:kasaNum('k_click'),payme:kasaNum('k_payme'),karta:kasaNum('k_karta'),terminal:kasaNum('k_terminal'),
+    vyshlo:kasaNum('k_vyshlo'),na_sdachi:kasaNum('k_sdachi'),
+    expenses:kasaExp.filter(function(e){return (e.n&&e.n.trim())||e.a}),
+    note:(document.getElementById('k_note')||{}).value||''};
+  function go(){toast('Отчёт отправлен!');kasaExp=[];mView='main';if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('kasa send',e)}}}
+  if(tg&&tg.showConfirm){tg.showConfirm('Сдать кассу и отправить отчёт шефу?',function(ok){if(ok)go()})}
+  else go();
 }
 
 function rM(m,b){

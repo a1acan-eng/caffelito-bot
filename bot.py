@@ -133,6 +133,15 @@ def get_db():
         note TEXT,
         added_by INTEGER, added_by_name TEXT,
         created_at TEXT)""")
+    # ─── Kasa / Сменный отчёт (vardiya raporu) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS cashreports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, user_name TEXT,
+        date TEXT, period TEXT, created_at TEXT,
+        bylo TEXT, restock TEXT, ostalos TEXT, sold TEXT, cups_total INTEGER,
+        itogo INTEGER, click INTEGER, payme INTEGER, karta INTEGER, terminal INTEGER,
+        cashless INTEGER, schitano INTEGER, vyshlo INTEGER, na_sdachi INTEGER, kassa INTEGER,
+        expenses TEXT, expenses_total INTEGER, note TEXT)""")
     # ─── Bardak fiyatları (override) ───
     db.execute("""CREATE TABLE IF NOT EXISTS prices (
         drink_id TEXT PRIMARY KEY,
@@ -705,6 +714,12 @@ def build_hash_payload(db, user_id, name):
     pwd_row = db.execute("SELECT password FROM users WHERE user_id=?", (user_id,)).fetchone()
     pwd_raw = ((pwd_row["password"] if pwd_row else "") or "").strip()
     pwh = hashlib.sha256(pwd_raw.encode('utf-8')).hexdigest() if pwd_raw else ""
+    # Kasa: son raporun "Осталось"u → yeni "Было" ön-doldurma için (en son hangi vardiya kapatıldıysa)
+    try:
+        cr = db.execute("SELECT ostalos FROM cashreports ORDER BY id DESC LIMIT 1").fetchone()
+        kasa_last = json.loads(cr["ostalos"]) if (cr and cr["ostalos"]) else {}
+    except Exception:
+        kasa_last = {}
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -716,6 +731,7 @@ def build_hash_payload(db, user_id, name):
         f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
         f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
+        f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     if role == "owner":
@@ -2876,6 +2892,75 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         f"Начните с чистого листа 👍",
                         parse_mode="Markdown")
                     await refresh_webapp_keyboard(update, context, db, user, "🔄 История обновлена 👇")
+
+        # ─── Kasa / Сменный отчёт (vardiya kapanış raporu) ───
+        elif action == "cash_report":
+            from html import escape as esc_html
+            cups = data.get("cups", [])  # [{n,b,r,o,s}]
+            itg = int(data.get("itogo", 0) or 0)
+            clk = int(data.get("click", 0) or 0)
+            pay = int(data.get("payme", 0) or 0)
+            kar = int(data.get("karta", 0) or 0)
+            term = int(data.get("terminal", 0) or 0)
+            vsh = int(data.get("vyshlo", 0) or 0)
+            sdachi = int(data.get("na_sdachi", 0) or 0)
+            exps = data.get("expenses", [])  # [{n,a}]
+            note = (data.get("note") or "").strip()
+            cashless = clk + pay + kar + term
+            schitano = itg - cashless
+            exp_total = sum(int(e.get("a", 0) or 0) for e in exps)
+            kassa = vsh - sdachi
+            cups_total = sum(int(c.get("s", 0) or 0) for c in cups)
+            ostalos = {str(c.get("n", "")): int(c.get("o", 0) or 0) for c in cups}
+            db.execute(
+                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (user.id, user.first_name, now.strftime("%Y-%m-%d"), now.strftime("%Y-%m"), now.isoformat(),
+                 json.dumps({str(c.get("n","")): int(c.get("b",0) or 0) for c in cups}, ensure_ascii=False),
+                 json.dumps({str(c.get("n","")): int(c.get("r",0) or 0) for c in cups}, ensure_ascii=False),
+                 json.dumps(ostalos, ensure_ascii=False),
+                 json.dumps({str(c.get("n","")): int(c.get("s",0) or 0) for c in cups}, ensure_ascii=False),
+                 cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
+                 json.dumps(exps, ensure_ascii=False), exp_total, note))
+            db.commit()
+            await update.message.reply_text("✅ Кассовый отчёт сохранён!")
+            if group_id:
+                try:
+                    t = "<b>📋 СМЕННЫЙ ОТЧЁТ — CAFFELITO</b>\n"
+                    t += "━━━━━━━━━━━━━━━━━━━━\n"
+                    t += f"<b>{esc_html(user.first_name)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
+                    t += "━━━━━━━━━━━━━━━━━━━━\n"
+                    t += "<b>🥤 Стаканы (было → осталось = продано)</b>\n"
+                    for c in cups:
+                        b = int(c.get("b", 0) or 0); r = int(c.get("r", 0) or 0)
+                        o = int(c.get("o", 0) or 0); s = int(c.get("s", 0) or 0)
+                        if b or r or o or s:
+                            rtxt = f"+{r}" if r else ""
+                            t += f"  {esc_html(str(c.get('n','')))}: {b}{rtxt} → {o} = <b>{s}</b>\n"
+                    t += f"  <b>Итого продано: {cups_total} шт</b>\n"
+                    t += "━━━━━━━━━━━━━━━━━━━━\n<b>💳 Оплаты</b>\n"
+                    if clk: t += f"  CLICK: {fmt_sum(clk)}\n"
+                    if pay: t += f"  PAYME: {fmt_sum(pay)}\n"
+                    if kar: t += f"  KARTA: {fmt_sum(kar)}\n"
+                    if term: t += f"  TERMINAL: {fmt_sum(term)}\n"
+                    t += f"  Безнал итого: <b>{fmt_sum(cashless)}</b> сум\n"
+                    if exps:
+                        t += "━━━━━━━━━━━━━━━━━━━━\n<b>💸 Расходы</b>\n"
+                        for e in exps:
+                            t += f"  {esc_html(str(e.get('n','')))}: {fmt_sum(int(e.get('a',0) or 0))}\n"
+                        t += f"  Итого расходы: <b>{fmt_sum(exp_total)}</b> сум\n"
+                    t += "━━━━━━━━━━━━━━━━━━━━\n"
+                    t += f"Итого (POS): <b>{fmt_sum(itg)}</b> сум\n"
+                    t += f"Считано (нал.): <b>{fmt_sum(schitano)}</b> сум\n"
+                    t += f"Вышло: <b>{fmt_sum(vsh)}</b> сум\n"
+                    t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
+                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
+                    if note:
+                        t += f"\n📝 {esc_html(note)}"
+                    await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"KASA group send failed: {e}")
+            await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
 
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":
