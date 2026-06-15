@@ -800,6 +800,7 @@ function uC(){
 uC();setInterval(uC,1000);
 
 const DP_VER='6';
+const DT_VER='2'; // görev/temizlik listesi sürümü — artınca herkes yeni listeye güncellenir
 const DP={
   "☕ Кофе":{icon:"☕",items:[
     {id:"it40",n:"Кофе Бразилия (упак, 0,25 кг)"},
@@ -1026,6 +1027,7 @@ uborka:{"Ежедневно":[{t:"Раковина",d:"Помыть ракови
 "Ежемесячно":[{t:"Дата — управляющим",d:"Дата выполнения назначается управляющим точки."},{t:"Разморозка холодильника",d:"Разморозить и помыть холодильник и морозильную камеру, протереть насухо."},{t:"Бойлер",d:"Помыть согласно инструкции по эксплуатации."},{t:"За оборудованием",d:"Уборка стенок за холодильниками, под и за кофемашиной."},{t:"Питчеры",d:"Замочить в лимонной кислоте на 10–15 минут, промыть большим количеством воды."},{t:"Светильники (со снятием)",d:"Снять, протереть влажной тряпкой, затем насухо и повесить на места."}]}};
 
 if(localStorage.getItem('cf5pv')!==DP_VER){localStorage.removeItem('cf5p');localStorage.setItem('cf5pv',DP_VER);}
+if(localStorage.getItem('cf5tv')!==DT_VER){localStorage.removeItem('cf5t');localStorage.setItem('cf5tv',DT_VER);}
 let P=JSON.parse(localStorage.getItem('cf5p'))||JSON.parse(JSON.stringify(DP));
 let T=JSON.parse(localStorage.getItem('cf5t'))||JSON.parse(JSON.stringify(DT));
 let tab='shift',cat=null,sub=null,edit=false,ord={},ts={};
