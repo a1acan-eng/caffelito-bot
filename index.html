@@ -1135,8 +1135,10 @@ function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
-const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'✨'},{id:'salary',l:'ЗП',i:'💰'},{id:'report',l:'Отчёт',i:'📊'}];
-function dT(){document.getElementById('tabsEl').innerHTML=TABS.map(t=>'<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>').join('')}
+// owner:true → sadece owner görür. salary owner'da 'Управление' olarak gösterilir.
+const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'🫧'},{id:'report',l:'Отчёт',i:'📊',owner:true},{id:'salary',l:'ЗП',i:'💰'}];
+function visTabs(){return TABS.filter(function(t){return !t.owner||MY_ROLE==='owner'}).map(function(t){var o={id:t.id,l:t.l,i:t.i};if(t.id==='salary'&&MY_ROLE==='owner'){o.l='Управление';o.i='🛠'}return o})}
+function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){return '<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
 function go(t){
   // Aktif timer'ları temizle (canlı süre güncelleyiciler)
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
