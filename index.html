@@ -1133,7 +1133,7 @@ function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
-const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'Уборка',i:'🧹'},{id:'salary',l:'ЗП',i:'💰'},{id:'report',l:'Отчёт',i:'📊'}];
+const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'✨'},{id:'salary',l:'ЗП',i:'💰'},{id:'report',l:'Отчёт',i:'📊'}];
 function dT(){document.getElementById('tabsEl').innerHTML=TABS.map(t=>'<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>').join('')}
 function go(t){
   // Aktif timer'ları temizle (canlı süre güncelleyiciler)
@@ -2632,7 +2632,7 @@ function decideLoan(id,decision){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',passwords:'Пароли',logs:'Логи'}[settingsTab]||'';
+  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',passwords:'Пароли',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
   // Mini tabs (5 alt sekme — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
@@ -2641,6 +2641,7 @@ function rMSettings(m,b){
     +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
     +'<div class="opt '+(settingsTab==='passwords'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'passwords\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🔐 Пароли</div></div></div>'
     +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'logs\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
+    +'<div class="opt '+(settingsTab==='reset'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'reset\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🗑 Сброс</div></div></div>'
   +'</div>';
 
   if(settingsTab==='prices'){
@@ -2792,10 +2793,41 @@ function rMSettings(m,b){
         +'</div>';
       });
     }
+  } else if(settingsTab==='reset'){
+    h+='<div class="refresh-hint" style="margin-top:0">Очистка истории — удаляет смены, штрафы, чаевые, выплаты и авансы. Баристы, цены и каталог заказа ОСТАЮТСЯ. Действие нельзя отменить.</div>';
+    // Belirli tarihe kadar sil
+    h+='<div class="set-row" style="flex-wrap:wrap;gap:8px;border:1px solid var(--border2);border-radius:10px;padding:12px">'
+      +'<div class="set-row-t" style="width:100%">🗓 Удалить историю ДО даты</div>'
+      +'<input class="set-input" type="date" id="clrDate" style="flex:1;min-width:140px">'
+      +'<button class="add-btn" style="padding:9px 14px;background:#f59e0b" onclick="clrHistBefore()">Удалить до даты</button>'
+    +'</div>';
+    // Tum gecmisi sil
+    h+='<div class="set-row" style="flex-direction:column;align-items:stretch;gap:8px;border:1px solid var(--red-bg);border-radius:10px;padding:12px;margin-top:10px">'
+      +'<div class="set-row-t">🗑 Удалить ВСЮ историю</div>'
+      +'<div class="set-row-s">Все смены, штрафы, чаевые, выплаты и авансы будут удалены. Начнёте с чистого листа.</div>'
+      +'<button class="mbtn" style="background:#dc2626;color:#fff" onclick="clrHistAll()">Очистить всю историю</button>'
+    +'</div>';
   }
 
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+}
+
+// ─── Geçmiş temizleme (owner) — bot tarafında silinir ───
+function _clrSend(payload){
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('clr send',e)}}
+}
+function clrHistAll(){
+  var msg='Удалить ВСЮ историю (смены, штрафы, чаевые, выплаты, авансы)? Баристы и каталог останутся. Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all'})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all'})}
+}
+function clrHistBefore(){
+  var el=document.getElementById('clrDate');var val=el?el.value:'';
+  if(!val){toast('Выберите дату');return}
+  var msg='Удалить всю историю ДО '+val+'? Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val})}
 }
 
 function savePrice(drinkId){

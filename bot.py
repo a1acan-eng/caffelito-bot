@@ -2836,6 +2836,43 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"@{md_safe(uname)} → *{md_safe(shown)}*",
                 parse_mode="Markdown")
 
+        # ─── Geçmişi temizle (sadece owner): tüm veya belirli tarihe kadar ───
+        elif action == "clear_history":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может очищать историю.")
+            else:
+                mode = data.get("mode", "all")
+                if mode == "before":
+                    d = (data.get("date") or "").strip()  # YYYY-MM-DD
+                    if not d:
+                        await update.message.reply_text("❌ Дата не указана.")
+                    else:
+                        c1 = db.execute("DELETE FROM shifts WHERE date < ?", (d,)).rowcount
+                        c2 = db.execute("DELETE FROM fines WHERE created_at < ?", (d,)).rowcount
+                        c3 = db.execute("DELETE FROM tips WHERE created_at < ?", (d,)).rowcount
+                        c4 = db.execute("DELETE FROM payments WHERE created_at < ?", (d,)).rowcount
+                        c5 = db.execute("DELETE FROM loans WHERE created_at < ?", (d,)).rowcount
+                        db.commit()
+                        await update.message.reply_text(
+                            f"🗑 *История до {d} очищена.*\n"
+                            f"Смен: {c1} · Штрафов: {c2} · Чаевых: {c3} · Выплат: {c4} · Авансов: {c5}",
+                            parse_mode="Markdown")
+                        await refresh_webapp_keyboard(update, context, db, user, "🔄 История обновлена 👇")
+                else:
+                    c1 = db.execute("DELETE FROM shifts").rowcount
+                    c2 = db.execute("DELETE FROM fines").rowcount
+                    c3 = db.execute("DELETE FROM tips").rowcount
+                    c4 = db.execute("DELETE FROM payments").rowcount
+                    c5 = db.execute("DELETE FROM loans").rowcount
+                    db.commit()
+                    await update.message.reply_text(
+                        f"🗑 *Вся история очищена.*\n"
+                        f"Смен: {c1} · Штрафов: {c2} · Чаевых: {c3} · Выплат: {c4} · Авансов: {c5}\n"
+                        f"Начните с чистого листа 👍",
+                        parse_mode="Markdown")
+                    await refresh_webapp_keyboard(update, context, db, user, "🔄 История обновлена 👇")
+
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":
             db = get_db()
