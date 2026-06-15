@@ -1525,7 +1525,6 @@ function rKasa(m,b){
   h+='<button class="add-btn" style="width:100%;margin-top:4px" onclick="kasaAddExp()">+ Добавить расход</button>';
   h+='<div class="sec">💵 Касса</div>';
   h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Вышло (сосчитанные деньги)</div></div><input class="set-input" type="number" inputmode="numeric" id="k_vyshlo" value="0" oninput="kasaCalc()"></div>';
-  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">На сдачи (остаётся в кассе)</div></div><input class="set-input" type="number" inputmode="numeric" id="k_sdachi" value="150000" oninput="kasaCalc()"></div>';
   h+='<div style="background:var(--card2);border-radius:12px;padding:12px;margin-top:10px;font-size:13px">'
     +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Безнал итого</span><b id="kt_cashless">0</b></div>'
     +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Считано (нал.)</span><b id="kt_schitano">0</b></div>'
@@ -1564,7 +1563,7 @@ function kasaCalc(){
   var cashless=kasaNum('k_click')+kasaNum('k_payme')+kasaNum('k_karta')+kasaNum('k_terminal');
   var schitano=kasaNum('k_itogo')-cashless;
   var exp=kasaExp.reduce(function(a,e){return a+(parseInt(e.a)||0)},0);
-  var kassa=kasaNum('k_vyshlo')-kasaNum('k_sdachi');
+  var kassa=kasaNum('k_vyshlo');
   function setT(id,v){var el=document.getElementById(id);if(el)el.textContent=fmt(v)}
   setT('kt_cashless',cashless);setT('kt_schitano',schitano);setT('kt_exp',exp);setT('kt_kassa',kassa);
 }
@@ -1575,7 +1574,7 @@ function submitKasa(){
   });
   var payload={action:'cash_report',cups:cups,
     itogo:kasaNum('k_itogo'),click:kasaNum('k_click'),payme:kasaNum('k_payme'),karta:kasaNum('k_karta'),terminal:kasaNum('k_terminal'),
-    vyshlo:kasaNum('k_vyshlo'),na_sdachi:kasaNum('k_sdachi'),
+    vyshlo:kasaNum('k_vyshlo'),na_sdachi:0,
     expenses:kasaExp.filter(function(e){return (e.n&&e.n.trim())||e.a}),
     note:(document.getElementById('k_note')||{}).value||''};
   function go(){toast('Отчёт отправлен!');kasaExp=[];mView='main';if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('kasa send',e)}}}

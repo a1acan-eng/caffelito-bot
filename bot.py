@@ -2953,8 +2953,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     t += f"Итого (POS): <b>{fmt_sum(itg)}</b> сум\n"
                     t += f"Считано (нал.): <b>{fmt_sum(schitano)}</b> сум\n"
                     t += f"Вышло: <b>{fmt_sum(vsh)}</b> сум\n"
-                    t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
-                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
+                    if sdachi:
+                        t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
+                    t += f"<b>💰 КАССА: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
