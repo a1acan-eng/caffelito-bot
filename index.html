@@ -1520,16 +1520,15 @@ function rShift(m,b){
 function rKasa(m,b){
   let h='<button class="back" onclick="mView=\'main\';render()">&#8249; Назад</button>';
   h+='<div class="sec">📋 Сменный отчёт · касса</div>';
-  h+='<div class="refresh-hint" style="margin-top:0">Стаканы: было (с прошлой смены) + завоз → осталось. «Продано» считается само.</div>';
-  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:52px;text-align:center">Было</div><div style="width:46px;text-align:center">Завоз</div><div style="width:52px;text-align:center">Ост.</div><div style="width:44px;text-align:center">Прод.</div></div>';
+  h+='<div class="refresh-hint" style="margin-top:0">Стаканы: было (с прошлой смены) → осталось. «Продано» считается само.</div>';
+  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:70px;text-align:center">Было</div><div style="width:70px;text-align:center">Осталось</div><div style="width:54px;text-align:center">Прод.</div></div>';
   CUP_SIZES.forEach(function(nm,i){
     var bylo=parseInt(KASA_LAST[nm])||0;
-    h+='<div style="display:flex;align-items:center;gap:4px;margin-bottom:6px">'
+    h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
       +'<div style="flex:1.3;font-size:12px;font-weight:600">'+nm+'</div>'
-      +'<input class="set-input" type="number" inputmode="numeric" id="kb_'+i+'" value="'+bylo+'" oninput="kasaCalc()" style="width:52px;text-align:center;padding:8px 2px">'
-      +'<input class="set-input" type="number" inputmode="numeric" id="kr_'+i+'" value="0" oninput="kasaCalc()" style="width:46px;text-align:center;padding:8px 2px">'
-      +'<input class="set-input" type="number" inputmode="numeric" id="ko_'+i+'" value="0" oninput="kasaCalc()" style="width:52px;text-align:center;padding:8px 2px">'
-      +'<div id="ks_'+i+'" style="width:44px;text-align:center;font-weight:800;color:var(--gold)">0</div>'
+      +'<input class="set-input" type="number" inputmode="numeric" id="kb_'+i+'" value="'+bylo+'" oninput="kasaCalc()" style="width:70px;text-align:center;padding:8px 4px">'
+      +'<input class="set-input" type="number" inputmode="numeric" id="ko_'+i+'" value="0" oninput="kasaCalc()" style="width:70px;text-align:center;padding:8px 4px">'
+      +'<div id="ks_'+i+'" style="width:54px;text-align:center;font-weight:800;color:var(--gold)">0</div>'
     +'</div>';
   });
   h+='<div style="text-align:right;font-weight:700;font-size:13px;margin:6px 4px">Итого продано: <span id="ks_total">0</span> шт</div>';
@@ -1573,7 +1572,7 @@ function kasaNum(id){var el=document.getElementById(id);return el?(parseInt(el.v
 function kasaCalc(){
   var total=0;
   CUP_SIZES.forEach(function(nm,i){
-    var s=kasaNum('kb_'+i)+kasaNum('kr_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
+    var s=kasaNum('kb_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
     var el=document.getElementById('ks_'+i);if(el)el.textContent=s;
     total+=s;
   });
@@ -1587,8 +1586,8 @@ function kasaCalc(){
 }
 function submitKasa(){
   var cups=CUP_SIZES.map(function(nm,i){
-    var s=kasaNum('kb_'+i)+kasaNum('kr_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
-    return {n:nm,b:kasaNum('kb_'+i),r:kasaNum('kr_'+i),o:kasaNum('ko_'+i),s:s};
+    var s=kasaNum('kb_'+i)-kasaNum('ko_'+i);if(s<0)s=0;
+    return {n:nm,b:kasaNum('kb_'+i),r:0,o:kasaNum('ko_'+i),s:s};
   });
   var payload={action:'cash_report',cups:cups,
     itogo:kasaNum('k_itogo'),click:kasaNum('k_click'),payme:kasaNum('k_payme'),karta:kasaNum('k_karta'),terminal:kasaNum('k_terminal'),
