@@ -720,6 +720,19 @@ def build_hash_payload(db, user_id, name):
         kasa_last = json.loads(cr["ostalos"]) if (cr and cr["ostalos"]) else {}
     except Exception:
         kasa_last = {}
+    # Kasa raporları listesi: owner hepsini, barista kendininkini görür
+    try:
+        if role == "owner":
+            crs = db.execute(
+                "SELECT id,user_name,date,created_at,cups_total,itogo,cashless,schitano,vyshlo,kassa "
+                "FROM cashreports ORDER BY id DESC LIMIT 20").fetchall()
+        else:
+            crs = db.execute(
+                "SELECT id,user_name,date,created_at,cups_total,itogo,cashless,schitano,vyshlo,kassa "
+                "FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
+        kasa_reports = [dict(r) for r in crs]
+    except Exception:
+        kasa_reports = []
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -732,6 +745,7 @@ def build_hash_payload(db, user_id, name):
         f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
+        f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     if role == "owner":

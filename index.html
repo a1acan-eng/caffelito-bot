@@ -289,6 +289,9 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .det-time-box{background:var(--card2);border-radius:10px;padding:10px 8px;text-align:center}
 .det-time-l{font-size:9px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:.6px}
 .det-time-v{font-size:15px;font-weight:800;color:var(--t1);margin-top:3px;font-variant-numeric:tabular-nums}
+/* Yeşil kart (vardiya kapatma özeti): yazı her temada koyu okunur */
+.sf-card-green .det-time-l{color:#047857!important}
+.sf-card-green .det-time-v{color:#064e3b!important}
 .det-row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;font-weight:600;color:var(--t2);border-bottom:1px solid var(--border)}
 .det-row:last-child{border-bottom:none}
 .det-row span:last-child{color:var(--t1);font-weight:700;font-variant-numeric:tabular-nums}
@@ -1119,6 +1122,8 @@ try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
 // Kasa: önceki vardiyanın "Осталось"u (yeni "Было" ön-doldurma için)
 let KASA_LAST={};
 try{KASA_LAST=JSON.parse(decodeURIComponent(HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
+let KASA_REPORTS=[];
+try{KASA_REPORTS=JSON.parse(decodeURIComponent(HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
 let kasaExp=[];  // [{n,a}] harcama satırları
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -1395,7 +1400,6 @@ function svT(){
 }
 
 function rR(m,b){b.style.display='none';const today=new Date().toDateString(),ti=hist.filter(function(x){return new Date(x.date).toDateString()===today});
-if(!ti.length){m.innerHTML='<div class="empty"><div style="font-size:52px">&#128237;</div><p>Сегодня записей нет</p></div><div class="footer">XSYN</div>';return}
 let h='';const all=allItems();
 ti.filter(function(x){return x.type==='order'}).forEach(function(o){const tm=new Date(o.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
 h+='<div class="rcard"><h3>Заказ</h3><div class="rtime">'+tm+' &middot; '+o.user+'</div>';
@@ -1403,6 +1407,20 @@ Object.entries(o.items).forEach(function([id,qty]){const nm=o.names&&o.names[id]
 ti.filter(function(x){return x.type==='task'}).forEach(function(t){const tm=new Date(t.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
 h+='<div class="rcard"><h3>'+t.title+'</h3><div class="rtime">'+tm+' &middot; '+t.user+'</div>';
 t.completed.forEach(function(c){h+='<div class="rline"><span>'+c+'</span><span>&#10003;</span></div>'});h+='</div>'});
+// Kasa raporları (sunucudan — owner hepsini, barista kendininkini)
+if(KASA_REPORTS&&KASA_REPORTS.length){
+  h+='<div class="sec">📋 Кассовые отчёты</div>';
+  KASA_REPORTS.forEach(function(r){
+    var d=r.created_at?new Date(r.created_at):null;
+    var day=d?(String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')):(r.date||'');
+    h+='<div class="hist">'
+      +'<div class="hist-l"><div class="hist-d">'+escH(r.user_name||'?')+' &middot; '+day+'</div>'
+        +'<div class="hist-m">Продано '+(r.cups_total||0)+' шт &middot; POS '+fmt(r.itogo||0)+' &middot; нал. '+fmt(r.schitano||0)+'</div></div>'
+      +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+'</div>'
+    +'</div>';
+  });
+}
+if(!h){h='<div class="empty"><div style="font-size:52px">&#128237;</div><p>Записей пока нет</p></div>'}
 h+='<div class="footer">XSYN</div>';m.innerHTML=h}
 
 function esc(s){return String(s||'').replace(/'/g,"\\'")}
@@ -1891,11 +1909,11 @@ function rMShiftEnd(m,b){
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">🔴 Завершить смену · '+dayStr+'</div>';
   // Süre özeti
-  h+='<div class="sf-card" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:#6ee7b7">'
+  h+='<div class="sf-card sf-card-green" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:#6ee7b7">'
     +'<div class="det-times">'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.6)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
     +'</div>'
   +'</div>';
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
