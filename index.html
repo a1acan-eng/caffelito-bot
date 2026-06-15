@@ -50,7 +50,7 @@
 .card,.set-row,.opt,.hist,.alert,.btn-end{transition:background .3s ease,border-color .3s ease,color .3s ease}
 body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);min-height:100vh;padding-bottom:120px;-webkit-font-smoothing:antialiased;transition:background .3s ease,color .3s ease}
 .hdr{position:sticky;top:0;z-index:100;background:rgba(var(--bg-rgb),.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-bottom:1px solid var(--border);transition:background .3s ease,border-color .3s ease}
-.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:14px 20px 10px}
+.hdr-top{display:flex;align-items:center;justify-content:space-between;padding:calc(14px + var(--safe-top, env(safe-area-inset-top, 0px))) 20px 10px}
 .brand{display:flex;align-items:center;gap:10px}
 .brand-logo{width:38px;height:38px;background:var(--yellow);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#1a1a1a;overflow:hidden;transition:transform .25s cubic-bezier(.34,1.56,.64,1),box-shadow .25s ease;cursor:pointer;position:relative;box-shadow:0 0 0 0 var(--gold);transform:none}
 .brand-logo img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;-webkit-user-drag:none}
@@ -618,6 +618,22 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
+// ═══ Fullscreen safe-area: başlık status bar / Telegram kontrolleri altında kalmasın ═══
+if(tg){
+  function applySafeTop(){
+    try{
+      var s=(tg.safeAreaInset&&tg.safeAreaInset.top)||0;       // cihaz çentiği/status bar
+      var c=(tg.contentSafeAreaInset&&tg.contentSafeAreaInset.top)||0; // Telegram üst kontrolleri
+      var top=s+c;
+      document.documentElement.style.setProperty('--safe-top', (top>0?top:0)+'px');
+    }catch(e){}
+  }
+  applySafeTop();
+  try{tg.onEvent&&tg.onEvent('safeAreaChanged',applySafeTop)}catch(e){}
+  try{tg.onEvent&&tg.onEvent('contentSafeAreaChanged',applySafeTop)}catch(e){}
+  try{tg.onEvent&&tg.onEvent('fullscreenChanged',applySafeTop)}catch(e){}
+  try{tg.onEvent&&tg.onEvent('viewportChanged',applySafeTop)}catch(e){}
+}
 // ═══ YOL B: API her zaman Railway backend'ine (sabit adres) gider ═══
 // Sayfa github.io'dan da açılsa Railway'e ulaşır (backend orada). text/plain
 // kullanıyoruz ki cross-origin'de CORS preflight tetiklenmesin.
