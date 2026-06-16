@@ -2549,18 +2549,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец может раздавать чаевые.")
                 return
-            # distributions: [{target:uid, amount:int}, ...]
-            distributions = data.get("distributions") or []
+            # distributions: dict {uid:amount} (app) VEYA list [{target,amount}] (eski) — ikisini de kabul et
+            distributions = data.get("distributions") or {}
             note = (data.get("note") or "").strip()
             if not distributions:
                 await update.message.reply_text("❌ Список получателей пуст.")
                 return
+            if isinstance(distributions, dict):
+                _pairs = list(distributions.items())
+            else:
+                _pairs = [(d.get("target"), d.get("amount")) for d in distributions if isinstance(d, dict)]
             period = current_period()
             total_dist = 0
             recipients = []
-            for d in distributions:
-                tid = int(d.get("target", 0) or 0)
-                amt = int(d.get("amount", 0) or 0)
+            for _tid_raw, _amt_raw in _pairs:
+                try:
+                    tid = int(_tid_raw or 0)
+                    amt = int(_amt_raw or 0)
+                except Exception:
+                    continue
                 if tid <= 0 or amt <= 0:
                     continue
                 trow = db.execute("SELECT * FROM users WHERE user_id=?", (tid,)).fetchone()
@@ -2920,11 +2927,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             sdachi = int(data.get("na_sdachi", 0) or 0)
             exps = data.get("expenses", [])  # [{n,a}]
             note = (data.get("note") or "").strip()
+            daily_pay = int(data.get("daily_pay", 0) or 0)  # günlük bonus (satılan bardak) — kasadan alınır
             cashless = clk + pay + kar + term
             schitano = itg - cashless
             exp_total = sum(int(e.get("a", 0) or 0) for e in exps)
-            kassa = vsh - sdachi
+            kassa = vsh - sdachi - daily_pay
             cups_total = sum(int(c.get("s", 0) or 0) for c in cups)
+            # Günlük bonus kasadan alındı → aylık maaşta çift sayılmasın diye 'ödendi' kaydet
+            if daily_pay > 0:
+                db.execute(
+                    "INSERT INTO payments (user_id, amount, period, paid_by, paid_by_name, paid_at) VALUES (?,?,?,?,?,?)",
+                    (user.id, daily_pay, now.strftime("%Y-%m"), user.id, user.first_name, now.isoformat()))
             ostalos = {str(c.get("n", "")): int(c.get("o", 0) or 0) for c in cups}
             db.execute(
                 "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note) "
@@ -2969,7 +2982,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     t += f"Вышло: <b>{fmt_sum(vsh)}</b> сум\n"
                     if sdachi:
                         t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
-                    t += f"<b>💰 КАССА: {fmt_sum(kassa)} сум</b>"
+                    if daily_pay:
+                        t += f"− Зарплата дневная (бонус): <b>{fmt_sum(daily_pay)}</b> сум\n"
+                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>\n"
+                    t += "<i>Часовая зарплата — в конце месяца (/zarplata)</i>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")

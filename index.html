@@ -1973,7 +1973,8 @@ function rMShiftEnd(m,b){
   h+='<div style="background:var(--card2);border-radius:12px;padding:12px;margin-top:8px;font-size:13px">'
     +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Безнал итого</span><b id="eK_cashless">0</b></div>'
     +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Считано (нал.)</span><b id="eK_schitano">0</b></div>'
-    +'<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border2);margin-top:4px;font-size:15px"><span><b>КАССА</b></span><b id="eK_kassa" style="color:var(--green)">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>− Зарплата дневная (из кассы)</span><b id="eK_daily" style="color:#f59e0b">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border2);margin-top:4px;font-size:15px"><span><b>КАССА к сдаче</b></span><b id="eK_kassa" style="color:var(--green)">0</b></div>'
   +'</div>';
   // Not
   h+='<div class="sec">📝 Заметка (необязательно)</div>'
@@ -2066,7 +2067,9 @@ function recalcEnd(){
   var _cashless=scaleK(_K.click)+scaleK(_K.payme)+scaleK(_K.karta)+scaleK(_K.terminal);
   var _ec=document.getElementById('eK_cashless');if(_ec)_ec.textContent=fmt(_cashless);
   var _es=document.getElementById('eK_schitano');if(_es)_es.textContent=fmt(scaleK(_K.itogo)-_cashless);
-  var _ek=document.getElementById('eK_kassa');if(_ek)_ek.textContent=fmt(scaleK(_K.vyshlo));
+  var _daily=drinkBonus+desBonus; // günlük zarplata (bonus) — kasadan alınır
+  var _ed2=document.getElementById('eK_daily');if(_ed2)_ed2.textContent=fmt(_daily);
+  var _ek=document.getElementById('eK_kassa');if(_ek)_ek.textContent=fmt(scaleK(_K.vyshlo)-_daily);
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
   const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
@@ -2105,7 +2108,7 @@ async function endShiftSave(){
   // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
   var _K=endDraft.kasa||{};
   var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:0,s:Math.max(0,b-o)};});
-  var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
+  var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,daily_pay:bonus,expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
     start_time:active.start_time,
