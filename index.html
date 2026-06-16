@@ -1168,7 +1168,9 @@ if(!MY_UID)tab='order';
 
 let mView='main'; // main | shiftEnd | shift | fine | baristas | transfer | pay | shiftDetail | activeBaristas | tips | settings
 let shiftDraft={hours:'',drinks:{},note:''};
-let endDraft={drinks:{},desserts:{},note:'',endTime:''};   // Vardiya bitirme taslağı (endTime boşsa ŞİMDİ)
+let endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};   // Vardiya bitirme + kasa taslağı (endTime boşsa ŞİMDİ)
+// DRINK_LIST boy id'si → kasa bardak adı (Было ön-doldurma + сменный отчёт için)
+const SIZE_MAP={ml100:'Стакан 100',ml200:'Стакан 200',ml300:'Стакан 300',ml400:'Стакан 400',ml500:'Стакан 500',dome300:'Купол 300',dome400:'Купол 400'};
 let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};
 let payTarget=0;
 let detailShift=null;                      // Tıklanan vardiya kaydı
@@ -1485,9 +1487,6 @@ function rShift(m,b){
         +'<input type="date" id="cstDate" value="'+_tdv+'" max="'+_tdv+'" style="padding:3px 6px;border:1px solid #cbd5e1;border-radius:8px;font-size:11px;font-family:inherit;color:var(--t2);background:transparent"></div>'
     +'</div>';
   }
-
-  // Kasa / Сменный отчёт butonu
-  h+='<button class="mbtn" style="margin-top:14px;background:var(--card2);color:var(--t1);border:1px solid var(--border2)" onclick="mView=\'kasa\';render()">📋 Сдать кассу (сменный отчёт)</button>';
 
   // Şu an çalışan diğer baristalar
   const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID});
@@ -1837,7 +1836,10 @@ function rMMain(m,b){
 }
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
-function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:''};render()}
+function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  // Было'yu önceki vardiyanın Осталось'undan ön-doldur
+  DRINK_LIST.forEach(function(d){endDraft.bylo[d.id]=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0});
+  render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
 function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};render()}
 function openTips(){mView='tips';tipDraft={total:'',distributions:{},note:'',mode:'equal'};render()}
@@ -1925,18 +1927,16 @@ function rMShiftEnd(m,b){
       +(endDraft.endTime?'<button onclick="endDraft.endTime=\'\';render()" style="padding:9px 12px;background:#ef4444;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">⟲ Сейчас</button>':'<span style="font-size:11px;color:var(--t3)">по умолчанию</span>')
     +'</div>'
   +'</div>';
-  // İçecekler
-  h+='<div class="sec">🥤 Напитки за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(нажмите на цифру для ввода)</span></div>';
+  // Stakanlar (bardak sayımı → Продано = bonus + сменный отчёт)
+  h+='<div class="sec">🥤 Стаканы за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(было → осталось)</span></div>';
+  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:64px;text-align:center">Было</div><div style="width:64px;text-align:center">Осталось</div><div style="width:54px;text-align:center">Прод.</div></div>';
   DRINK_LIST.forEach(function(d){
-    const q=parseInt(endDraft.drinks[d.id])||0;
-    const sub=q*d.r;
-    h+='<div class="dr-item '+(q?'has':'')+'">'
-      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(d.r)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
-      +'<div class="qty-box">'
-        +'<button class="qb m" onclick="dqEnd(\''+d.id+'\',-1)">&minus;</button>'
-        +'<span class="qv '+(q?'':'z')+'" onclick="dqEndManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'·')+'</span>'
-        +'<button class="qb p" onclick="dqEnd(\''+d.id+'\',1)">+</button>'
-      +'</div>'
+    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
+    h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+      +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(d.r)+' / шт</div></div>'
+      +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:64px;text-align:center;padding:8px 4px">'
+      +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+o+'" oninput="endDraft.ostalos[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:64px;text-align:center;padding:8px 4px">'
+      +'<div id="es_'+d.id+'" style="width:54px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
     +'</div>';
   });
   // Tatlılar (kataloğu owner Settings'ten yönetir)
@@ -1954,6 +1954,21 @@ function rMShiftEnd(m,b){
       +'</div>'
     +'</div>';
   });
+  // ─── Kasa (сменный отчёт): ödemeler + POS + harcamalar + Вышло ───
+  h+='<div class="sec">💳 Безналичные оплаты</div>';
+  [['click','CLICK'],['payme','PAYME'],['karta','KARTA'],['terminal','TERMINAL']].forEach(function(p){
+    h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">'+p[1]+'</div></div><input class="set-input" type="number" inputmode="numeric" value="'+(endDraft.kasa[p[0]]||0)+'" oninput="endDraft.kasa[\''+p[0]+'\']=parseInt(this.value)||0;recalcEnd()"></div>';
+  });
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">🧾 Итого (Poster)</div></div><input class="set-input" type="number" inputmode="numeric" value="'+(endDraft.kasa.itogo||0)+'" oninput="endDraft.kasa.itogo=parseInt(this.value)||0;recalcEnd()"></div>';
+  h+='<div class="sec">💸 Расходы</div><div id="eexp"></div>';
+  h+='<button class="add-btn" style="width:100%;margin-top:4px" onclick="endExpAdd()">+ Добавить расход</button>';
+  h+='<div class="sec">💵 Касса</div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Вышло (наличные)</div></div><input class="set-input" type="number" inputmode="numeric" value="'+(endDraft.kasa.vyshlo||0)+'" oninput="endDraft.kasa.vyshlo=parseInt(this.value)||0;recalcEnd()"></div>';
+  h+='<div style="background:var(--card2);border-radius:12px;padding:12px;margin-top:8px;font-size:13px">'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Безнал итого</span><b id="eK_cashless">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:3px 0"><span>Считано (нал.)</span><b id="eK_schitano">0</b></div>'
+    +'<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border2);margin-top:4px;font-size:15px"><span><b>КАССА</b></span><b id="eK_kassa" style="color:var(--green)">0</b></div>'
+  +'</div>';
   // Not
   h+='<div class="sec">📝 Заметка (необязательно)</div>'
     +'<textarea class="sf-note" rows="2" placeholder="например: вечерняя смена, замена" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
@@ -1967,7 +1982,8 @@ function rMShiftEnd(m,b){
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;
   b.style.display='block';
-  b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену</button>';
+  b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену + сдать кассу</button>';
+  endExpRender();
   recalcEnd();
   // Saniyelik canlı güncelleme — sadece manuel saat YOKSA çalışsın
   if(window._endTimer)clearInterval(window._endTimer);
@@ -2029,11 +2045,22 @@ function recalcEnd(){
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
-  DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  DRINK_LIST.forEach(function(d){
+    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
+    endDraft.drinks[d.id]=s;  // Продано = Было − Осталось → bonus + сменный отчёт
+    var el=document.getElementById('es_'+d.id);if(el)el.textContent=s;
+    drinkBonus+=s*d.r;
+  });
   let desBonus=0;
   DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+drinkBonus+desBonus;
+  // Kasa canlı özeti
+  var _K=endDraft.kasa||{};
+  var _cashless=(parseInt(_K.click)||0)+(parseInt(_K.payme)||0)+(parseInt(_K.karta)||0)+(parseInt(_K.terminal)||0);
+  var _ec=document.getElementById('eK_cashless');if(_ec)_ec.textContent=fmt(_cashless);
+  var _es=document.getElementById('eK_schitano');if(_es)_es.textContent=fmt((parseInt(_K.itogo)||0)-_cashless);
+  var _ek=document.getElementById('eK_kassa');if(_ek)_ek.textContent=fmt(parseInt(_K.vyshlo)||0);
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
   const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
@@ -2045,14 +2072,18 @@ function recalcEnd(){
   }
 }
 
-function endShiftSave(){
+async function endShiftSave(){
   const active=(SUMMARY||{}).active;
   if(!active){toast('Нет активной смены');return}
   // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
-  DRINK_LIST.forEach(function(d){drinkBonus+=(parseInt(endDraft.drinks[d.id])||0)*d.r});
+  DRINK_LIST.forEach(function(d){
+    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
+    endDraft.drinks[d.id]=s;
+    drinkBonus+=s*d.r;
+  });
   let desBonus=0;
   DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
   const bonus=drinkBonus+desBonus;
@@ -2065,6 +2096,10 @@ function endShiftSave(){
     note:endDraft.note
   };
   if(endDraft.endTime)payload.end_time=endDraft.endTime;
+  // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
+  var _K=endDraft.kasa||{};
+  var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:0,s:Math.max(0,b-o)};});
+  var _kpayload={action:'cash_report',cups:_cups,itogo:parseInt(_K.itogo)||0,click:parseInt(_K.click)||0,payme:parseInt(_K.payme)||0,karta:parseInt(_K.karta)||0,terminal:parseInt(_K.terminal)||0,vyshlo:parseInt(_K.vyshlo)||0,na_sdachi:0,expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
     start_time:active.start_time,
@@ -2093,11 +2128,33 @@ function endShiftSave(){
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  endDraft={drinks:{},desserts:{},note:'',endTime:''};
+  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   mView='main';
   render();
+  // 1) Kasa raporunu gönder (await — vardiya kapatma reload'undan ÖNCE kaydedilsin)
+  try{
+    if(tg&&tg.initData){
+      await fetch(API_BASE+'/api/action',{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify({initData:tg.initData,data:JSON.stringify(_kpayload)})});
+    }
+  }catch(e){console.warn('kasa send',e)}
+  // 2) Vardiyayı kapat (sendData override → /api/action + reload)
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
 }
+// Birleşik kapanış — harcama satırları (kasa)
+function endExpRender(){
+  var el=document.getElementById('eexp');if(!el)return;
+  var h='';
+  (endDraft.kasa.expenses||[]).forEach(function(e,i){
+    h+='<div style="display:flex;gap:6px;margin-bottom:6px">'
+      +'<input class="set-input" type="text" value="'+escH(e.n||'')+'" placeholder="название" oninput="endDraft.kasa.expenses['+i+'].n=this.value" style="flex:1">'
+      +'<input class="set-input" type="number" inputmode="numeric" value="'+(e.a||0)+'" placeholder="сумма" oninput="endDraft.kasa.expenses['+i+'].a=parseInt(this.value)||0" style="width:90px">'
+      +'<button class="xbtn" onclick="endExpDel('+i+')">&#10005;</button>'
+    +'</div>';
+  });
+  el.innerHTML=h;
+}
+function endExpAdd(){endDraft.kasa.expenses.push({n:'',a:0});endExpRender()}
+function endExpDel(i){endDraft.kasa.expenses.splice(i,1);endExpRender()}
 
 // ── Vardiya DETAY ekranı (üstüne basınca açılır) ──
 function rMShiftDetail(m,b){
