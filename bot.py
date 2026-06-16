@@ -2950,8 +2950,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         o = int(c.get("o", 0) or 0); s = int(c.get("s", 0) or 0)
                         if b or r or o or s:
                             rtxt = f"+{r}" if r else ""
-                            t += f"  {esc_html(str(c.get('n','')))}: {b}{rtxt} → {o} = <b>{s}</b>\n"
-                    t += f"  <b>Итого продано: {cups_total} шт</b>\n"
+                            t += f"  {esc_html(str(c.get('n','')))}:    <b>{b}{rtxt} → {o} = {s}</b>\n"
+                    t += f"\n  <b>🧮 ИТОГО ПРОДАНО:  {cups_total} шт</b>\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n<b>💳 Оплаты</b>\n"
                     if clk: t += f"  CLICK: {fmt_sum(clk)}\n"
                     if pay: t += f"  PAYME: {fmt_sum(pay)}\n"

@@ -1180,6 +1180,8 @@ let tipDraft={total:'',distributions:{},note:'',mode:'equal'}; // equal|custom
 let settingsTab='prices'; // prices|desserts|names|passwords|logs
 
 function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.').replace(/,/g,'.')}
+// Binler \u00f6l\u00e7e\u011fi: '455'\u2192455000, '5967'\u21925.967.000; ama '000' ile biten (455000) oldu\u011fu gibi kal\u0131r.
+function scaleK(n){n=parseInt(n)||0;return (n>0&&n%1000!==0)?n*1000:n;}
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
@@ -2059,10 +2061,10 @@ function recalcEnd(){
   const total=hourly+drinkBonus+desBonus;
   // Kasa canlı özeti
   var _K=endDraft.kasa||{};
-  var _cashless=(parseInt(_K.click)||0)+(parseInt(_K.payme)||0)+(parseInt(_K.karta)||0)+(parseInt(_K.terminal)||0);
+  var _cashless=scaleK(_K.click)+scaleK(_K.payme)+scaleK(_K.karta)+scaleK(_K.terminal);
   var _ec=document.getElementById('eK_cashless');if(_ec)_ec.textContent=fmt(_cashless);
-  var _es=document.getElementById('eK_schitano');if(_es)_es.textContent=fmt((parseInt(_K.itogo)||0)-_cashless);
-  var _ek=document.getElementById('eK_kassa');if(_ek)_ek.textContent=fmt(parseInt(_K.vyshlo)||0);
+  var _es=document.getElementById('eK_schitano');if(_es)_es.textContent=fmt(scaleK(_K.itogo)-_cashless);
+  var _ek=document.getElementById('eK_kassa');if(_ek)_ek.textContent=fmt(scaleK(_K.vyshlo));
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
   const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
@@ -2101,7 +2103,7 @@ async function endShiftSave(){
   // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
   var _K=endDraft.kasa||{};
   var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:0,s:Math.max(0,b-o)};});
-  var _kpayload={action:'cash_report',cups:_cups,itogo:parseInt(_K.itogo)||0,click:parseInt(_K.click)||0,payme:parseInt(_K.payme)||0,karta:parseInt(_K.karta)||0,terminal:parseInt(_K.terminal)||0,vyshlo:parseInt(_K.vyshlo)||0,na_sdachi:0,expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}),note:endDraft.note||''};
+  var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
     start_time:active.start_time,
