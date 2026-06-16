@@ -671,7 +671,9 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
     xhr.setRequestHeader('Content-Type','text/plain;charset=UTF-8');
     xhr.send(JSON.stringify({initData:initData}));
     if(xhr.status===200&&xhr.responseText){
-      window.location.hash=xhr.responseText; // taze rol/veri
+      // Doğrudan değişkene yaz — location.hash round-trip'i %-kodlamayı bozup
+      // summary/baristas gibi JSON alanlarını okunamaz yapıyordu (active görünmüyordu).
+      window.__cf=xhr.responseText;
     }else{console.error('state http',xhr.status);}
   }catch(e){console.error('state load failed',e);}
 })();
@@ -696,7 +698,7 @@ if(tg){
 }
 // ─── Passcode auth (Wallet style, client-side SHA-256) ───
 (function(){
-  const HP2=new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+  const HP2=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
   const role=HP2.get('role')||'barista';
   const pwh=(HP2.get('pwh')||'').trim();
   // Owner her zaman içeri girer, passcode yok
@@ -1104,7 +1106,7 @@ const FINE_PRESETS=[
 const MN=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 
 // URL hash'ten kullanıcı bilgisi al (bot tarafından eklenir)
-const HP=new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+const HP=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
 let MY_UID=parseInt(HP.get('uid'))||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.id:0);
 let MY_ROLE=HP.get('role')||'barista';
 let MY_NAME=decodeURIComponent(HP.get('name')||'')||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста');
