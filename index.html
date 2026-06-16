@@ -630,6 +630,8 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
+// Sayı kutularına dokununca değer '0' ise otomatik temizle (yazmayı kolaylaştırır)
+document.addEventListener('focusin',function(e){var t=e.target;if(t&&t.tagName==='INPUT'&&t.type==='number'&&t.value==='0'){t.value=''}},true);
 // ═══ Fullscreen safe-area: başlık status bar / Telegram kontrolleri altında kalmasın ═══
 if(tg){
   function applySafeTop(){
