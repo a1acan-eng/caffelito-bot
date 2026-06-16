@@ -1109,35 +1109,35 @@ const MN=['Январь','Февраль','Март','Апрель','Май','И
 const HP=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
 let MY_UID=parseInt(HP.get('uid'))||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.id:0);
 let MY_ROLE=HP.get('role')||'barista';
-let MY_NAME=decodeURIComponent(HP.get('name')||'')||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста');
+let MY_NAME=(HP.get('name')||'')||(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста');
 let SUMMARY={};
 let BARISTAS=[];
-try{SUMMARY=JSON.parse(decodeURIComponent(HP.get('summary')||'{}'))}catch(e){SUMMARY={}}
-try{BARISTAS=JSON.parse(decodeURIComponent(HP.get('baristas')||'[]'))}catch(e){BARISTAS=[]}
+try{SUMMARY=JSON.parse((HP.get('summary')||'{}'))}catch(e){SUMMARY={}}
+try{BARISTAS=JSON.parse((HP.get('baristas')||'[]'))}catch(e){BARISTAS=[]}
 let RT_SELF={};
-try{RT_SELF=JSON.parse(decodeURIComponent(HP.get('rt')||'{}'))}catch(e){RT_SELF={}}
+try{RT_SELF=JSON.parse((HP.get('rt')||'{}'))}catch(e){RT_SELF={}}
 let PENDING_EXAM=null;
-try{const _ex=decodeURIComponent(HP.get('exam')||'');if(_ex&&_ex!=='null'&&_ex!=='""')PENDING_EXAM=JSON.parse(_ex);}catch(e){PENDING_EXAM=null}
+try{const _ex=(HP.get('exam')||'');if(_ex&&_ex!=='null'&&_ex!=='""')PENDING_EXAM=JSON.parse(_ex);}catch(e){PENDING_EXAM=null}
 let LOANS=[];
-try{LOANS=JSON.parse(decodeURIComponent(HP.get('loans')||'[]'))}catch(e){LOANS=[]}
+try{LOANS=JSON.parse((HP.get('loans')||'[]'))}catch(e){LOANS=[]}
 let loanDraft={amount:'',reason:''};
 let LOGS=[];
-try{LOGS=JSON.parse(decodeURIComponent(HP.get('logs')||'[]'))}catch(e){LOGS=[]}
+try{LOGS=JSON.parse((HP.get('logs')||'[]'))}catch(e){LOGS=[]}
 // Kasa: önceki vardiyanın "Осталось"u (yeni "Было" ön-doldurma için)
 let KASA_LAST={};
-try{KASA_LAST=JSON.parse(decodeURIComponent(HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
+try{KASA_LAST=JSON.parse((HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
 let KASA_REPORTS=[];
-try{KASA_REPORTS=JSON.parse(decodeURIComponent(HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
+try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
 let kasaExp=[];  // [{n,a}] harcama satırları
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
 let PRICES={};
-try{PRICES=JSON.parse(decodeURIComponent(HP.get('prices')||'{}'))}catch(e){PRICES={}}
+try{PRICES=JSON.parse((HP.get('prices')||'{}'))}catch(e){PRICES={}}
 // Default fiyatları override et
 DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
 // Bot'tan gelen tatlı kataloğu — owner Settings'ten yönetir
 let DESSERT_CAT=[];
-try{DESSERT_CAT=JSON.parse(decodeURIComponent(HP.get('desserts')||'[]'))}catch(e){DESSERT_CAT=[]}
+try{DESSERT_CAT=JSON.parse((HP.get('desserts')||'[]'))}catch(e){DESSERT_CAT=[]}
 // Server (bot'tan gelen URL) artık her değişiklikten sonra taze gönderiliyor —
 // localStorage merge'i kaldırıldı çünkü silinen kalemleri geri getiriyordu.
 try{ localStorage.removeItem('cf_desserts_cat'); localStorage.removeItem('cf_desserts_cat_ts'); }catch(e){}
