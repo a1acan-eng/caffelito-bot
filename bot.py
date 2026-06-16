@@ -3683,6 +3683,33 @@ async def api_action(request):
     return _cors(web.json_response({"ok": True}))
 
 
+async def api_admin(request):
+    """Geçici owner-only bakım ucu: scan / açık vardiyaları kapat (endshifts)."""
+    body = await _read_json(request)
+    if body is None:
+        return _cors(web.json_response({"error": "bad json"}, status=400))
+    user = validate_init_data(body.get("initData", ""))
+    if not user:
+        return _cors(web.json_response({"error": "unauthorized"}, status=403))
+    db = get_db()
+    if get_role(db, user["id"]) != "owner":
+        return _cors(web.json_response({"error": "owner only"}, status=403))
+    op = body.get("op", "scan")
+    out = {"op": op}
+    try:
+        open_sh = db.execute("SELECT id,user_id,start_time FROM shifts WHERE start_time IS NOT NULL AND end_time IS NULL ORDER BY id").fetchall()
+        out["open_shifts"] = [dict(s) for s in open_sh]
+    except Exception as e:
+        out["open_shifts"] = f"hata: {e}"
+    if op == "endshifts":
+        now = datetime.now(TZ).replace(tzinfo=None).isoformat()
+        n = db.execute("UPDATE shifts SET end_time=?, hours=0, total=0, bonus=0, hourly_pay=0 "
+                       "WHERE start_time IS NOT NULL AND end_time IS NULL", (now,)).rowcount
+        db.commit()
+        out["closed"] = n
+    return _cors(web.json_response(out))
+
+
 async def start_web_server(app):
     web_app = web.Application()
     web_app["tg_app"] = app
@@ -3693,8 +3720,10 @@ async def start_web_server(app):
         web.get("/{fname:.+\\.jpg}", web_image),
         web.post("/api/state", api_state),
         web.post("/api/action", api_action),
+        web.post("/api/admin", api_admin),
         web.options("/api/state", web_options),
         web.options("/api/action", web_options),
+        web.options("/api/admin", web_options),
     ])
     runner = web.AppRunner(web_app)
     await runner.setup()
