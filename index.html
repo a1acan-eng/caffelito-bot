@@ -1890,8 +1890,8 @@ function rMMain(m,b){
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
 function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
-  // Было'yu önceki vardiyanın Осталось'undan ön-doldur
-  DRINK_LIST.forEach(function(d){endDraft.bylo[d.id]=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0});
+  // Было'yu önceki vardiyanın Осталось'undan ön-doldur; Осталось=Было başlat (Продано=0 → sayınca düşer)
+  DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]=b;});
   render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
 function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};render()}
@@ -2598,7 +2598,7 @@ function rMBaristas(m,b){
               +(isMe?' <span style="font-size:10px;color:var(--gold2);font-weight:600">(вы)</span>':'')
             +'</div>'
             +(brs.u?'<div class="bcard-uname">@'+escH(brs.u)+'</div>':'')
-            +(isActive?'<div class="bcard-uname" style="color:#059669;font-weight:700;margin-top:3px">🟢 В смене с '+fmtTime(brs.active.start_time)+' · '+liveDur(brs.active.start_time)+'</div>':'')
+            +(isActive?'<div class="bcard-uname" style="color:#059669;font-weight:700;margin-top:3px">🟢 В смене с '+fmtTime(brs.active.start_time)+' · <span id="ba_'+brs.id+'" data-st="'+escH(brs.active.start_time||'')+'">'+liveDur(brs.active.start_time)+'</span></div>':'')
           +'</div>'
           +'<div class="bcard-net">'+fmt(brs.net||0)+'</div>'
         +'</div>'
@@ -2626,6 +2626,14 @@ function rMBaristas(m,b){
   }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+  // Aktif vardiya süreleri canlı güncelle (maaş/Управление paneli)
+  if(window._salTimer)clearInterval(window._salTimer);
+  window._salTimer=setInterval(function(){
+    if(tab!=='salary'){clearInterval(window._salTimer);window._salTimer=null;return}
+    var any=false;
+    document.querySelectorAll('[id^="ba_"]').forEach(function(el){var st=el.getAttribute('data-st');if(st){el.textContent=liveDur(st);any=true}});
+    if(!any){clearInterval(window._salTimer);window._salTimer=null}
+  },1000);
 }
 
 function quickFine(uid){fineDraft={target:uid,type:'clean',amount:30000,reason:'',custom:''};mView='fine';render()}
