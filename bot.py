@@ -3725,8 +3725,8 @@ def _app_build():
     try:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
         with open(path, "r", encoding="utf-8") as f:
-            head = f.read(8000)
-        m = re.search(r"APP_BUILD\s*=\s*(\d+)", head)
+            txt = f.read()
+        m = re.search(r"APP_BUILD\s*=\s*(\d+)", txt)
         if m:
             return m.group(1)
     except Exception as e:
