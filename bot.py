@@ -2974,7 +2974,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         b = int(c.get("b", 0) or 0); r = int(c.get("r", 0) or 0)
                         o = int(c.get("o", 0) or 0); s = int(c.get("s", 0) or 0)
                         if b or r or o or s:
-                            rtxt = f"+{r}" if r else ""
+                            rtxt = (f" +{r}" if r > 0 else f" {r}") if r else ""
                             t += f"  {esc_html(str(c.get('n','')))}:    <b>{b}{rtxt} → {o} = {s}</b>\n"
                     t += f"\n  <b>🧮 ИТОГО ПРОДАНО:  {cups_total} шт</b>\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n<b>💳 Оплаты</b>\n"
@@ -3008,7 +3008,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     from html import escape as esc_html2
                     low = []  # (urgency, name, qty)
                     for c in cups:
-                        b = int(c.get("b", 0) or 0)
+                        b = int(c.get("b", 0) or 0) + int(c.get("r", 0) or 0)  # завоз/передача dahil efektif başlangıç
                         o = int(c.get("o", 0) or 0)
                         if b <= 0:
                             continue  # stoklanmayan boy

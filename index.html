@@ -1889,9 +1889,9 @@ function rMMain(m,b){
 }
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
-function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
-  // Было'yu önceki vardiyanın Осталось'undan ön-doldur; Осталось=Было başlat (Продано=0 → sayınca düşer)
-  DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]=b;});
+function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  // Было'yu önceki vardiyanın Осталось'undan ön-doldur; Осталось=Было başlat (Продано=0 → sayınca düşer). Завоз/передача = 0 (gerekince açılır).
+  DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]=b;endDraft.zavoz[d.id]=0;});
   render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
 function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};render()}
@@ -1981,15 +1981,22 @@ function rMShiftEnd(m,b){
     +'</div>'
   +'</div>';
   // Stakanlar (bardak sayımı → Продано = bonus + сменный отчёт)
-  h+='<div class="sec">🥤 Стаканы за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(было → осталось)</span></div>';
-  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:64px;text-align:center">Было</div><div style="width:64px;text-align:center">Осталось</div><div style="width:54px;text-align:center">Прод.</div></div>';
+  var zv=!!endDraft.showZavoz;
+  h+='<div class="sec" style="display:flex;align-items:center;justify-content:space-between">'
+    +'<span>🥤 Стаканы за смену <span style="font-weight:500;color:var(--t3);font-size:10px">(было → осталось)</span></span>'
+    +'<button onclick="endDraft.showZavoz=!endDraft.showZavoz;render()" style="font-family:inherit;font-size:10px;font-weight:700;padding:5px 9px;border-radius:9px;border:1px solid '+(zv?'#2563eb':'#cbd5e1')+';background:'+(zv?'#2563eb':'transparent')+';color:'+(zv?'#fff':'#2563eb')+';cursor:pointer">'+(zv?'✓ Завоз':'± Завоз')+'</button>'
+  +'</div>';
+  if(zv)h+='<div style="font-size:10px;color:var(--t3);padding:0 4px 4px">📦 Завоз: пришёл заказ (+) · отдали на другую точку (−)</div>';
+  var iw=zv?52:64,pw=zv?44:54;
+  h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:'+iw+'px;text-align:center">Было</div>'+(zv?'<div style="width:52px;text-align:center;color:#2563eb">Завоз</div>':'')+'<div style="width:'+iw+'px;text-align:center">Осталось</div><div style="width:'+pw+'px;text-align:center">Прод.</div></div>';
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
-    h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
+    h+='<div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">'
       +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(d.r)+' / шт</div></div>'
-      +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:64px;text-align:center;padding:8px 4px">'
-      +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+o+'" oninput="endDraft.ostalos[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:64px;text-align:center;padding:8px 4px">'
-      +'<div id="es_'+d.id+'" style="width:54px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
+      +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
+      +(zv?'<input class="set-input" type="number" inputmode="numeric" id="ez_'+d.id+'" value="'+(r||'')+'" placeholder="0" oninput="endDraft.zavoz[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:52px;text-align:center;padding:8px 4px;color:#2563eb;font-weight:700">':'')
+      +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+o+'" oninput="endDraft.ostalos[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
+      +'<div id="es_'+d.id+'" style="width:'+pw+'px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
     +'</div>';
   });
   // Tatlılar (kataloğu owner Settings'ten yönetir)
@@ -2100,8 +2107,8 @@ function recalcEnd(){
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
-    endDraft.drinks[d.id]=s;  // Продано = Было − Осталось → bonus + сменный отчёт
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
+    endDraft.drinks[d.id]=s;  // Продано = Было + Завоз − Осталось → bonus + сменный отчёт
     var el=document.getElementById('es_'+d.id);if(el)el.textContent=s;
     drinkBonus+=s*d.r;
   });
@@ -2136,7 +2143,7 @@ async function endShiftSave(){
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b-o);
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
     endDraft.drinks[d.id]=s;
     drinkBonus+=s*d.r;
   });
@@ -2154,7 +2161,7 @@ async function endShiftSave(){
   if(endDraft.endTime)payload.end_time=endDraft.endTime;
   // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
   var _K=endDraft.kasa||{};
-  var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:0,s:Math.max(0,b-o)};});
+  var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:r,s:Math.max(0,b+r-o)};});
   var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,daily_pay:bonus,hours:Math.round(liveH*100)/100,start_time:active.start_time,end_time:effEnd.toISOString(),expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
@@ -2184,7 +2191,7 @@ async function endShiftSave(){
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   mView='main';
   render();
   // 1) Kasa raporunu gönder (await — vardiya kapatma reload'undan ÖNCE kaydedilsin)
