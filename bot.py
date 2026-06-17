@@ -3,7 +3,7 @@ CAFFELITO TELEGRAM BOT ☕
 Заказ, Задачи, Уборка и ОКК контроль
 """
 
-import json, os, logging, sqlite3, hmac, hashlib
+import json, os, logging, sqlite3, hmac, hashlib, asyncio
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl
 from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
@@ -149,6 +149,8 @@ def get_db():
             db.execute(f"ALTER TABLE cashreports ADD COLUMN {_col} {_typ}")
         except sqlite3.OperationalError:
             pass
+    # ─── Meta (key-value: ödeme hatırlatması vb.) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
     # ─── Bardak fiyatları (override) ───
     db.execute("""CREATE TABLE IF NOT EXISTS prices (
         drink_id TEXT PRIMARY KEY,
@@ -3001,6 +3003,33 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"KASA group send failed: {e}")
+                # ─── Stok uyarısı (kalan bardak) — gruba, herkese ───
+                try:
+                    from html import escape as esc_html2
+                    low = []  # (urgency, name, qty)
+                    for c in cups:
+                        b = int(c.get("b", 0) or 0)
+                        o = int(c.get("o", 0) or 0)
+                        if b <= 0:
+                            continue  # stoklanmayan boy
+                        if o <= 50:
+                            low.append((3, str(c.get("n", "")), o))
+                        elif o <= 70:
+                            low.append((2, str(c.get("n", "")), o))
+                        elif o <= 100:
+                            low.append((1, str(c.get("n", "")), o))
+                    if low:
+                        low.sort(key=lambda x: x[0], reverse=True)
+                        head = ("🔴 <b>СКЛАД — ОЧЕНЬ СРОЧНО заказать!</b>" if low[0][0] == 3
+                                else "⚠️ <b>СКЛАД — срочно заказать</b>" if low[0][0] == 2
+                                else "📦 <b>СКЛАД — пора заказать стаканы</b>")
+                        st = head + "\n━━━━━━━━━━━━━━━━━━━━\n"
+                        for urg, nm, q in low:
+                            ic = "🔴" if urg == 3 else ("⚠️" if urg == 2 else "📦")
+                            st += f"  {ic} {esc_html2(nm)}: осталось <b>{q}</b> шт\n"
+                        await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"STOK alert failed: {e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
 
         # ─── Borç talebi: barista istek gönderir ───
@@ -3528,11 +3557,45 @@ async def sync_user_ui(bot, db, user_id: int):
         logger.warning(f"sync_user_ui failed for {user_id}: {e}")
 
 
+async def payment_reminder_loop(app):
+    """Her gün kontrol: Railway ödemesinden (PAY_DAY=14) PAY_REMIND_BEFORE=3 gün önce
+    (ayın 11'i) owner'lara DM hatırlatma. Ayda bir gönderilir (meta ile takip)."""
+    await asyncio.sleep(20)
+    pay_day = int(os.getenv("PAY_DAY", "14") or 14)
+    before = int(os.getenv("PAY_REMIND_BEFORE", "3") or 3)
+    remind_day = max(1, pay_day - before)
+    while True:
+        try:
+            now = datetime.now(TZ)
+            if now.day == remind_day:
+                db = get_db()
+                cur = now.strftime("%Y-%m")
+                row = db.execute("SELECT val FROM meta WHERE k='pay_reminder'").fetchone()
+                if not row or row["val"] != cur:
+                    owners = db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall()
+                    msg = (f"💳 *Напоминание об оплате*\n\n"
+                           f"Через {before} дня ({pay_day}-го числа) — оплата хостинга Nero (Railway, ~5$).\n"
+                           f"Пополните карту, чтобы бот не отключился. 🙏")
+                    for o in owners:
+                        try:
+                            await app.bot.send_message(o["user_id"], msg, parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"pay reminder dm {o['user_id']}: {e}")
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('pay_reminder',?)", (cur,))
+                    db.commit()
+                    logger.info("Ödeme hatırlatması gönderildi")
+        except Exception as e:
+            logger.warning(f"payment_reminder_loop: {e}")
+        await asyncio.sleep(3600)  # her saat kontrol
+
+
 async def setup_commands(app):
     """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
     await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
     # Yol B: Mini App'i + API'yi sunan HTTP sunucusunu başlat
     await start_web_server(app)
+    # Ödeme hatırlatma arka plan görevi
+    asyncio.create_task(payment_reminder_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════
