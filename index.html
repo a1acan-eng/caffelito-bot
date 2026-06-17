@@ -661,6 +661,28 @@ if(tg){
 // Sayfa github.io'dan da açılsa Railway'e ulaşır (backend orada). text/plain
 // kullanıyoruz ki cross-origin'de CORS preflight tetiklenmesin.
 var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
+// ═══ Otomatik sürüm yenileme ═══ Telegram WebView eski HTML'i cache'liyor (özellikle
+// "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
+// yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
+// deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
+var APP_BUILD=20260618;
+(function(){
+  try{
+    fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
+      .then(function(r){return r.text();})
+      .then(function(t){
+        var sv=parseInt(t,10)||0;
+        if(sv>APP_BUILD){
+          var key='cf_rl_'+sv;
+          if(!sessionStorage.getItem(key)){
+            sessionStorage.setItem(key,'1'); // sonsuz döngü koruması
+            var base=location.href.split('#')[0].split('?')[0];
+            location.replace(base+'?v='+sv);
+          }
+        }
+      }).catch(function(){});
+  }catch(e){}
+})();
 // Açılışta state'i backend'den çek (hash'e GÜVENME — eski/kırpık olabilir).
 (function(){
   try{

@@ -3,7 +3,7 @@ CAFFELITO TELEGRAM BOT ☕
 Заказ, Задачи, Уборка и ОКК контроль
 """
 
-import json, os, logging, sqlite3, hmac, hashlib, asyncio
+import json, os, logging, sqlite3, hmac, hashlib, asyncio, re
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl
 from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
@@ -3720,6 +3720,25 @@ async def web_health(request):
     return web.Response(text="ok")
 
 
+def _app_build():
+    """index.html'deki APP_BUILD sayısını oku (tek kaynak — client kendi sürümüyle karşılaştırır)."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+        with open(path, "r", encoding="utf-8") as f:
+            head = f.read(8000)
+        m = re.search(r"APP_BUILD\s*=\s*(\d+)", head)
+        if m:
+            return m.group(1)
+    except Exception as e:
+        logger.warning(f"_app_build failed: {e}")
+    return "0"
+
+
+async def web_ver(request):
+    """Güncel build sürümünü döndür — client cache'li eskiyse kendini yeniler."""
+    return _nocache(_cors(web.Response(text=_app_build(), content_type="text/plain")))
+
+
 async def web_options(request):
     return _cors(web.Response(text=""))
 
@@ -3806,6 +3825,7 @@ async def start_web_server(app):
         web.get("/", web_index),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
+        web.get("/api/ver", web_ver),
         web.get("/{fname:.+\\.jpg}", web_image),
         web.post("/api/state", api_state),
         web.post("/api/action", api_action),
