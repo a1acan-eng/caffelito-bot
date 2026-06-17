@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061803;
+var APP_BUILD=2026061804;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2256,6 +2256,7 @@ function endExpDel(i){endDraft.kasa.expenses.splice(i,1);endExpRender()}
 function rMShiftDetail(m,b){
   const sh=detailShift;
   if(!sh){mView='main';render();return}
+  const lt2=openerLate(sh,SUMMARY.shifts||[]);
   let drinks={};try{drinks=typeof sh.drinks==='string'?JSON.parse(sh.drinks):(sh.drinks||{})}catch(e){drinks={}}
   let desserts={};try{desserts=typeof sh.desserts==='string'?JSON.parse(sh.desserts):(sh.desserts||{})}catch(e){desserts={}}
   const cups=Object.values(drinks).reduce(function(a,v){return a+(parseInt(v)||0)},0);
@@ -2273,6 +2274,7 @@ function rMShiftDetail(m,b){
       +'<div class="det-time-box"><div class="det-time-l">Ушли</div><div class="det-time-v">'+fmtTime(sh.end_time)+'</div></div>'
       +'<div class="det-time-box"><div class="det-time-l">Часы</div><div class="det-time-v">'+fmtH(sh.hours||0)+'</div></div>'
     +'</div>'
+    +(lt2?'<div class="det-row" style="border-top:1px dashed var(--border);margin-top:8px;padding-top:8px"><span style="color:#dc2626;font-weight:700">⏰ Опоздание к открытию (07:00)</span><span style="color:#dc2626;font-weight:800">'+lateLabel(lt2)+'</span></div>':'')
   +'</div>';
 
   // İçecekler
@@ -2323,6 +2325,27 @@ function rMShiftDetail(m,b){
   m.innerHTML=h;b.style.display='none';
 }
 
+// ── Geç kalma takibi (basit) — beklenen açılış 07:00 ──
+// Günün AÇICI (en erken) vardiyası 07:00'den ne kadar geç başladı? Sadece sabah penceresinde
+// (<12:00) başlayan, o günün ilk vardiyası kontrol edilir (öğleden sonra/akşam vardiyaları muaf,
+// gece geriye-dönük girişler de doğal olarak muaf). Erken/zamanında → null. Dönüş: gecikme dakikası.
+const OPEN_HOUR=7;
+function openerLate(sh,allShifts){
+  if(!sh||!sh.start_time)return null;
+  var st=new Date(sh.start_time);if(isNaN(st)||st.getHours()>=12)return null; // sadece sabah
+  var dk=st.toDateString(),earliest=null;
+  (allShifts||[]).forEach(function(x){
+    if(!x||!x.start_time)return;
+    var d=new Date(x.start_time);if(isNaN(d)||d.getHours()>=12||d.toDateString()!==dk)return;
+    if(!earliest||d<earliest)earliest=d;
+  });
+  if(!earliest||Math.abs(earliest-st)>1000)return null; // bu vardiya o günün açıcısı değil
+  var exp=new Date(st.getFullYear(),st.getMonth(),st.getDate(),OPEN_HOUR,0,0,0);
+  var diff=Math.round((st-exp)/60000);
+  return diff>0?diff:null; // erken/zamanında → işaret yok
+}
+function lateLabel(min){if(!min)return '';if(min<60)return '+'+min+' мин';var hh=Math.floor(min/60),mm=min%60;return '+'+hh+'ч'+(mm?' '+mm+'м':'');}
+
 // ── Owner: Şu an çalışanlar (Бухгалтерия odası — kim aktif) ──
 function rMActiveBaristas(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
@@ -2363,9 +2386,10 @@ function rMActiveBaristas(m,b){
     let cups=0;try{const d=typeof r.drinks==='string'?JSON.parse(r.drinks):(r.drinks||{});Object.values(d).forEach(function(v){cups+=parseInt(v)||0})}catch(e){}
     const day=String(new Date(r.start_time).getDate()).padStart(2,'0')+'.'+String(new Date(r.start_time).getMonth()+1).padStart(2,'0');
     const isOpen=!r.end_time;
+    const lt=openerLate(r,allRecent);
     h+='<div class="hist '+(isOpen?'':'')+'" style="'+(isOpen?'background:#ecfdf5;border-color:#6ee7b7':'')+'">'
       +'<div class="hist-l">'
-        +'<div class="hist-d">'+(r._r==='owner'?'👑 ':'')+escH(r._n)+' · '+day+'</div>'
+        +'<div class="hist-d">'+(r._r==='owner'?'👑 ':'')+escH(r._n)+' · '+day+(lt?' <span style="color:#dc2626;font-weight:700;font-size:11px">⏰ опоздание '+lateLabel(lt)+'</span>':'')+'</div>'
         +'<div class="hist-m">'+fmtTime(r.start_time)+(isOpen?' → <span style="color:#059669;font-weight:700">в смене</span>':' → '+fmtTime(r.end_time)+' · '+fmtH(r.hours||0)+(cups?' · '+cups+' шт':''))+'</div>'
       +'</div>'
       +'<div class="hist-r">'+(isOpen?'<span style="color:#059669">●</span>':'+'+fmt(r.total||0))+'</div>'
