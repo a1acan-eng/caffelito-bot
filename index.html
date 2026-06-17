@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061802;
+var APP_BUILD=2026061803;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1106,13 +1106,13 @@ function sT(){localStorage.setItem('cf5t',JSON.stringify(T))}
 const HOURLY_RATE=12000;
 const BONUS_RATES={ml100:500,ml200:700,ml300:1000,ml400:1200,ml500:1400,dome300:1000,dome400:1300};
 const DRINK_LIST=[
-  {id:'ml100',l:'100 мл',r:500,c:'☕'},
-  {id:'ml200',l:'200 мл',r:700,c:'☕'},
-  {id:'ml300',l:'300 мл',r:1000,c:'☕'},
-  {id:'ml400',l:'400 мл',r:1200,c:'☕'},
   {id:'ml500',l:'500 мл',r:1400,c:'☕'},
-  {id:'dome300',l:'Купол 300',r:1000,c:'🧊'},
-  {id:'dome400',l:'Купол 400',r:1300,c:'🧊'}
+  {id:'ml400',l:'400 мл',r:1200,c:'☕'},
+  {id:'ml300',l:'300 мл',r:1000,c:'☕'},
+  {id:'ml200',l:'200 мл',r:700,c:'☕'},
+  {id:'ml100',l:'100 мл',r:500,c:'☕'},
+  {id:'dome400',l:'Купол 400',r:1300,c:'🧊'},
+  {id:'dome300',l:'Купол 300',r:1000,c:'🧊'}
 ];
 // Tatlılar — kataloğu owner Settings'ten yönetir
 const DESSERT_RATE=500;  // default fallback
@@ -1911,7 +1911,7 @@ function rMMain(m,b){
 }
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
-function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   // Было'yu önceki vardiyanın Осталось'undan ön-doldur. Осталось BOŞ başlar (barista sonunda sayar;
   // boşken Продано=0 → ön-dolu sayı yüzünden Прод kendiliğinden dolmasın). Завоз/передача = 0 (gerekince açılır).
   DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]='';endDraft.zavoz[d.id]=0;});
@@ -2024,6 +2024,10 @@ function rMShiftEnd(m,b){
       +'<div id="es_'+d.id+'" style="width:'+pw+'px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
     +'</div>';
   });
+  // Склад — kalan kahve çekirdeği (kg). Boş bırakılabilir; girilirse stok uyarısı tetikler (≤3🔴/≤5⚠️/≤8📦).
+  h+='<div class="sec">📦 Склад (на конец смены)</div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">☕ Кофе в зёрнах (кг)</div><div style="font-size:10px;color:var(--t3)">сколько осталось — для заказа</div></div>'
+    +'<input class="set-input" type="number" inputmode="decimal" step="0.1" min="0" value="'+(endDraft.coffeeKg||'')+'" placeholder="напр. 4.5" oninput="endDraft.coffeeKg=this.value"></div>';
   // Tatlılar (kataloğu owner Settings'ten yönetir)
   h+='<div class="sec">🍰 Десерты за смену <span style="font-weight:500;color:var(--t3);font-size:10px">'+(MY_ROLE==='owner'?'(каталог в Настройках)':'')+'</span></div>';
   DESSERT_LIST.forEach(function(d){
@@ -2191,7 +2195,7 @@ async function endShiftSave(){
   // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
   var _K=endDraft.kasa||{};
   var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);var o=counted?(parseInt(oRaw)||0):(b+r);return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:r,s:Math.max(0,b+r-o)};});
-  var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,daily_pay:bonus,hours:Math.round(liveH*100)/100,start_time:active.start_time,end_time:effEnd.toISOString(),expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
+  var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,coffee_kg:parseFloat(endDraft.coffeeKg)||0,daily_pay:bonus,hours:Math.round(liveH*100)/100,start_time:active.start_time,end_time:effEnd.toISOString(),expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
     start_time:active.start_time,
@@ -2220,7 +2224,7 @@ async function endShiftSave(){
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   mView='main';
   render();
   // 1) Kasa raporunu gönder (await — vardiya kapatma reload'undan ÖNCE kaydedilsin)

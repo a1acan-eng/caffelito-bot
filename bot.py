@@ -144,7 +144,8 @@ def get_db():
         expenses TEXT, expenses_total INTEGER, note TEXT)""")
     # cashreports — sonradan eklenen sütunlar (eski DB'ler için)
     for _col, _typ in (("daily_pay", "INTEGER"), ("hours", "REAL"),
-                       ("start_time", "TEXT"), ("end_time", "TEXT")):
+                       ("start_time", "TEXT"), ("end_time", "TEXT"),
+                       ("coffee_kg", "REAL")):
         try:
             db.execute(f"ALTER TABLE cashreports ADD COLUMN {_col} {_typ}")
         except sqlite3.OperationalError:
@@ -2951,16 +2952,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             shift_hours = float(data.get("hours", 0) or 0)
             shift_start = (data.get("start_time") or "")
             shift_end = (data.get("end_time") or "")
+            coffee_kg = float(data.get("coffee_kg", 0) or 0)  # kalan kahve çekirdeği (kg) — stok uyarısı için
             db.execute(
-                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time,coffee_kg) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user.id, user.first_name, now.strftime("%Y-%m-%d"), now.strftime("%Y-%m"), now.isoformat(),
                  json.dumps({str(c.get("n","")): int(c.get("b",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("r",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps(ostalos, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("s",0) or 0) for c in cups}, ensure_ascii=False),
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
-                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end))
+                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg))
             db.commit()
             await update.message.reply_text("✅ Кассовый отчёт сохранён!")
             if group_id:
@@ -3018,15 +3020,23 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             low.append((2, str(c.get("n", "")), o))
                         elif o <= 100:
                             low.append((1, str(c.get("n", "")), o))
-                    if low:
+                    # Kahve çekirdeği (kg) — eşik ≤3🔴 / ≤5⚠️ / ≤8📦
+                    coffee_urg = 0
+                    if coffee_kg > 0:
+                        coffee_urg = 3 if coffee_kg <= 3 else (2 if coffee_kg <= 5 else (1 if coffee_kg <= 8 else 0))
+                    if low or coffee_urg:
                         low.sort(key=lambda x: x[0], reverse=True)
-                        head = ("🔴 <b>СКЛАД — ОЧЕНЬ СРОЧНО заказать!</b>" if low[0][0] == 3
-                                else "⚠️ <b>СКЛАД — срочно заказать</b>" if low[0][0] == 2
-                                else "📦 <b>СКЛАД — пора заказать стаканы</b>")
+                        max_urg = max([coffee_urg] + [u for u, _, _ in low])
+                        head = ("🔴 <b>СКЛАД — ОЧЕНЬ СРОЧНО заказать!</b>" if max_urg == 3
+                                else "⚠️ <b>СКЛАД — срочно заказать</b>" if max_urg == 2
+                                else "📦 <b>СКЛАД — пора заказать</b>")
                         st = head + "\n━━━━━━━━━━━━━━━━━━━━\n"
                         for urg, nm, q in low:
                             ic = "🔴" if urg == 3 else ("⚠️" if urg == 2 else "📦")
                             st += f"  {ic} {esc_html2(nm)}: осталось <b>{q}</b> шт\n"
+                        if coffee_urg:
+                            ic = "🔴" if coffee_urg == 3 else ("⚠️" if coffee_urg == 2 else "📦")
+                            st += f"  {ic} ☕ Кофе в зёрнах: осталось <b>{coffee_kg:g}</b> кг\n"
                         await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
