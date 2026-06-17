@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=20260618;
+var APP_BUILD=2026061802;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1912,8 +1912,9 @@ function rMMain(m,b){
 
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
 function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
-  // Было'yu önceki vardiyanın Осталось'undan ön-doldur; Осталось=Было başlat (Продано=0 → sayınca düşer). Завоз/передача = 0 (gerekince açılır).
-  DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]=b;endDraft.zavoz[d.id]=0;});
+  // Было'yu önceki vardiyanın Осталось'undan ön-doldur. Осталось BOŞ başlar (barista sonunda sayar;
+  // boşken Продано=0 → ön-dolu sayı yüzünden Прод kendiliğinden dolmasın). Завоз/передача = 0 (gerekince açılır).
+  DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]='';endDraft.zavoz[d.id]=0;});
   render()}
 function openShiftDetail(idx){detailShift=(SUMMARY.shifts||[])[idx]||null;if(!detailShift)return;mView='shiftDetail';render()}
 function openFine(){mView='fine';fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};render()}
@@ -2012,12 +2013,14 @@ function rMShiftEnd(m,b){
   var iw=zv?52:64,pw=zv?44:54;
   h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:'+iw+'px;text-align:center">Было</div>'+(zv?'<div style="width:52px;text-align:center;color:#2563eb">Завоз</div>':'')+'<div style="width:'+iw+'px;text-align:center">Осталось</div><div style="width:'+pw+'px;text-align:center">Прод.</div></div>';
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
+    var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
+    var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0; // Осталость boşken Прод=0
     h+='<div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">'
       +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(d.r)+' / шт</div></div>'
       +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
       +(zv?'<input class="set-input" type="number" inputmode="numeric" id="ez_'+d.id+'" value="'+(r||'')+'" placeholder="0" oninput="endDraft.zavoz[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:52px;text-align:center;padding:8px 4px;color:#2563eb;font-weight:700">':'')
-      +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+o+'" oninput="endDraft.ostalos[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
+      +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+(counted?oRaw:'')+'" placeholder="—" oninput="endDraft.ostalos[\''+d.id+'\']=this.value;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
       +'<div id="es_'+d.id+'" style="width:'+pw+'px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
     +'</div>';
   });
@@ -2129,7 +2132,9 @@ function recalcEnd(){
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
+    var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
+    var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;  // Осталость boşsa Продано=0
     endDraft.drinks[d.id]=s;  // Продано = Было + Завоз − Осталось → bonus + сменный отчёт
     var el=document.getElementById('es_'+d.id);if(el)el.textContent=s;
     drinkBonus+=s*d.r;
@@ -2165,7 +2170,9 @@ async function endShiftSave(){
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){
-    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0,s=Math.max(0,b+r-o);
+    var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
+    var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
+    var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;
     endDraft.drinks[d.id]=s;
     drinkBonus+=s*d.r;
   });
@@ -2183,7 +2190,7 @@ async function endShiftSave(){
   if(endDraft.endTime)payload.end_time=endDraft.endTime;
   // Сменный отчёт (kasa) payload — bardak Продано + ödemeler + harcamalar (reset'ten ÖNCE topla)
   var _K=endDraft.kasa||{};
-  var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0,o=parseInt(endDraft.ostalos[d.id])||0;return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:r,s:Math.max(0,b+r-o)};});
+  var _cups=DRINK_LIST.map(function(d){var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);var o=counted?(parseInt(oRaw)||0):(b+r);return {n:SIZE_MAP[d.id]||d.l,b:b,o:o,r:r,s:Math.max(0,b+r-o)};});
   var _kpayload={action:'cash_report',cups:_cups,itogo:scaleK(_K.itogo),click:scaleK(_K.click),payme:scaleK(_K.payme),karta:scaleK(_K.karta),terminal:scaleK(_K.terminal),vyshlo:scaleK(_K.vyshlo),na_sdachi:0,daily_pay:bonus,hours:Math.round(liveH*100)/100,start_time:active.start_time,end_time:effEnd.toISOString(),expenses:(_K.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a}).map(function(e){return {n:e.n,a:scaleK(e.a)}}),note:endDraft.note||''};
   // Optimistik güncelleme
   const finishedShift={
