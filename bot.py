@@ -190,6 +190,15 @@ def get_db():
         for d in defaults:
             db.execute("INSERT OR IGNORE INTO desserts_catalog (id,label,icon,price,sort_order,active,updated_at) VALUES (?,?,?,?,?,1,?)",
                        (d[0], d[1], d[2], d[3], d[4], datetime.now(TZ).isoformat()))
+    # Сэндвич'i kataloğa BİR KEZ ekle (mevcut/özelleştirilmiş DB'de yoksa). Meta bayrağı →
+    # owner sonradan silerse her restart'ta geri gelmesin.
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='seed_sandwich'").fetchone():
+            db.execute("INSERT OR IGNORE INTO desserts_catalog (id,label,icon,price,sort_order,active,updated_at) VALUES (?,?,?,?,?,1,?)",
+                       ("sandwich", "Сэндвич", "🥪", 500, 7, datetime.now(TZ).isoformat()))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('seed_sandwich', ?)", (datetime.now(TZ).isoformat(),))
+    except sqlite3.OperationalError:
+        pass
     # ─── Audit log ───
     db.execute("""CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -938,6 +947,7 @@ TASKS = {
             "Молочный холодильник проверен",
             "Стаканы/крышки в наличии",
             "Касса открыта, деньги пересчитаны",
+            "Телевизоры включены (реклама на экранах)",
             "Барная стойка протёрта",
             "Бойлер включен (94°C)",
             "Заготовки проверены/промаркированы",
