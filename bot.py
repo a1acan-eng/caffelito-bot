@@ -142,6 +142,13 @@ def get_db():
         itogo INTEGER, click INTEGER, payme INTEGER, karta INTEGER, terminal INTEGER,
         cashless INTEGER, schitano INTEGER, vyshlo INTEGER, na_sdachi INTEGER, kassa INTEGER,
         expenses TEXT, expenses_total INTEGER, note TEXT)""")
+    # cashreports — sonradan eklenen sütunlar (eski DB'ler için)
+    for _col, _typ in (("daily_pay", "INTEGER"), ("hours", "REAL"),
+                       ("start_time", "TEXT"), ("end_time", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE cashreports ADD COLUMN {_col} {_typ}")
+        except sqlite3.OperationalError:
+            pass
     # ─── Bardak fiyatları (override) ───
     db.execute("""CREATE TABLE IF NOT EXISTS prices (
         drink_id TEXT PRIMARY KEY,
@@ -722,14 +729,12 @@ def build_hash_payload(db, user_id, name):
         kasa_last = {}
     # Kasa raporları listesi: owner hepsini, barista kendininkini görür
     try:
+        _crcols = ("SELECT id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
+                   "cashless,schitano,vyshlo,kassa,sold,expenses,daily_pay,hours,start_time,end_time,note FROM cashreports ")
         if role == "owner":
-            crs = db.execute(
-                "SELECT id,user_name,date,created_at,cups_total,itogo,cashless,schitano,vyshlo,kassa "
-                "FROM cashreports ORDER BY id DESC LIMIT 20").fetchall()
+            crs = db.execute(_crcols + "ORDER BY id DESC LIMIT 15").fetchall()
         else:
-            crs = db.execute(
-                "SELECT id,user_name,date,created_at,cups_total,itogo,cashless,schitano,vyshlo,kassa "
-                "FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
+            crs = db.execute(_crcols + "WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
         kasa_reports = [dict(r) for r in crs]
     except Exception:
         kasa_reports = []
@@ -2093,6 +2098,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "🔒 У вас нет доступа. Попросите владельца назначить пароль.",
             parse_mode="Markdown")
         return
+    # Grup/owner mesajlarında gösterilecek ad: owner'ın atadığı display_name (yoksa TG adı)
+    shown = display_name_for(db, user.id, fallback=user.first_name)
 
     # Mini App ID → güzel isim
     NAMES = {
@@ -2152,7 +2159,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # HTML mesaj oluştur
             text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            text += f"<b>{esc_html(user.first_name)}</b>\n"
+            text += f"<b>{esc_html(shown)}</b>\n"
             text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
             text += f"━━━━━━━━━━━━━━━━━━━━\n"
 
@@ -2217,7 +2224,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     from html import escape as esc_html
                     text = f"<b>ЗАДАЧИ — {len(completed)}/{total}</b>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n"
-                    text += f"<b>{esc_html(user.first_name)}</b>\n"
+                    text += f"<b>{esc_html(shown)}</b>\n"
                     text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
                     text += f"<i>{esc_html(category)}</i>\n"
                     text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -2258,7 +2265,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if group_id:
                 try:
                     from html import escape as esc_html
-                    gtext = (f"🟢 <b>{esc_html(user.first_name)}</b> начал(а) смену\n"
+                    gtext = (f"🟢 <b>{esc_html(shown)}</b> начал(а) смену\n"
                              f"⏰ {start_dt.strftime('%d.%m.%Y %H:%M')}")
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
@@ -2316,7 +2323,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     from html import escape as esc_html
                     # Grup mesajı: SAATLIK GIZLI (ay sonu hesabı). Sadece satış sayıları + satış bonusu.
                     sales_bonus = drinks_bonus + dessert_bonus
-                    gtext = (f"🔴 <b>{esc_html(user.first_name)}</b> закрыл(а) смену\n"
+                    gtext = (f"🔴 <b>{esc_html(shown)}</b> закрыл(а) смену\n"
                              f"━━━━━━━━━━━━━━━━━━━━\n"
                              f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
                              f"🥤 Напитки: <b>{cups}</b> шт")
@@ -2333,7 +2340,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
                 for o in owners:
                     try:
-                        otext = (f"📢 *{user.first_name}* закрыл(а) смену\n"
+                        otext = (f"📢 *{shown}* закрыл(а) смену\n"
                                  f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')} ({hours:g}h)\n"
                                  f"🥤 {cups} шт · 🍰 {sweets} шт\n"
                                  f"💰 Продажи: {fmt_sum(drinks_bonus + dessert_bonus)}\n"
@@ -2380,7 +2387,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if group_id:
                 try:
                     from html import escape as esc_html
-                    gtext = (f"<b>СМЕНА — {esc_html(user.first_name)}</b>\n"
+                    gtext = (f"<b>СМЕНА — {esc_html(shown)}</b>\n"
                              f"━━━━━━━━━━━━━━━━━━━━\n"
                              f"📅 {now.strftime('%d.%m.%Y %H:%M')}\n"
                              f"⏱️ {hours:g}h | 🥤 {sum(int(v or 0) for v in drinks.values())} шт\n"
@@ -2939,23 +2946,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "INSERT INTO payments (user_id, amount, period, paid_by, paid_by_name, paid_at) VALUES (?,?,?,?,?,?)",
                     (user.id, daily_pay, now.strftime("%Y-%m"), user.id, user.first_name, now.isoformat()))
             ostalos = {str(c.get("n", "")): int(c.get("o", 0) or 0) for c in cups}
+            shift_hours = float(data.get("hours", 0) or 0)
+            shift_start = (data.get("start_time") or "")
+            shift_end = (data.get("end_time") or "")
             db.execute(
-                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user.id, user.first_name, now.strftime("%Y-%m-%d"), now.strftime("%Y-%m"), now.isoformat(),
                  json.dumps({str(c.get("n","")): int(c.get("b",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("r",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps(ostalos, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("s",0) or 0) for c in cups}, ensure_ascii=False),
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
-                 json.dumps(exps, ensure_ascii=False), exp_total, note))
+                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end))
             db.commit()
             await update.message.reply_text("✅ Кассовый отчёт сохранён!")
             if group_id:
                 try:
                     t = "<b>📋 СМЕННЫЙ ОТЧЁТ — CAFFELITO</b>\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n"
-                    t += f"<b>{esc_html(user.first_name)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
+                    t += f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n"
                     t += "<b>🥤 Стаканы (было → осталось = продано)</b>\n"
                     for c in cups:
