@@ -2193,6 +2193,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return _re.sub(r'\s*\([^)]*\)', '', str(name or '')).strip()
             total = data.get("c", 0)
             groups = data.get("g", [])
+            fr_names = []  # franchise için TAM isim (parantezli — Номенклатура eşleşmesi)
+            fr_qtys = []
 
             # HTML mesaj oluştur
             text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
@@ -2211,6 +2213,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
                             text += f"<b>  — {esc_html(_clean(iname))}:  {iqty}x</b>\n"
+                            fr_names.append(iname.strip()); fr_qtys.append(iqty.strip())
                         else:
                             text += f"<b>  — {esc_html(_clean(item_str))}</b>\n"
             else:
@@ -2221,6 +2224,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 for pid, qty in items.items():
                     name = names_from_app.get(pid) or NAMES.get(pid, pid)
                     text += f"<b>  — {esc_html(_clean(name))}:  {qty}x</b>\n"
+                    fr_names.append(str(name).strip()); fr_qtys.append(str(qty).strip())
 
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
@@ -2247,6 +2251,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
+                # ─── Franchise blokları: şef dokun-kopyala → Google Sheets'e yapıştır ───
+                if fr_names:
+                    try:
+                        n_txt = "\n".join(esc_html(n) for n in fr_names)
+                        q_txt = "\n".join(esc_html(q) for q in fr_qtys)
+                        head = ("📤 <b>ДЛЯ ФРАНШИЗЫ (Google Sheets)</b>\n"
+                                "Шеф: нажми на блок — он скопируется, вставь в таблицу.\n\n")
+                        full = (head +
+                                "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n" + f"<pre>{n_txt}</pre>\n" +
+                                "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n" + f"<pre>{q_txt}</pre>")
+                        if len(full) <= 4000:
+                            await context.bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
+                        else:
+                            await context.bot.send_message(chat_id=int(group_id),
+                                text=head + "1️⃣ <b>Названия</b> → <b>D6</b>:\n" + f"<pre>{n_txt}</pre>", parse_mode="HTML")
+                            await context.bot.send_message(chat_id=int(group_id),
+                                text="2️⃣ <b>Кол-во</b> → <b>I6</b>:\n" + f"<pre>{q_txt}</pre>", parse_mode="HTML")
+                    except Exception as e:
+                        logger.error(f"FRANCHISE BLOCKS FAILED: {e}")
                     await update.message.reply_text(f"Ошибка: {e}")
 
         elif action == "tasks":
