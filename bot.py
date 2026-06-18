@@ -11,7 +11,7 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     WebAppInfo, BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
     MenuButtonCommands, MenuButtonWebApp, MenuButtonDefault,
-    KeyboardButton, ReplyKeyboardMarkup,
+    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -453,10 +453,11 @@ async def send_reopen_button(update, context, db, user):
 
 async def refresh_webapp_keyboard(update, context, db, user, text="🔄 Приложение обновлено 👇"):
     """
-    Vardiya başla/bit gibi state değişikliklerinden sonra ReplyKeyboard'u
-    TAZE URL ile yeniden gönder. Yoksa Telegram eski hash'i tutar ve mini app
-    eski veriyle açılır (örn. 'Начать смену' butonu hâlâ görünür).
+    ARTIK NO-OP. Eskiden her aksiyondan sonra "🔄 ... 👇" mesajı + reply klavye
+    gönderiyordu (DM kalabalığı). Tazelik artık /api/ver oto-yenileme ile sağlanıyor;
+    kullanıcı sade DM istedi → hiçbir şey gönderme.
     """
+    return
     try:
         if not WEBAPP_URL:
             return
@@ -1251,37 +1252,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
         return
 
-    # DM — web_app butonu (ReplyKeyboard)
-    if WEBAPP_URL:
-        url = build_webapp_url(WEBAPP_URL, user.id, user.first_name, db)
-        reply_kb = ReplyKeyboardMarkup(
-            [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=url))]],
-            resize_keyboard=True
-        )
-    else:
-        reply_kb = None
-
+    # Sade DM: kalıcı reply klavyeyi KALDIR (alttaki 'Открыть Caffelito' butonu gitsin).
+    # Açılış: owner → Main App ('Открыть Caffelito' alt bar); barista → ≡ menü butonu (sync_user_ui).
     role_now = get_role(db, user.id)
-    role_note = ""
     if auto_owner:
-        role_note = "\n\n👑 *Вы автоматически назначены владельцем* (первый пользователь)."
+        msg = "👑 Вы — владелец. Caffelito готов."
     elif role_now == "owner":
-        role_note = "\n\n👑 Вы — *владелец*."
+        msg = "☕ Caffelito готов."
     else:
-        role_note = "\n\n👤 Вы — *бариста*. Чтобы стать владельцем — /setowner (если ещё нет владельца) или попросите владельца /grantowner."
-
+        msg = "☕ Caffelito.\n(Стать владельцем — /setowner)"
     try:
-        await update.message.reply_text(
-            "☕ *CAFFELITO BOT*\n\n"
-            "Нажмите кнопку ниже чтобы открыть приложение 👇" + role_note,
-            reply_markup=reply_kb,
-            parse_mode="Markdown")
+        await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     except Exception as e:
-        logger.error(f"start reply with keyboard failed: {e}")
-        await update.message.reply_text(
-            "☕ *CAFFELITO BOT*\n\n"
-            "⚠️ Слишком много данных для кнопки. Откройте приложение через меню (≡) внизу." + role_note,
-            parse_mode="Markdown")
+        logger.error(f"start reply failed: {e}")
 
 
 async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2229,8 +2212,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
 
-            await update.message.reply_text("Заказ принят!")
-
             if group_id:
                 try:
                     if len(text.encode('utf-8')) <= 4096:
@@ -2274,8 +2255,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pending = data.get("pending", [])
             total = data.get("total", len(completed) + len(pending))
             category = data.get("category", "")
-
-            await update.message.reply_text("Задачи сохранены!")
 
             if group_id:
                 try:
@@ -2322,10 +2301,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if custom_start:
                 note_back = f"\n_(время указано вручную)_"
             await update.message.reply_text(
-                f"🟢 *Смена началась!*\n\n"
+                f"🟢 *Смена началась!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
                 f"📅 {start_dt.strftime('%d.%m.%Y')}\n"
-                f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*{note_back}\n\n"
-                f"Когда закончите — нажмите «Завершить смену» в приложении.",
+                f"⏰ Пришли в *{start_dt.strftime('%H:%M')}*{note_back}",
                 parse_mode="Markdown")
             # Klavye butonunu taze URL ile yenile (yoksa tekrar açınca eski state görünür)
             await refresh_webapp_keyboard(update, context, db, user,
@@ -3045,7 +3024,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
                  json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg))
             db.commit()
-            await update.message.reply_text("✅ Кассовый отчёт сохранён!")
             if group_id:
                 try:
                     t = "<b>📋 СМЕННЫЙ ОТЧЁТ — CAFFELITO</b>\n"
@@ -3130,8 +3108,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "INSERT OR IGNORE INTO std_acks (user_id,user_name,date,created_at) VALUES (?,?,?,?)",
                 (user.id, shown, today_str, now.isoformat()))
             db.commit()
-            await update.message.reply_text("✅ Ознакомление со стандартом обслуживания отмечено. Хорошей смены!")
-            await refresh_webapp_keyboard(update, context, db, user, "🔄 Отмечено. Готово 👇")
 
         # ─── Franchise export: 2 sütunu Telegram mesajı olarak gönder (telefonda kopyala-yapıştır) ───
         elif action == "franchise_msg":
