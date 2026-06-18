@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061810;
+var APP_BUILD=2026061811;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1316,7 +1316,6 @@ const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
 bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
-if(tot)bh+='<button class="mbtn" style="background:#0ea5e9;margin-top:8px" onclick="orderExport=true;render()">📤 Для франшизы (Google Sheets)</button>';
 b.innerHTML=bh}
 
 function rOC(m,b){const d=P[cat];if(!d){cat=null;render();return}
@@ -1330,7 +1329,6 @@ const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
 bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
-if(tot)bh+='<button class="mbtn" style="background:#0ea5e9;margin-top:8px" onclick="orderExport=true;render()">📤 Для франшизы (Google Sheets)</button>';
 b.innerHTML=bh}
 
 function cq(id,d){ord[id]=Math.max(0,(ord[id]||0)+d);if(!ord[id])delete ord[id];if(tg)tg.HapticFeedback?.impactOccurred('light');render()}

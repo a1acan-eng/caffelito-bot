@@ -2256,18 +2256,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     try:
                         n_txt = "\n".join(esc_html(n) for n in fr_names)
                         q_txt = "\n".join(esc_html(q) for q in fr_qtys)
-                        head = ("📤 <b>ДЛЯ ФРАНШИЗЫ (Google Sheets)</b>\n"
-                                "Шеф: нажми на блок — он скопируется, вставь в таблицу.\n\n")
-                        full = (head +
-                                "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n" + f"<pre>{n_txt}</pre>\n" +
-                                "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n" + f"<pre>{q_txt}</pre>")
+                        full = ("<b>D6</b>\n" + f"<pre>{n_txt}</pre>\n" +
+                                "<b>I6</b>\n" + f"<pre>{q_txt}</pre>")
                         if len(full) <= 4000:
                             await context.bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
                         else:
                             await context.bot.send_message(chat_id=int(group_id),
-                                text=head + "1️⃣ <b>Названия</b> → <b>D6</b>:\n" + f"<pre>{n_txt}</pre>", parse_mode="HTML")
+                                text="<b>D6</b>\n" + f"<pre>{n_txt}</pre>", parse_mode="HTML")
                             await context.bot.send_message(chat_id=int(group_id),
-                                text="2️⃣ <b>Кол-во</b> → <b>I6</b>:\n" + f"<pre>{q_txt}</pre>", parse_mode="HTML")
+                                text="<b>I6</b>\n" + f"<pre>{q_txt}</pre>", parse_mode="HTML")
                     except Exception as e:
                         logger.error(f"FRANCHISE BLOCKS FAILED: {e}")
                     await update.message.reply_text(f"Ошибка: {e}")
