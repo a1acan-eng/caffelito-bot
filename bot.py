@@ -103,6 +103,18 @@ def get_db():
         db.execute("ALTER TABLE users ADD COLUMN archived_at TEXT")
     except sqlite3.OperationalError:
         pass
+    # approved: owner kabul etti mi? Yeni /start yapanlar approved=0 (onay bekler, 'Все баристы'de görünmez).
+    # İlk migration'da MEVCUT kullanıcıların hepsi onaylı sayılır (kaybolmasınlar).
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN approved INTEGER DEFAULT 0")
+        db.execute("UPDATE users SET approved=1")  # sadece ilk migration'da çalışır
+    except sqlite3.OperationalError:
+        pass
+    # Owner her zaman onaylı
+    try:
+        db.execute("UPDATE users SET approved=1 WHERE role='owner'")
+    except sqlite3.OperationalError:
+        pass
     db.execute("""CREATE TABLE IF NOT EXISTS shifts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, hours REAL, drinks TEXT,
@@ -779,7 +791,8 @@ def build_hash_payload(db, user_id, name):
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
             "COALESCE(archived,0) AS archived, archived_at "
-            "FROM users ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
+            "FROM users WHERE COALESCE(approved,0)=1 "
+            "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
@@ -823,6 +836,14 @@ def build_hash_payload(db, user_id, name):
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
+        # Onay bekleyen yeni başlayanlar (approved=0) — 'Все баристы'ye girmez, ayrı liste
+        pend_rows = db.execute(
+            "SELECT user_id, name, username, created_at FROM users "
+            "WHERE COALESCE(approved,0)=0 AND COALESCE(archived,0)=0 AND role!='owner' "
+            "ORDER BY created_at DESC").fetchall()
+        pending = [{"id": p["user_id"], "n": (p["name"] or "?"),
+                    "u": p["username"] or "", "at": p["created_at"] or ""} for p in pend_rows]
+        parts.append(f"pending={quote(json.dumps(pending, ensure_ascii=False))}")
         # Loglar (son 50) — Настройки→Логи için. Client en yeniyi üstte göstersin diye eski→yeni sırada gönder.
         try:
             log_rows = db.execute(
@@ -1233,7 +1254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 👑 İlk yetkili kullanıcı otomatik owner olur
     auto_owner = False
     if not has_owner(db):
-        db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
+        db.execute("UPDATE users SET role='owner', approved=1 WHERE user_id=?", (user.id,))
         db.commit()
         auto_owner = True
 
@@ -1300,7 +1321,7 @@ async def cmd_setowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Владелец уже назначен.\n\n"
                 "Попросите его выдать вам права через /grantowner @username.")
         return
-    db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
+    db.execute("UPDATE users SET role='owner', approved=1 WHERE user_id=?", (user.id,))
     db.commit()
     await sync_user_ui(context.bot, db, user.id)
     await update.message.reply_text(
@@ -1368,7 +1389,7 @@ async def cmd_grantowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Не найден: {context.args[0]}\n\n"
             f"Этот человек должен сначала написать боту /start.")
         return
-    db.execute("UPDATE users SET role='owner' WHERE user_id=?", (target["user_id"],))
+    db.execute("UPDATE users SET role='owner', approved=1 WHERE user_id=?", (target["user_id"],))
     db.commit()
     await sync_user_ui(context.bot, db, target["user_id"])
     await update.message.reply_text(f"👑 {target['name']} теперь *владелец*.", parse_mode="Markdown")
@@ -2816,6 +2837,44 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ─── Kullanıcı arşivleme (owner-only) ───
         # Arşivlenince: kullanıcı bottan giriş yapamaz, aktif listede gözükmez
         # ama TÜM geçmişi (vardiya/ceza/ödeme/bahşiş/loglar) korunur.
+        elif action == "approve_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            shown_t = row["display_name"] or row["name"] or "?"
+            db.execute("UPDATE users SET approved=1, archived=0 WHERE user_id=?", (target_id,))
+            db.commit()
+            log_action(db, "approve_user", user.id, user.first_name, target_id, shown_t, {})
+            try:
+                await context.bot.send_message(
+                    target_id, "✅ Вас добавили в команду Caffelito! Владелец выдаст пароль для входа.")
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"✅ *{md_safe(shown_t)}* принят(а). Задайте пароль в «Люди».", parse_mode="Markdown")
+
+        elif action == "reject_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not row or (row["role"] or "") == "owner":
+                await update.message.reply_text("❌ Неверный пользователь.")
+                return
+            shown_t = row["name"] or "?"
+            db.execute("DELETE FROM users WHERE user_id=? AND COALESCE(approved,0)=0", (target_id,))
+            db.commit()
+            log_action(db, "reject_user", user.id, user.first_name, target_id, shown_t, {})
+            await update.message.reply_text(f"🗑 Заявка отклонена.")
+
         elif action == "archive_user":
             db = get_db()
             if get_role(db, user.id) != "owner":
@@ -3475,7 +3534,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 👑 İlk yetkili kullanıcı otomatik owner olur
     if not has_owner(db):
-        db.execute("UPDATE users SET role='owner' WHERE user_id=?", (user.id,))
+        db.execute("UPDATE users SET role='owner', approved=1 WHERE user_id=?", (user.id,))
         db.commit()
 
     chat_type = update.effective_chat.type

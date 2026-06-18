@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061812;
+var APP_BUILD=2026061813;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1172,6 +1172,9 @@ try{KASA_LAST=JSON.parse((HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
 let KASA_REPORTS=[];
 try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
+// Onay bekleyen yeni başlayanlar (owner)
+let PENDING=[];
+try{PENDING=JSON.parse((HP.get('pending')||'[]'))}catch(e){PENDING=[]}
 // Ступени обслуживания — bu kullanıcı bugün onayladı mı + (owner) bugün onaylayanlar
 let STD_ACK=(HP.get('std_ack')==='1');
 let STD_ACKS=[];
@@ -1953,7 +1956,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'standard\';render()"><div class="own-btn-i">📖</div><div class="own-btn-t">Стандарт</div>'+(STD_ACKS&&STD_ACKS.length?'<div class="own-btn-s">'+STD_ACKS.length+'</div>':'')+'</div>'
-        +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\'prices\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div></div>'
+        +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
   }
@@ -3176,6 +3179,20 @@ function rMSettings(m,b){
       +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id создаётся автоматически из названия</div>'
     +'</div>';
   } else if(settingsTab==='names'){
+    // 🆕 Onay bekleyen yeni başlayanlar — kabul edince 'Все баристы'ye geçer
+    if(PENDING&&PENDING.length){
+      h+='<div class="sec" style="margin-top:0">🆕 Новые заявки ('+PENDING.length+')</div>';
+      h+='<div class="refresh-hint" style="margin-top:0">Эти люди запустили бота. Примите — попадут в «Все баристы», затем задайте пароль для входа.</div>';
+      PENDING.forEach(function(p){
+        var when=p.at?(' · '+String(p.at).slice(0,10)):'';
+        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px;border:1px solid #f59e0b;background:rgba(245,158,11,.06)">'
+          +'<div class="set-row-l" style="min-width:120px"><div class="set-row-t">🆕 '+escH(p.n)+'</div><div class="set-row-s">'+(p.u?'@'+escH(p.u):'id: '+p.id)+when+'</div></div>'
+          +'<button class="add-btn" style="padding:7px 12px;font-size:12px;background:#16a34a" onclick="approveUser('+p.id+',\''+escH((p.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"))+'\')">✅ Принять</button>'
+          +'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="rejectUser('+p.id+',\''+escH((p.n||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'"))+'\')" title="Отклонить">🗑</button>'
+        +'</div>';
+      });
+      h+='<div class="sec" style="margin-top:14px">👥 Все баристы</div>';
+    }
     h+='<div class="refresh-hint" style="margin-top:0">Назначьте отображаемое имя для каждого бариста — оно будет показано в интерфейсе.</div>';
     const activeList=BARISTAS.filter(function(b){return !b.arch});
     const archList=BARISTAS.filter(function(b){return b.arch});
@@ -3341,6 +3358,22 @@ function savePrice(drinkId){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'price_update',drink_id:drinkId,amount:amount}))}catch(e){console.warn(e)}}
 }
 
+function approveUser(uid,name){
+  if(!confirm('Принять '+(name||'')+' в команду?\nПосле этого задайте пароль для входа.'))return;
+  PENDING=(PENDING||[]).filter(function(p){return p.id!==uid});
+  toast('✅ Принят — задайте пароль');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'approve_user',target:uid}))}catch(e){console.warn(e)}}
+  render();
+}
+function rejectUser(uid,name){
+  if(!confirm('Отклонить заявку '+(name||'')+'?\nПользователь будет удалён.'))return;
+  PENDING=(PENDING||[]).filter(function(p){return p.id!==uid});
+  toast('🗑 Заявка отклонена');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'reject_user',target:uid}))}catch(e){console.warn(e)}}
+  render();
+}
 function saveDisplayName(uid){
   const el=document.getElementById('nm_'+uid);
   if(!el)return;
