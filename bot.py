@@ -3101,6 +3101,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if coffee_urg:
                             ic = "🔴" if coffee_urg == 3 else ("⚠️" if coffee_urg == 2 else "📦")
                             st += f"  {ic} ☕ Кофе в зёрнах: осталось <b>{coffee_kg:g}</b> кг\n"
+                        # Kasa raporundan AYRI, dikkat çeken 2. mesaj olsun diye küçük gecikme
+                        await asyncio.sleep(1.2)
                         await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")

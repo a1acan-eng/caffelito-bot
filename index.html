@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061811;
+var APP_BUILD=2026061812;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1896,7 +1896,6 @@ function rMMain(m,b){
     +'<div class="sal-amount-sub">сум · чистая зарплата</div>'
     +'<div class="sal-stats">'
       +'<div class="sal-stat"><div class="sal-stat-v">'+(hours%1===0?hours:hours.toFixed(1))+'h</div><div class="sal-stat-l">часы</div></div>'
-      +'<div class="sal-stat"><div class="sal-stat-v">'+fmt(bonus)+'</div><div class="sal-stat-l">бонус</div></div>'
       +'<div class="sal-stat"><div class="sal-stat-v" style="color:#10b981">+'+fmt(tips)+'</div><div class="sal-stat-l">чаевые</div></div>'
       +'<div class="sal-stat"><div class="sal-stat-v red">-'+fmt(fines)+'</div><div class="sal-stat-l">штраф</div></div>'
     +'</div>'
