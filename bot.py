@@ -2412,7 +2412,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             # 1 DAKİKA SONRA gönder — handler'ı bloklamadan arka plan görevi
                             async def _delayed_stock(bot=context.bot, gid=int(group_id), text=st_text):
                                 try:
-                                    await asyncio.sleep(60)
+                                    await asyncio.sleep(10)
                                     await bot.send_message(chat_id=gid, text=text, parse_mode="HTML")
                                 except Exception as ex:
                                     logger.error(f"delayed STOK failed: {ex}")
@@ -3077,6 +3077,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     t += f"<b>Вышло: {fmt_sum(vsh)} сум</b>\n"
                     if sdachi:
                         t += f"<b>На сдачи: {fmt_sum(sdachi)} сум</b>\n"
+                    if daily_pay:
+                        t += f"<b>− Зарплата дневная: {fmt_sum(daily_pay)} сум</b>\n"
                     t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
