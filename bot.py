@@ -3087,6 +3087,32 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("✅ Ознакомление со стандартом обслуживания отмечено. Хорошей смены!")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Отмечено. Готово 👇")
 
+        # ─── Franchise export: 2 sütunu Telegram mesajı olarak gönder (telefonda kopyala-yapıştır) ───
+        elif action == "franchise_msg":
+            from html import escape as _esc_fr
+            names = data.get("names", []) or []
+            qtys = data.get("qtys", []) or []
+            if not names:
+                await update.message.reply_text("Пусто — сначала выберите товары для заказа.")
+            else:
+                names_txt = "\n".join(_esc_fr(str(n)) for n in names)
+                qtys_txt = "\n".join(_esc_fr(str(q)) for q in qtys)
+                msg = ("📤 <b>ФРАНШИЗА — для вставки в таблицу</b>\n"
+                       "Нажмите на блок ниже — он скопируется, затем вставьте в ячейку.\n\n"
+                       "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n"
+                       f"<pre>{names_txt}</pre>\n"
+                       "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n"
+                       f"<pre>{qtys_txt}</pre>\n"
+                       "Столбцы E–H посчитаются сами.")
+                # Telegram mesaj limiti ~4096; çok uzun siparişte böl
+                if len(msg) <= 4000:
+                    await update.message.reply_text(msg, parse_mode="HTML")
+                else:
+                    await update.message.reply_text(
+                        "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n" + f"<pre>{names_txt}</pre>", parse_mode="HTML")
+                    await update.message.reply_text(
+                        "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n" + f"<pre>{qtys_txt}</pre>", parse_mode="HTML")
+
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":
             db = get_db()

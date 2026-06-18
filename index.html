@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061809;
+var APP_BUILD=2026061810;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1407,7 +1407,10 @@ function rFranchise(m,b){
   }
   var names=rows.map(function(r){return r.n}).join('\n');
   var qtys=rows.map(function(r){return r.q}).join('\n');
-  h+='<div class="refresh-hint" style="margin-top:0;line-height:1.55">Вставьте в таблицу Google Sheets франшизы:<br>1️⃣ <b>Названия</b> → столбец <b>D</b> (нажмите ячейку <b>D6</b>, вставьте)<br>2️⃣ <b>Кол-во</b> → столбец <b>I</b> (нажмите ячейку <b>I6</b>, вставьте)<br>Остальное (A,B,C,E,F,G,H) таблица посчитает сама.</div>';
+  h+='<div class="refresh-hint" style="margin-top:0;line-height:1.55">Вставьте в таблицу Google Sheets франшизы:<br>1️⃣ <b>Названия</b> → столбец <b>D</b> (ячейка <b>D6</b>)<br>2️⃣ <b>Кол-во</b> → столбец <b>I</b> (ячейка <b>I6</b>)<br>Остальное (A,B,C,E,F,G,H) таблица посчитает сама.</div>';
+  // Telefon için: Telegram mesajı olarak gönder (kod bloğu = güvenilir kopyala)
+  h+='<button class="mbtn" style="background:#229ED9;color:#fff;margin-bottom:6px" onclick="franchiseToTelegram()">📨 Получить в Telegram (для телефона)</button>';
+  h+='<div class="refresh-hint" style="margin-top:0;font-size:11px">На телефоне кнопки ниже могут не копировать. Надёжнее: нажми «Получить в Telegram» → в чате нажми на блок (скопируется) → вставь в таблицу.</div>';
   h+='<div class="sec" style="font-size:13px">1️⃣ Названия → столбец D ('+rows.length+')</div>';
   h+='<textarea id="frNames" readonly style="width:100%;box-sizing:border-box;height:'+Math.min(260,rows.length*22+26)+'px;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;background:var(--card);color:var(--t1);resize:vertical">'+escH(names)+'</textarea>';
   h+='<button class="mbtn grn" style="margin-top:6px" onclick="copyText(\'frNames\',\'названия\')">📋 Копировать названия</button>';
@@ -1416,6 +1419,14 @@ function rFranchise(m,b){
   h+='<button class="mbtn grn" style="margin-top:6px" onclick="copyText(\'frQty\',\'кол-во\')">📋 Копировать кол-во</button>';
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+}
+function franchiseToTelegram(){
+  var rows=franchiseData();
+  if(!rows.length){toast('Сначала выберите товары');return;}
+  var payload={action:'franchise_msg',names:rows.map(function(r){return r.n}),qtys:rows.map(function(r){return String(r.q)})};
+  toast('📨 Отправлено в Telegram — откройте чат');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('fr msg',e)}}
 }
 function copyText(id,label){
   var el=document.getElementById(id);if(!el)return;
