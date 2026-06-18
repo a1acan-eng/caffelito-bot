@@ -2280,16 +2280,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if group_id:
                 try:
                     from html import escape as esc_html
-                    text = f"<b>ЗАДАЧИ — {len(completed)}/{total}</b>\n"
-                    text += f"━━━━━━━━━━━━━━━━━━━━\n"
-                    text += f"<b>{esc_html(shown)}</b>\n"
-                    text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
-                    text += f"<i>{esc_html(category)}</i>\n"
-                    text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    # "uborka_Ежедневно" / "zadachi_Открытие" → güzel Rusça başlık (Kiril)
+                    _pfx = {"uborka": "🫧 ЧИСТОТА", "temizlik": "🫧 ЧИСТОТА",
+                            "zadachi": "✅ ЗАДАЧИ", "gorev": "✅ ЗАДАЧИ", "okk": "📋 ОКК"}
+                    if "_" in category:
+                        _p, _sub = category.split("_", 1)
+                        cat_title = f"{_pfx.get(_p, '📋')} · {_sub}"
+                    else:
+                        cat_title = category or "📋 ЗАДАЧИ"
+                    done_n, total_n = len(completed), (total or (len(completed) + len(pending)))
+                    text = f"<b>{esc_html(cat_title)}</b>\n"
+                    text += "━━━━━━━━━━━━━━━━━━━━\n"
+                    text += f"👤 <b>{esc_html(shown)}</b>   ·   {now.strftime('%d.%m.%Y  %H:%M')}\n"
+                    text += f"✅ Выполнено: <b>{done_n}/{total_n}</b>\n"
+                    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
                     for item in completed:
                         text += f"  ✅ {esc_html(item)}\n"
                     for item in pending:
-                        text += f"  ⬜ {esc_html(item)}\n"
+                        text += f"  ❌ {esc_html(item)}\n"
+                    if not pending:
+                        text += "\n🎉 <b>Всё выполнено!</b>"
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
@@ -3053,8 +3063,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
                     if daily_pay:
                         t += f"− Зарплата дневная (бонус): <b>{fmt_sum(daily_pay)}</b> сум\n"
-                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>\n"
-                    t += "<i>Часовая зарплата — в конце месяца (/zarplata)</i>"
+                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
