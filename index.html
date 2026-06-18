@@ -588,7 +588,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 <div class="hdr">
   <div class="hdr-top">
     <div class="brand">
-      <div class="brand-logo" onclick="toggleTheme(event)" title="Сменить тему (день/ночь)"><img src="nero.jpg" alt="NERO" onerror="this.parentNode.innerHTML='C'"></div>
+      <div class="brand-logo" onclick="toggleTheme(event)" title="Сменить тему (день/ночь)"><img src="nero.jpg?v=2" alt="NERO" onerror="this.parentNode.innerHTML='C'"></div>
       <div class="brand-name"><span class="caffe">Caffe</span><span class="lito">lito</span></div>
     </div>
     <div class="clock-box">
@@ -606,7 +606,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 <div class="toast" id="toast"></div>
 <div id="exam-fs"></div>
 <div id="pass-overlay" style="display:none">
-  <div class="pass-icon"><img src="nero.jpg" alt=""></div>
+  <div class="pass-icon"><img src="nero.jpg?v=2" alt=""></div>
   <div class="pass-title" id="passTitle">Введите пароль Caffelito</div>
   <div class="pass-boxes" id="passBoxes">
     <div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div><div class="pass-box"></div>
@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061808;
+var APP_BUILD=2026061809;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
