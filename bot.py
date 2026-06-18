@@ -2409,8 +2409,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     if entry:
                         st_text, st_time = entry
                         if (datetime.now(TZ) - st_time).total_seconds() < 600:
-                            await asyncio.sleep(0.8)
-                            await context.bot.send_message(chat_id=int(group_id), text=st_text, parse_mode="HTML")
+                            # 1 DAKİKA SONRA gönder — handler'ı bloklamadan arka plan görevi
+                            async def _delayed_stock(bot=context.bot, gid=int(group_id), text=st_text):
+                                try:
+                                    await asyncio.sleep(60)
+                                    await bot.send_message(chat_id=gid, text=text, parse_mode="HTML")
+                                except Exception as ex:
+                                    logger.error(f"delayed STOK failed: {ex}")
+                            asyncio.create_task(_delayed_stock())
                 except Exception as e:
                     logger.error(f"STOK alert (after close) failed: {e}")
             # Sahiplere bildir (TAM detay — owner zarplata için görür)
@@ -3071,8 +3077,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     t += f"<b>Вышло: {fmt_sum(vsh)} сум</b>\n"
                     if sdachi:
                         t += f"<b>На сдачи: {fmt_sum(sdachi)} сум</b>\n"
-                    if daily_pay:
-                        t += f"<b>− Зарплата дневная (бонус): {fmt_sum(daily_pay)} сум</b>\n"
                     t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
