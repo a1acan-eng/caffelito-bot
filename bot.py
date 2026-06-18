@@ -2403,6 +2403,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
+                # Stok uyarısı — kasa raporu + 'закрыл смену'dan SONRA (en sonda), ayrı mesaj
+                try:
+                    entry = context.bot_data.get("pending_stock", {}).pop(user.id, None)
+                    if entry:
+                        st_text, st_time = entry
+                        if (datetime.now(TZ) - st_time).total_seconds() < 600:
+                            await asyncio.sleep(0.8)
+                            await context.bot.send_message(chat_id=int(group_id), text=st_text, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"STOK alert (after close) failed: {e}")
             # Sahiplere bildir (TAM detay — owner zarplata için görür)
             try:
                 owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
@@ -3042,27 +3052,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         o = int(c.get("o", 0) or 0); s = int(c.get("s", 0) or 0)
                         if b or r or o or s:
                             rtxt = (f" +{r}" if r > 0 else f" {r}") if r else ""
-                            t += f"  {esc_html(str(c.get('n','')))}:    <b>{b}{rtxt} → {o} = {s}</b>\n"
+                            t += f"  <b>{esc_html(str(c.get('n','')))}:    {b}{rtxt} → {o} = {s}</b>\n"
                     t += f"\n  <b>🧮 ИТОГО ПРОДАНО:  {cups_total} шт</b>\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n<b>💳 Оплаты</b>\n"
-                    if clk: t += f"  CLICK: {fmt_sum(clk)}\n"
-                    if pay: t += f"  PAYME: {fmt_sum(pay)}\n"
-                    if kar: t += f"  KARTA: {fmt_sum(kar)}\n"
-                    if term: t += f"  TERMINAL: {fmt_sum(term)}\n"
-                    t += f"  Безнал итого: <b>{fmt_sum(cashless)}</b> сум\n"
+                    if clk: t += f"  <b>CLICK: {fmt_sum(clk)}</b>\n"
+                    if pay: t += f"  <b>PAYME: {fmt_sum(pay)}</b>\n"
+                    if kar: t += f"  <b>KARTA: {fmt_sum(kar)}</b>\n"
+                    if term: t += f"  <b>TERMINAL: {fmt_sum(term)}</b>\n"
+                    t += f"  <b>Безнал итого: {fmt_sum(cashless)} сум</b>\n"
                     if exps:
                         t += "━━━━━━━━━━━━━━━━━━━━\n<b>💸 Расходы</b>\n"
                         for e in exps:
-                            t += f"  {esc_html(str(e.get('n','')))}: {fmt_sum(int(e.get('a',0) or 0))}\n"
-                        t += f"  Итого расходы: <b>{fmt_sum(exp_total)}</b> сум\n"
+                            t += f"  <b>{esc_html(str(e.get('n','')))}: {fmt_sum(int(e.get('a',0) or 0))}</b>\n"
+                        t += f"  <b>Итого расходы: {fmt_sum(exp_total)} сум</b>\n"
                     t += "━━━━━━━━━━━━━━━━━━━━\n"
-                    t += f"Итого (POS): <b>{fmt_sum(itg)}</b> сум\n"
-                    t += f"Считано (нал.): <b>{fmt_sum(schitano)}</b> сум\n"
-                    t += f"Вышло: <b>{fmt_sum(vsh)}</b> сум\n"
+                    t += f"<b>Итого (POS): {fmt_sum(itg)} сум</b>\n"
+                    t += f"<b>Считано (нал.): {fmt_sum(schitano)} сум</b>\n"
+                    t += f"<b>Вышло: {fmt_sum(vsh)} сум</b>\n"
                     if sdachi:
-                        t += f"На сдачи: {fmt_sum(sdachi)} сум\n"
+                        t += f"<b>На сдачи: {fmt_sum(sdachi)} сум</b>\n"
                     if daily_pay:
-                        t += f"− Зарплата дневная (бонус): <b>{fmt_sum(daily_pay)}</b> сум\n"
+                        t += f"<b>− Зарплата дневная (бонус): {fmt_sum(daily_pay)} сум</b>\n"
                     t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
@@ -3101,9 +3111,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if coffee_urg:
                             ic = "🔴" if coffee_urg == 3 else ("⚠️" if coffee_urg == 2 else "📦")
                             st += f"  {ic} ☕ Кофе в зёрнах: осталось <b>{coffee_kg:g}</b> кг\n"
-                        # Kasa raporundan AYRI, dikkat çeken 2. mesaj olsun diye küçük gecikme
-                        await asyncio.sleep(1.2)
-                        await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
+                        # HEMEN gönderme — 'закрыл смену' mesajından SONRA, en sonda gelsin (buffer'la)
+                        context.bot_data.setdefault("pending_stock", {})[user.id] = (st, now)
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
