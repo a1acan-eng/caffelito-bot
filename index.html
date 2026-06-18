@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061806;
+var APP_BUILD=2026061807;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -723,6 +723,8 @@ if(tg){
   const HP2=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
   const role=HP2.get('role')||'barista';
   const pwh=(HP2.get('pwh')||'').trim();
+  const myName=(HP2.get('name')||'').trim();
+  function greetWord(){var hh=new Date().getHours();if(hh>=5&&hh<12)return'Доброе утро';if(hh>=12&&hh<17)return'Добрый день';if(hh>=17&&hh<23)return'Добрый вечер';return'Доброй ночи';}
   // Owner her zaman içeri girer, passcode yok
   if(role==='owner')return;
   // Bu oturumda bir kez doğrulandıysa tekrar sorma
@@ -731,6 +733,8 @@ if(tg){
   const boxes=document.querySelectorAll('#passBoxes .pass-box');
   const msg=document.getElementById('passMsg');
   const hint=document.getElementById('passHint');
+  // Saate göre karşılama + barista adı (Caffelito logosu zaten üstte)
+  document.getElementById('passTitle').innerHTML=greetWord()+(myName?', '+escH(myName):'')+'! 👋<div style="font-size:13px;font-weight:500;color:var(--t2);margin-top:6px">Введите пароль для входа</div>';
   if(!pwh){
     document.getElementById('passTitle').textContent='Нет пароля';
     msg.textContent='Попросите владельца назначить вам пароль';
@@ -1500,11 +1504,13 @@ if(kasaDetail){return rKasaDetail(m,b)}
 const today=new Date().toDateString(),ti=hist.filter(function(x){return new Date(x.date).toDateString()===today});
 let h='';const all=allItems();
 ti.filter(function(x){return x.type==='order'}).forEach(function(o){const tm=new Date(o.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-h+='<div class="rcard"><h3>Заказ</h3><div class="rtime">'+tm+' &middot; '+o.user+'</div>';
-Object.entries(o.items).forEach(function([id,qty]){const nm=o.names&&o.names[id]?o.names[id]:(all.find(function(x){return x.id===id})||{}).n||id;h+='<div class="rline"><span>'+nm+'</span><span>'+qty+'x</span></div>'});h+='</div>'});
+var cnt=Object.values(o.items).reduce(function(a,v){return a+(parseInt(v)||0)},0);
+h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">📋 Заказ · '+tm+' · '+escH(o.user||'')+' <span style="color:var(--t3);font-weight:500">('+cnt+' поз.)</span></summary>';
+Object.entries(o.items).forEach(function([id,qty]){const nm=o.names&&o.names[id]?o.names[id]:(all.find(function(x){return x.id===id})||{}).n||id;h+='<div class="rline"><span>'+escH(nm)+'</span><span>'+qty+'x</span></div>'});h+='</details>'});
 ti.filter(function(x){return x.type==='task'}).forEach(function(t){const tm=new Date(t.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-h+='<div class="rcard"><h3>'+t.title+'</h3><div class="rtime">'+tm+' &middot; '+t.user+'</div>';
-t.completed.forEach(function(c){h+='<div class="rline"><span>'+c+'</span><span>&#10003;</span></div>'});h+='</div>'});
+var cc=(t.completed||[]).length;
+h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">✅ '+escH(t.title||'')+' · '+tm+' · '+escH(t.user||'')+' <span style="color:var(--t3);font-weight:500">('+cc+')</span></summary>';
+(t.completed||[]).forEach(function(c){h+='<div class="rline"><span>'+escH(c)+'</span><span>&#10003;</span></div>'});h+='</details>'});
 // Kasa raporları (sunucudan — owner hepsini, barista kendininkini)
 if(KASA_REPORTS&&KASA_REPORTS.length){
   h+='<div class="sec">📋 Кассовые отчёты</div>';
@@ -2759,8 +2765,7 @@ function rMBaristas(m,b){
         h+='</div>';
       }
       h+='<div class="bcard-actions">'
-        +'<button class="bcard-act fine" onclick="quickFine('+brs.id+')">⚠️ Штраф</button>'
-        +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')">✅ Выплатить</button>'
+        +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')" style="flex:1">✅ Выплатить</button>'
       +'</div>'
       +'</div>';
     });
@@ -3056,14 +3061,12 @@ function decideLoan(id,decision){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены',desserts:'Десерты',names:'Имена',passwords:'Пароли',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
+  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
   // Mini tabs (5 alt sekme — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
     +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'prices\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
-    +'<div class="opt '+(settingsTab==='desserts'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'desserts\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🍰 Десерты</div></div></div>'
-    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📝 Имена</div></div></div>'
-    +'<div class="opt '+(settingsTab==='passwords'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'passwords\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🔐 Пароли</div></div></div>'
+    +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">👥 Люди</div></div></div>'
     +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'logs\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
     +'<div class="opt '+(settingsTab==='reset'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'reset\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🗑 Сброс</div></div></div>'
   +'</div>';
@@ -3080,8 +3083,9 @@ function rMSettings(m,b){
         +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="savePrice(\''+d.id+'\')">💾</button>'
       +'</div>';
     });
-  } else if(settingsTab==='desserts'){
-    h+='<div class="refresh-hint" style="margin-top:0">Каталог десертов — добавляйте, редактируйте цены, скрывайте позиции. Изменения сразу применяются для всех баристов.</div>';
+    // ── Десерты (каталог) — Цены sekmesiyle birleştirildi (tek yer) ──
+    h+='<div class="sec" style="margin-top:18px">🍰 Десерты (каталог)</div>';
+    h+='<div class="refresh-hint" style="margin-top:0">Стаканы — фиксированы (меняется только цена сверху). Десерты — добавляйте, редактируйте цены, удаляйте. Изменения сразу для всех.</div>';
     // Mevcut tatlılar (DESSERT_CAT — owner için tüm tatlılar geliyor, aktif/pasif dahil)
     if(!DESSERT_CAT||!DESSERT_CAT.length){
       h+='<div class="empty-mini">Десертов пока нет.</div>';
@@ -3158,7 +3162,8 @@ function rMSettings(m,b){
       +'• 📦 <b>Архив</b> — сохраняет всю историю, доступ закрыт. Подходит для уволенных сотрудников.<br>'
       +'• 🗑 <b>Удалить навсегда</b> — стирает пользователя и все его данные. Подходит для случайных людей, нажавших /start.'
     +'</div>';
-  } else if(settingsTab==='passwords'){
+    // ── Пароли — Люди sekmesiyle birleştirildi (tek yer) ──
+    h+='<div class="sec" style="margin-top:18px">🔐 Пароли</div>';
     h+='<div class="refresh-hint" style="margin-top:0">У каждого бариста — свой пароль. Без пароля никто не войдёт. Вы можете задать новый или удалить (закрыть доступ).</div>';
     if(!BARISTAS.length){
       h+='<div class="empty-mini">Нет баристов.</div>';
@@ -3198,10 +3203,20 @@ function rMSettings(m,b){
     if(!LOGS||!LOGS.length){
       h+='<div class="empty-mini">Логов пока нет.</div>';
     } else {
+      const LMAP={
+        fine_add:['⚠️','Штраф'],pay:['💵','Выплата'],tip_add:['💝','Чаевые'],
+        price_update:['💰','Цена изменена'],rename:['📝','Имя изменено'],role_change:['👑','Роль изменена'],
+        dessert_save:['🍰','Десерт сохранён'],dessert_delete:['🗑','Десерт удалён'],
+        set_password:['🔐','Пароль выдан'],clear_password:['🔓','Пароль удалён'],
+        archive_user:['📦','В архив'],unarchive_user:['♻️','Из архива'],delete_user:['🗑','Удалён'],
+        loan_request:['💸','Запрос аванса'],loan_approved:['✅','Аванс одобрен'],loan_rejected:['🚫','Аванс отклонён'],
+        login_ok:['🔓','Вход'],login_fail:['❌','Неверный пароль'],
+        exam_invite:['📨','Зачёт назначен'],exam_finish:['🎓','Тренажёр'],exam_taken:['🎓','Зачёт сдан']
+      };
       LOGS.slice().reverse().forEach(function(L){
         const dt=L.created_at?new Date(L.created_at):null;
         const day=dt?(String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0')+' '+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0')):'';
-        const ic=({fine:'⚠️',pay:'💵',tip:'💝',price:'💰',rename:'📝',grant:'👑',shift_end:'🔴',shift_start:'🟢'})[L.action]||'•';
+        const lm=LMAP[L.action]||['•',L.action||''];
         let det='';
         try{
           const d=typeof L.details==='string'?JSON.parse(L.details):(L.details||{});
@@ -3212,7 +3227,7 @@ function rMSettings(m,b){
           if(d.from_name&&d.to_name)det+=' · '+escH(d.from_name)+' → '+escH(d.to_name);
         }catch(e){}
         h+='<div class="log-row">'
-          +'<div style="display:flex;justify-content:space-between;gap:8px"><span><b>'+ic+' '+escH(L.action||'')+'</b>'+(L.target_name?' → '+escH(L.target_name):'')+'</span><span style="color:var(--t3);font-size:10px">'+day+'</span></div>'
+          +'<div style="display:flex;justify-content:space-between;gap:8px"><span><b>'+lm[0]+' '+escH(lm[1])+'</b>'+(L.target_name?' → '+escH(L.target_name):'')+'</span><span style="color:var(--t3);font-size:10px">'+day+'</span></div>'
           +'<div style="color:var(--t2);font-size:10px;margin-top:2px">от '+escH(L.actor_name||'?')+det+'</div>'
         +'</div>';
       });

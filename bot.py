@@ -822,6 +822,17 @@ def build_hash_payload(db, user_id, name):
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
+        # Loglar (son 50) — Настройки→Логи için. Client en yeniyi üstte göstersin diye eski→yeni sırada gönder.
+        try:
+            log_rows = db.execute(
+                "SELECT action, actor_name, target_name, details, created_at FROM logs ORDER BY id DESC LIMIT 50").fetchall()
+            logs_data = [{"action": r["action"], "actor_name": r["actor_name"],
+                          "target_name": r["target_name"], "details": r["details"],
+                          "created_at": r["created_at"]} for r in log_rows]
+            logs_data.reverse()
+        except Exception:
+            logs_data = []
+        parts.append(f"logs={quote(json.dumps(logs_data, ensure_ascii=False))}")
         # Bugün стандарт'ı onaylayanlar (Отчёт izi)
         std_rows = db.execute(
             "SELECT user_name, created_at FROM std_acks WHERE date=? ORDER BY id DESC", (today_str,)).fetchall()
