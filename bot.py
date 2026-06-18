@@ -199,6 +199,11 @@ def get_db():
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('seed_sandwich', ?)", (datetime.now(TZ).isoformat(),))
     except sqlite3.OperationalError:
         pass
+    # ─── Ступени обслуживания — günlük ознакомление (kim hangi gün okudu/onayladı) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS std_acks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, user_name TEXT, date TEXT, created_at TEXT,
+        UNIQUE(user_id, date))""")
     # ─── Audit log ───
     db.execute("""CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -750,11 +755,15 @@ def build_hash_payload(db, user_id, name):
         kasa_reports = [dict(r) for r in crs]
     except Exception:
         kasa_reports = []
+    # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
+    today_str = datetime.now(TZ).strftime("%Y-%m-%d")
+    std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
     parts = [
         f"uid={user_id}",
         f"role={role}",
         f"name={quote(show_name or '')}",
         f"pwh={pwh}",
+        f"std_ack={1 if std_acked else 0}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
         f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
@@ -813,6 +822,11 @@ def build_hash_payload(db, user_id, name):
                 "arch_at": b["archived_at"] or "",
             })
         parts.append(f"baristas={quote(json.dumps(baristas, ensure_ascii=False))}")
+        # Bugün стандарт'ı onaylayanlar (Отчёт izi)
+        std_rows = db.execute(
+            "SELECT user_name, created_at FROM std_acks WHERE date=? ORDER BY id DESC", (today_str,)).fetchall()
+        std_acks_today = [{"name": r["user_name"], "at": r["created_at"]} for r in std_rows]
+        parts.append(f"std_acks={quote(json.dumps(std_acks_today, ensure_ascii=False))}")
     return "&".join(parts)
 
 
@@ -3051,6 +3065,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
+
+        # ─── Ступени обслуживания: günlük ознакомление onayı ───
+        elif action == "standard_ack":
+            today_str = now.strftime("%Y-%m-%d")
+            db.execute(
+                "INSERT OR IGNORE INTO std_acks (user_id,user_name,date,created_at) VALUES (?,?,?,?)",
+                (user.id, shown, today_str, now.isoformat()))
+            db.commit()
+            await update.message.reply_text("✅ Ознакомление со стандартом обслуживания отмечено. Хорошей смены!")
+            await refresh_webapp_keyboard(update, context, db, user, "🔄 Отмечено. Готово 👇")
 
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":

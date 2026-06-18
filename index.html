@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061805;
+var APP_BUILD=2026061806;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1126,6 +1126,23 @@ const FINE_PRESETS=[
   {id:'custom',l:'✏️ Своя сумма',amt:0,s:'укажите вручную'}
 ];
 const MN=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+// ── Ступени обслуживания (hizmet standardı — baristaların ezberlemesi gereken) ──
+const SERVICE_STEPS=[
+  {n:1,t:'Приветствие гостя',d:'Как только Гость появился в поле зрения — установи зрительный контакт и поприветствуй дружелюбно.',e:'«Доброе утро!» · «Добрый день/вечер!» · «Добро пожаловать!»'},
+  {n:2,t:'Выявление потребности',d:'Помоги Гостю с выбором, если он не назвал напиток сразу. Используй воронку вопросов. Акцентируй внимание на средних/больших порциях и сезонном предложении.',e:''},
+  {n:3,t:'Предложение ингредиентов',d:'Предложи уместный дополнительный ингредиент. Если Гость сказал «это всё» — не настаивай.',e:'«Какой сироп добавить — ванильный или карамельный?»'},
+  {n:4,t:'Продажа доп. блюда',d:'Предложи уместное блюдо или десерт в дополнение к заказу. Можно предложить дрип-кофе.',e:'«К капучино отлично подходит печенье, возьмёте парочку?»'},
+  {n:5,t:'Расчёт Гостя',d:'Чётко озвучь наименования и сумму заказа. Выдай фискальный чек и озвучь сумму сдачи. В чеке — только те позиции, что заказал Гость.',e:''},
+  {n:6,t:'Выполнение заказа',d:'При выдаче презентуй блюдо/напиток. Время выполнения — не более 5 минут. Сначала позиции и напитки долгого хранения, кофе — в конце.',e:''},
+  {n:7,t:'Прощание с Гостем',d:'Дружелюбно попрощайся, поблагодари и пригласи зайти снова!',e:'«Спасибо, что зашли к нам! Всего доброго, ждём Вас снова!»'}
+];
+const SERVICE_FORBIDDEN=[
+  'Негативно высказываться о бренде или качестве продуктов.',
+  'Быть раздражительным, хамить, грубо перебивать Гостя.',
+  'Не предложить замену отсутствующей позиции (стоп-лист).',
+  'Отвечать «Не знаю», «Я не пробовал» — используй метод рекомендаций.',
+  'Работать с видимыми признаками болезни.'
+];
 
 // URL hash'ten kullanıcı bilgisi al (bot tarafından eklenir)
 const HP=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
@@ -1151,6 +1168,10 @@ try{KASA_LAST=JSON.parse((HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
 let KASA_REPORTS=[];
 try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
+// Ступени обслуживания — bu kullanıcı bugün onayladı mı + (owner) bugün onaylayanlar
+let STD_ACK=(HP.get('std_ack')==='1');
+let STD_ACKS=[];
+try{STD_ACKS=JSON.parse((HP.get('std_acks')||'[]'))}catch(e){STD_ACKS=[]}
 const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
 let kasaExp=[];  // [{n,a}] harcama satırları
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -1497,6 +1518,13 @@ if(KASA_REPORTS&&KASA_REPORTS.length){
     +'</div>';
   });
 }
+// Ступени обслуживания — bugün ознакомление yapanlar (owner Отчёт izi)
+if(MY_ROLE==='owner'&&STD_ACKS&&STD_ACKS.length){
+  h+='<div class="sec">📖 Стандарт — ознакомились сегодня ('+STD_ACKS.length+')</div>';
+  STD_ACKS.forEach(function(a){
+    h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(a.name||'?')+'</div></div><div class="hist-r" style="color:var(--t3);font-weight:600">'+fmtTime(a.at)+'</div></div>';
+  });
+}
 if(!h){h='<div class="empty"><div style="font-size:52px">&#128237;</div><p>Записей пока нет</p></div>'}
 h+='<div class="footer">XSYN</div>';m.innerHTML=h}
 
@@ -1707,6 +1735,7 @@ function rM(m,b){
   if(mView==='settings')return rMSettings(m,b);
   if(mView==='loanRequest')return rMLoanRequest(m,b);
   if(mView==='loanReview')return rMLoanReview(m,b);
+  if(mView==='standard')return rMStandard(m,b);
   return rMMain(m,b);
 }
 
@@ -1774,6 +1803,16 @@ function rMMain(m,b){
     ? '<div class="role-pill owner">👑 Владелец · Бухгалтерия · '+escH(MY_NAME)+'</div>'
     : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
   h+=rolePill;
+
+  // ── Ступени обслуживания — günlük ознакомление (barista). Onaylamadıysa turuncu/uyarı, onayladıysa sönük (perечитать). ──
+  if(MY_ROLE!=='owner'){
+    h+='<div class="loan-card" onclick="mView=\'standard\';render()" style="border-color:'+(STD_ACK?'var(--border)':'#f59e0b')+';background:'+(STD_ACK?'transparent':'rgba(245,158,11,.08)')+'">'
+      +'<div class="loan-l"><div class="loan-i">📖</div>'
+      +'<div><div class="loan-t">Стандарт обслуживания</div>'
+      +'<div class="loan-s">'+(STD_ACK?'✅ Ознакомлены сегодня · нажмите, чтобы перечитать':'Прочитайте и подтвердите ознакомление')+'</div></div></div>'
+      +'<div class="loan-arr">›</div>'
+    +'</div>';
+  }
 
   // ⚠️ Aktif vardiya kartı / Başlat butonu artık ayrı «Смена» tab'ında.
   // Burada sadece kısa bilgilendirme:
@@ -1848,6 +1887,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
+        +'<div class="own-btn" onclick="mView=\'standard\';render()"><div class="own-btn-i">📖</div><div class="own-btn-t">Стандарт</div>'+(STD_ACKS&&STD_ACKS.length?'<div class="own-btn-s">'+STD_ACKS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\'prices\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div></div>'
       +'</div>'
     +'</div>';
@@ -2345,6 +2385,43 @@ function openerLate(sh,allShifts){
   return diff>0?diff:null; // erken/zamanında → işaret yok
 }
 function lateLabel(min){if(!min)return '';if(min<60)return '+'+min+' мин';var hh=Math.floor(min/60),mm=min%60;return '+'+hh+'ч'+(mm?' '+mm+'м':'');}
+
+// ── Ступени обслуживания — okuma + günlük ознакомление onayı ──
+function rMStandard(m,b){
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">📖 Ступени обслуживания</div>';
+  h+='<div class="refresh-hint" style="margin-bottom:10px">Стандарт, который должен знать каждый бариста. Прочитай и подтверди ознакомление в начале смены.</div>';
+  if(MY_ROLE==='owner'){
+    h+='<div class="sf-card"><div class="sf-label">✅ Ознакомились сегодня ('+STD_ACKS.length+')</div>';
+    if(STD_ACKS.length){STD_ACKS.forEach(function(a){h+='<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>'+escH(a.name||'?')+'</span><span style="color:var(--t3)">'+fmtTime(a.at)+'</span></div>'});}
+    else{h+='<div style="font-size:12px;color:var(--t3)">— пока никто —</div>';}
+    h+='</div>';
+  }
+  SERVICE_STEPS.forEach(function(s){
+    h+='<div class="sf-card" style="margin-bottom:10px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><div style="width:24px;height:24px;border-radius:50%;background:var(--gold);color:#1a1a1a;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">'+s.n+'</div><div style="font-weight:700;font-size:14px">'+escH(s.t)+'</div></div>'
+      +'<div style="font-size:13px;color:var(--t1);line-height:1.5">'+escH(s.d)+'</div>'
+      +(s.e?'<div style="font-size:12px;color:var(--t3);margin-top:5px;font-style:italic">'+escH(s.e)+'</div>':'')
+    +'</div>';
+  });
+  h+='<div class="sf-card" style="border-color:#ef4444;background:rgba(239,68,68,.06)">'
+    +'<div style="font-weight:800;color:#dc2626;margin-bottom:6px">🚫 Недопустимо</div>';
+  SERVICE_FORBIDDEN.forEach(function(f){h+='<div style="font-size:13px;color:var(--t1);line-height:1.5;padding:3px 0">• '+escH(f)+'</div>'});
+  h+='</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  if(STD_ACK){b.innerHTML='<button class="mbtn" style="background:#10b981;opacity:.85" disabled>✅ Вы ознакомлены сегодня</button>';}
+  else{b.innerHTML='<button class="mbtn grn" onclick="ackStandard()">✅ Я ознакомлен со стандартом</button>';}
+}
+function ackStandard(){
+  STD_ACK=true;
+  STD_ACKS=STD_ACKS||[];STD_ACKS.unshift({name:MY_NAME,at:new Date().toISOString()});
+  toast('✅ Ознакомление отмечено');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'standard_ack'}))}catch(e){console.warn(e)}}
+  mView='main';render();
+}
 
 // ── Owner: Şu an çalışanlar (Бухгалтерия odası — kim aktif) ──
 function rMActiveBaristas(m,b){
