@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061807;
+var APP_BUILD=2026061808;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1097,7 +1097,7 @@ if(localStorage.getItem('cf5pv')!==DP_VER){localStorage.removeItem('cf5p');local
 if(localStorage.getItem('cf5tv')!==DT_VER){localStorage.removeItem('cf5t');localStorage.setItem('cf5tv',DT_VER);}
 let P=JSON.parse(localStorage.getItem('cf5p'))||JSON.parse(JSON.stringify(DP));
 let T=JSON.parse(localStorage.getItem('cf5t'))||JSON.parse(JSON.stringify(DT));
-let tab='shift',cat=null,sub=null,edit=false,ord={},ts={};
+let tab='shift',cat=null,sub=null,edit=false,ord={},ts={},orderExport=false;
 let hist=JSON.parse(localStorage.getItem('cf5h')||'[]');
 function iTS(){Object.keys(T).forEach(c=>{Object.keys(T[c]).forEach(k=>{const x=c+'_'+k;if(!ts[x]||ts[x].length!==T[c][k].length)ts[x]=new Array(T[c][k].length).fill(false)})})}
 iTS();
@@ -1243,7 +1243,7 @@ function go(t){
   // Aktif timer'ları temizle (canlı süre güncelleyiciler)
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
   if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
-  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;dT();render();
+  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;orderExport=false;dT();render();
   // Sekme değiştiğinde sayfayı her zaman yukarı kaydır — kullanıcı önceki sekmeyi
   // aşağı kaydırmış olabilir, yeni sekmenin başını görmeli.
   scrollTopAll();
@@ -1272,7 +1272,7 @@ function render(){
   const eBtn=document.getElementById('eBtn');
   if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
   if(tab==='shift'){rShift(m,b)}
-  else if(tab==='order'){cat?rOC(m,b):rOCs(m,b)}
+  else if(tab==='order'){orderExport?rFranchise(m,b):(cat?rOC(m,b):rOCs(m,b))}
   else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub?rTL(m,b):rTM(m,b))}
   else if(tab==='salary'){rM(m,b)}
   else rR(m,b);
@@ -1316,6 +1316,7 @@ const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
 bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+if(tot)bh+='<button class="mbtn" style="background:#0ea5e9;margin-top:8px" onclick="orderExport=true;render()">📤 Для франшизы (Google Sheets)</button>';
 b.innerHTML=bh}
 
 function rOC(m,b){const d=P[cat];if(!d){cat=null;render();return}
@@ -1329,6 +1330,7 @@ const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
 bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+if(tot)bh+='<button class="mbtn" style="background:#0ea5e9;margin-top:8px" onclick="orderExport=true;render()">📤 Для франшизы (Google Sheets)</button>';
 b.innerHTML=bh}
 
 function cq(id,d){ord[id]=Math.max(0,(ord[id]||0)+d);if(!ord[id])delete ord[id];if(tg)tg.HapticFeedback?.impactOccurred('light');render()}
@@ -1373,6 +1375,55 @@ function sO(){
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   ord={};cat=null;render();
   if(tg&&tg.sendData){try{tg.sendData(ps);}catch(e){console.warn('sendData:',e)}}
+}
+
+// ── Franchise export — Google Sheets'e yapıştırılacak 2 sütun (D=ad, I=adet) ──
+// Mevcut seçimi (ord) kullanır; boşsa son gönderilen siparişi alır. Katalog sırasında.
+function franchiseData(){
+  var all=allItems();
+  var src=ord, names=null;
+  if(!Object.keys(ord).length){
+    var lastO=null;for(var i=hist.length-1;i>=0;i--){if(hist[i].type==='order'){lastO=hist[i];break}}
+    if(lastO){src=lastO.items||{};names=lastO.names||{}}
+  }
+  var rows=[];
+  all.forEach(function(p){if(src[p.id]){rows.push({n:p.n,q:src[p.id]})}});
+  // Katalogda bulunamayan (silinmiş) idler — geçmişteki isimlerle ekle
+  Object.keys(src).forEach(function(id){
+    if(!all.find(function(x){return x.id===id})){
+      var nm=(names&&names[id])?names[id]:id;
+      rows.push({n:nm,q:src[id]});
+    }
+  });
+  return rows;
+}
+function rFranchise(m,b){
+  var rows=franchiseData();
+  let h='<button class="back" onclick="orderExport=false;render()">‹ Назад к заказу</button>';
+  h+='<div class="sec">📤 Экспорт для франшизы</div>';
+  if(!rows.length){
+    h+='<div class="empty-mini">Сначала выберите товары для заказа.</div>';
+    h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';return;
+  }
+  var names=rows.map(function(r){return r.n}).join('\n');
+  var qtys=rows.map(function(r){return r.q}).join('\n');
+  h+='<div class="refresh-hint" style="margin-top:0;line-height:1.55">Вставьте в таблицу Google Sheets франшизы:<br>1️⃣ <b>Названия</b> → столбец <b>D</b> (нажмите ячейку <b>D6</b>, вставьте)<br>2️⃣ <b>Кол-во</b> → столбец <b>I</b> (нажмите ячейку <b>I6</b>, вставьте)<br>Остальное (A,B,C,E,F,G,H) таблица посчитает сама.</div>';
+  h+='<div class="sec" style="font-size:13px">1️⃣ Названия → столбец D ('+rows.length+')</div>';
+  h+='<textarea id="frNames" readonly style="width:100%;box-sizing:border-box;height:'+Math.min(260,rows.length*22+26)+'px;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;background:var(--card);color:var(--t1);resize:vertical">'+escH(names)+'</textarea>';
+  h+='<button class="mbtn grn" style="margin-top:6px" onclick="copyText(\'frNames\',\'названия\')">📋 Копировать названия</button>';
+  h+='<div class="sec" style="font-size:13px;margin-top:14px">2️⃣ Кол-во → столбец I</div>';
+  h+='<textarea id="frQty" readonly style="width:100%;box-sizing:border-box;height:'+Math.min(260,rows.length*22+26)+'px;padding:10px;border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;background:var(--card);color:var(--t1);resize:vertical">'+escH(qtys)+'</textarea>';
+  h+='<button class="mbtn grn" style="margin-top:6px" onclick="copyText(\'frQty\',\'кол-во\')">📋 Копировать кол-во</button>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+function copyText(id,label){
+  var el=document.getElementById(id);if(!el)return;
+  var ok=false;
+  try{el.focus();el.select();el.setSelectionRange(0,99999);ok=document.execCommand('copy');}catch(e){}
+  if(navigator.clipboard&&navigator.clipboard.writeText){try{navigator.clipboard.writeText(el.value);ok=true;}catch(e){}}
+  toast(ok?('✅ Скопировано: '+label):'Выделите текст и скопируйте вручную');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
 }
 
 // ── Уборка — bugünü öne çıkar ──
