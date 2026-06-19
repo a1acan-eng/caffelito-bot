@@ -565,8 +565,8 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 [data-theme="dark"] .rt-feedback.ok{background:rgba(16,185,129,.15)}
 [data-theme="dark"] .rt-feedback.no{background:rgba(239,68,68,.15)}
 /* ─── Passcode (Wallet style) ─── */
-#pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
-#pass-overlay .pass-icon{width:96px;height:96px;margin-bottom:16px;border-radius:24px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff}
+#pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px;padding-top:calc(env(safe-area-inset-top,0px) + 44px);overflow-y:auto}
+#pass-overlay .pass-icon{width:88px;height:88px;margin-bottom:14px;border-radius:50%;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff;flex-shrink:0}
 #pass-overlay .pass-icon img{width:100%;height:100%;object-fit:cover;display:block}
 #pass-overlay .pass-title{font-size:20px;font-weight:600;color:var(--t1);margin-bottom:32px;text-align:center}
 #pass-overlay .pass-boxes{display:flex;gap:14px;margin-bottom:24px}
@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061813;
+var APP_BUILD=2026061814;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3211,6 +3211,7 @@ function rMSettings(m,b){
           +'</div>'
           +'<input class="set-input wide" type="text" id="nm_'+brs.id+'" placeholder="имя" value="'+escH(brs.dn||brs.n||'')+'" style="flex:1;min-width:120px">'
           +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDisplayName('+brs.id+')" title="Сохранить имя">💾</button>'
+          +(isOwner?'':'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#f59e0b" onclick="unapproveUser('+brs.id+',\''+safeName+'\')" title="Вернуть в заявки (убрать из баристов)">↩️</button>')
           +(isOwner?'':'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#0ea5e9" onclick="removeUser('+brs.id+',\''+safeName+'\','+sc+','+fc+')" title="Удалить или архивировать">🗑</button>')
         +'</div>';
       });

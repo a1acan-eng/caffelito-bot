@@ -138,6 +138,12 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, period TEXT,
         paid_by INTEGER, paid_by_name TEXT, paid_at TEXT)""")
+    # payments — sonradan eklenen sütunlar (avans/aванс kaydı kind/note kullanıyor)
+    for _pc, _pt in (("kind", "TEXT"), ("note", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE payments ADD COLUMN {_pc} {_pt}")
+        except sqlite3.OperationalError:
+            pass
     # ─── Çaевые (Bahşiş) ───
     db.execute("""CREATE TABLE IF NOT EXISTS tips (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2875,6 +2881,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "reject_user", user.id, user.first_name, target_id, shown_t, {})
             await update.message.reply_text(f"🗑 Заявка отклонена.")
 
+        elif action == "unapprove_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not row or (row["role"] or "") == "owner":
+                await update.message.reply_text("❌ Нельзя.")
+                return
+            shown_t = row["display_name"] or row["name"] or "?"
+            db.execute("UPDATE users SET approved=0, authorized=0 WHERE user_id=?", (target_id,))
+            db.commit()
+            log_action(db, "unapprove_user", user.id, user.first_name, target_id, shown_t, {})
+            await update.message.reply_text(f"↩️ *{md_safe(shown_t)}* возвращён(а) в заявки.", parse_mode="Markdown")
+
         elif action == "archive_user":
             db = get_db()
             if get_role(db, user.id) != "owner":
@@ -3924,7 +3946,17 @@ async def api_state(request):
     if not user:
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
     db = get_db()
-    payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"))
+    try:
+        payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"))
+    except Exception as e:
+        # ÖNEMLİ: build patlarsa bile owner kilitlenmesin — en azından rol+isim dönsün.
+        logger.error(f"build_hash_payload failed for {user.get('id')}: {e}")
+        from urllib.parse import quote as _q
+        try:
+            _role = get_role(db, user["id"])
+        except Exception:
+            _role = "barista"
+        payload = f"uid={user['id']}&role={_role}&name={_q(user.get('first_name','') or '')}&std_ack=0"
     return _nocache(_cors(web.Response(text=payload, content_type="text/plain")))
 
 
