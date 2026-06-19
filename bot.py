@@ -2203,8 +2203,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return _re.sub(r'\s*\([^)]*\)', '', str(name or '')).strip()
             total = data.get("c", 0)
             groups = data.get("g", [])
-            fr_names = []  # franchise için TAM isim (parantezli — Номенклатура eşleşmesi)
-            fr_qtys = []
 
             # HTML mesaj oluştur
             text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
@@ -2223,7 +2221,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
                             text += f"<b>  — {esc_html(_clean(iname))}:  {iqty}x</b>\n"
-                            fr_names.append(iname.strip()); fr_qtys.append(iqty.strip())
                         else:
                             text += f"<b>  — {esc_html(_clean(item_str))}</b>\n"
             else:
@@ -2234,7 +2231,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 for pid, qty in items.items():
                     name = names_from_app.get(pid) or NAMES.get(pid, pid)
                     text += f"<b>  — {esc_html(_clean(name))}:  {qty}x</b>\n"
-                    fr_names.append(str(name).strip()); fr_qtys.append(str(qty).strip())
 
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
@@ -2259,23 +2255,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
-                # ─── Franchise blokları: şef dokun-kopyala → Google Sheets'e yapıştır ───
-                if fr_names:
-                    try:
-                        n_txt = "\n".join(esc_html(n) for n in fr_names)
-                        q_txt = "\n".join(esc_html(q) for q in fr_qtys)
-                        full = ("<b>D6</b>\n" + f"<pre>{n_txt}</pre>\n" +
-                                "<b>I6</b>\n" + f"<pre>{q_txt}</pre>")
-                        if len(full) <= 4000:
-                            await context.bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
-                        else:
-                            await context.bot.send_message(chat_id=int(group_id),
-                                text="<b>D6</b>\n" + f"<pre>{n_txt}</pre>", parse_mode="HTML")
-                            await context.bot.send_message(chat_id=int(group_id),
-                                text="<b>I6</b>\n" + f"<pre>{q_txt}</pre>", parse_mode="HTML")
-                    except Exception as e:
-                        logger.error(f"FRANCHISE BLOCKS FAILED: {e}")
-                    await update.message.reply_text(f"Ошибка: {e}")
 
         elif action == "tasks":
             completed = data.get("completed", [])
@@ -2816,8 +2795,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             shown = display_name_for(db, target_id, fallback=target_row["name"])
             await update.message.reply_text(
                 f"🔐 Пароль для *{md_safe(shown)}* установлен.\n\n"
-                f"Передайте бариста: он(а) должен(а) написать боту:\n`/login {new_pwd}`",
+                f"Бариста уже получил(а) его в личке. Также можете передать вручную:\n`/login {new_pwd}`",
                 parse_mode="Markdown")
+            # Baristaya kendi şifresini DM gönder (owner elle iletmek zorunda kalmasın)
+            try:
+                await context.bot.send_message(
+                    target_id,
+                    f"🔐 *Ваш пароль для входа в Caffelito*\n\n"
+                    f"Войдите, отправив боту команду:\n`/login {new_pwd}`\n\n"
+                    f"После входа откройте приложение.",
+                    parse_mode="Markdown")
+            except Exception as e:
+                logger.warning(f"password DM to {target_id} failed: {e}")
+                await update.message.reply_text(
+                    "⚠️ Не удалось отправить пароль бариста в личку (возможно, он(а) не запускал(а) бота). Передайте вручную.")
 
         elif action == "clear_password":
             db = get_db()
@@ -3189,32 +3180,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "INSERT OR IGNORE INTO std_acks (user_id,user_name,date,created_at) VALUES (?,?,?,?)",
                 (user.id, shown, today_str, now.isoformat()))
             db.commit()
-
-        # ─── Franchise export: 2 sütunu Telegram mesajı olarak gönder (telefonda kopyala-yapıştır) ───
-        elif action == "franchise_msg":
-            from html import escape as _esc_fr
-            names = data.get("names", []) or []
-            qtys = data.get("qtys", []) or []
-            if not names:
-                await update.message.reply_text("Пусто — сначала выберите товары для заказа.")
-            else:
-                names_txt = "\n".join(_esc_fr(str(n)) for n in names)
-                qtys_txt = "\n".join(_esc_fr(str(q)) for q in qtys)
-                msg = ("📤 <b>ФРАНШИЗА — для вставки в таблицу</b>\n"
-                       "Нажмите на блок ниже — он скопируется, затем вставьте в ячейку.\n\n"
-                       "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n"
-                       f"<pre>{names_txt}</pre>\n"
-                       "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n"
-                       f"<pre>{qtys_txt}</pre>\n"
-                       "Столбцы E–H посчитаются сами.")
-                # Telegram mesaj limiti ~4096; çok uzun siparişte böl
-                if len(msg) <= 4000:
-                    await update.message.reply_text(msg, parse_mode="HTML")
-                else:
-                    await update.message.reply_text(
-                        "1️⃣ <b>Названия</b> → ячейка <b>D6</b>:\n" + f"<pre>{names_txt}</pre>", parse_mode="HTML")
-                    await update.message.reply_text(
-                        "2️⃣ <b>Кол-во</b> → ячейка <b>I6</b>:\n" + f"<pre>{qtys_txt}</pre>", parse_mode="HTML")
 
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":
