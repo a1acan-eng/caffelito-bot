@@ -686,6 +686,44 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
 
+def build_reports(db, role, user_id):
+    """Отчёт odaları için liste verisi. Owner → tüm baristalar; barista → sadece kendi
+    (siparişler + mesai). Her sorgu defansif (kolon yoksa boş döner, state patlamasın)."""
+    def Q(sql, params=()):
+        try:
+            return [dict(r) for r in db.execute(sql, params).fetchall()]
+        except Exception as e:
+            logger.warning(f"build_reports query failed: {e}")
+            return []
+    rep = {}
+    if role == "owner":
+        rep["tips"] = Q("SELECT t.amount AS amount, t.note AS note, t.created_at AS at, "
+                        "COALESCE(u.display_name,u.name,'?') AS nm FROM tips t "
+                        "LEFT JOIN users u ON u.user_id=t.user_id ORDER BY t.id DESC LIMIT 40")
+        rep["pays"] = Q("SELECT p.amount AS amount, p.kind AS kind, p.note AS note, p.paid_at AS at, "
+                        "COALESCE(u.display_name,u.name,'?') AS nm FROM payments p "
+                        "LEFT JOIN users u ON u.user_id=p.user_id ORDER BY p.id DESC LIMIT 40")
+        rep["fines"] = Q("SELECT f.amount AS amount, f.reason AS reason, f.created_at AS at, "
+                         "COALESCE(u.display_name,u.name,'?') AS nm FROM fines f "
+                         "LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC LIMIT 40")
+        rep["shifts"] = Q("SELECT s.hours AS hours, s.total AS total, s.start_time AS start_time, "
+                          "s.end_time AS end_time, s.created_at AS at, "
+                          "COALESCE(u.display_name,u.name,'?') AS nm FROM shifts s "
+                          "LEFT JOIN users u ON u.user_id=s.user_id "
+                          "WHERE (s.end_time IS NOT NULL OR s.start_time IS NULL) ORDER BY s.id DESC LIMIT 40")
+        rep["orders"] = Q("SELECT items, created_at AS at, user_name AS nm FROM orders ORDER BY id DESC LIMIT 40")
+        rep["loans"] = Q("SELECT l.amount AS amount, l.reason AS reason, l.status AS status, "
+                         "l.created_at AS at, COALESCE(u.display_name,u.name,'?') AS nm FROM loans l "
+                         "LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC LIMIT 40")
+    else:
+        rep["orders"] = Q("SELECT items, created_at AS at, user_name AS nm FROM orders "
+                          "WHERE user_id=? ORDER BY id DESC LIMIT 40", (user_id,))
+        rep["shifts"] = Q("SELECT hours, total, start_time, end_time, created_at AS at FROM shifts "
+                          "WHERE user_id=? AND (end_time IS NOT NULL OR start_time IS NULL) "
+                          "ORDER BY id DESC LIMIT 40", (user_id,))
+    return rep
+
+
 def build_hash_payload(db, user_id, name):
     """URL-hash payload string'ini (uid=...&role=...&summary=...) üretir.
     Hem klavye-butonu URL'i (build_webapp_url) hem de /api/state HTTP ucu (Yol B)
@@ -791,6 +829,7 @@ def build_hash_payload(db, user_id, name):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
+        f"rep={quote(json.dumps(build_reports(db, role, user_id), ensure_ascii=False))}",
         f"ts={ts}",
     ]
     if role == "owner":
@@ -2203,6 +2242,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return _re.sub(r'\s*\([^)]*\)', '', str(name or '')).strip()
             total = data.get("c", 0)
             groups = data.get("g", [])
+            order_items = []  # Отчёт → Заказы odası için kayıt
 
             # HTML mesaj oluştur
             text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
@@ -2221,6 +2261,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
                             text += f"<b>  — {esc_html(_clean(iname))}:  {iqty}x</b>\n"
+                            order_items.append({"n": _clean(iname), "q": iqty.strip()})
                         else:
                             text += f"<b>  — {esc_html(_clean(item_str))}</b>\n"
             else:
@@ -2231,6 +2272,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 for pid, qty in items.items():
                     name = names_from_app.get(pid) or NAMES.get(pid, pid)
                     text += f"<b>  — {esc_html(_clean(name))}:  {qty}x</b>\n"
+                    order_items.append({"n": _clean(name), "q": str(qty)})
 
             text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
             text += f"<b>Итого: {total} позиций</b>"
@@ -2255,6 +2297,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
+            # Siparişi DB'ye kaydet (Отчёт → Заказы odası)
+            try:
+                _dbo = get_db()
+                _dbo.execute(
+                    "INSERT INTO orders (chat_id, user_id, user_name, items, created_at) VALUES (?,?,?,?,?)",
+                    (int(group_id) if group_id else 0, user.id, shown,
+                     json.dumps(order_items, ensure_ascii=False), now.isoformat()))
+                _dbo.commit()
+            except Exception as e:
+                logger.warning(f"order save failed: {e}")
 
         elif action == "tasks":
             completed = data.get("completed", [])

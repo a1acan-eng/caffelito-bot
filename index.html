@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061816;
+var APP_BUILD=2026061817;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1172,6 +1172,9 @@ try{KASA_LAST=JSON.parse((HP.get('kasa_last')||'{}'))}catch(e){KASA_LAST={}}
 let KASA_REPORTS=[];
 try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
+let reportRoom=null; // Отчёт oda görünümü (null=menü)
+let REP={}; // Отчёт odaları verisi (owner: hepsi, barista: orders+shifts)
+try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
 // Onay bekleyen yeni başlayanlar (owner)
 let PENDING=[];
 try{PENDING=JSON.parse((HP.get('pending')||'[]'))}catch(e){PENDING=[]}
@@ -1239,14 +1242,14 @@ function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
 // owner:true → sadece owner görür. salary owner'da 'Управление' olarak gösterilir.
-const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'🫧'},{id:'report',l:'Отчёт',i:'📊',owner:true},{id:'salary',l:'ЗП',i:'💰'}];
+const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'🫧'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'ЗП',i:'💰'}];
 function visTabs(){return TABS.filter(function(t){return !t.owner||MY_ROLE==='owner'}).map(function(t){var o={id:t.id,l:t.l,i:t.i};if(t.id==='salary'&&MY_ROLE==='owner'){o.l='Управление';o.i='🛠'}return o})}
 function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){return '<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
 function go(t){
   // Aktif timer'ları temizle (canlı süre güncelleyiciler)
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
   if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
-  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;dT();render();
+  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;reportRoom=null;dT();render();
   // Sekme değiştiğinde sayfayı her zaman yukarı kaydır — kullanıcı önceki sekmeyi
   // aşağı kaydırmış olabilir, yeni sekmenin başını görmeli.
   scrollTopAll();
@@ -1502,40 +1505,87 @@ function rKasaDetail(m,b){
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;
 }
+function repDay(at){if(!at)return '';var d=new Date(at);if(isNaN(d))return String(at).slice(0,16);return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
 function rR(m,b){b.style.display='none';
-if(kasaDetail){return rKasaDetail(m,b)}
-const today=new Date().toDateString(),ti=hist.filter(function(x){return new Date(x.date).toDateString()===today});
-let h='';const all=allItems();
-ti.filter(function(x){return x.type==='order'}).forEach(function(o){const tm=new Date(o.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-var cnt=Object.values(o.items).reduce(function(a,v){return a+(parseInt(v)||0)},0);
-h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">📋 Заказ · '+tm+' · '+escH(o.user||'')+' <span style="color:var(--t3);font-weight:500">('+cnt+' поз.)</span></summary>';
-Object.entries(o.items).forEach(function([id,qty]){const nm=o.names&&o.names[id]?o.names[id]:(all.find(function(x){return x.id===id})||{}).n||id;h+='<div class="rline"><span>'+escH(nm)+'</span><span>'+qty+'x</span></div>'});h+='</details>'});
-ti.filter(function(x){return x.type==='task'}).forEach(function(t){const tm=new Date(t.date).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
-var cc=(t.completed||[]).length;
-h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">✅ '+escH(t.title||'')+' · '+tm+' · '+escH(t.user||'')+' <span style="color:var(--t3);font-weight:500">('+cc+')</span></summary>';
-(t.completed||[]).forEach(function(c){h+='<div class="rline"><span>'+escH(c)+'</span><span>&#10003;</span></div>'});h+='</details>'});
-// Kasa raporları (sunucudan — owner hepsini, barista kendininkini)
-if(KASA_REPORTS&&KASA_REPORTS.length){
-  h+='<div class="sec">📋 Кассовые отчёты</div>';
-  KASA_REPORTS.forEach(function(r,ri){
-    var d=r.created_at?new Date(r.created_at):null;
-    var day=d?(String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')):(r.date||'');
-    h+='<div class="hist" style="cursor:pointer" onclick="kasaDetail=KASA_REPORTS['+ri+'];render()">'
-      +'<div class="hist-l"><div class="hist-d">'+escH(r.user_name||'?')+' &middot; '+day+'</div>'
-        +'<div class="hist-m">Продано '+(r.cups_total||0)+' шт &middot; POS '+fmt(r.itogo||0)+' &middot; нал. '+fmt(r.schitano||0)+'</div></div>'
-      +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+' ›</div>'
-    +'</div>';
+  if(kasaDetail){return rKasaDetail(m,b)}
+  if(reportRoom){return rReportRoom(m,b)}
+  var owner=(MY_ROLE==='owner');
+  var rooms = owner ? [
+    {id:'kasa',i:'📋',t:'Кассовые отчёты',n:(KASA_REPORTS||[]).length},
+    {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).length},
+    {id:'shifts',i:'🥤',t:'Смены',n:(REP.shifts||[]).length},
+    {id:'tips',i:'💝',t:'Чаевые',n:(REP.tips||[]).length},
+    {id:'pays',i:'💵',t:'Выплачено',n:(REP.pays||[]).length},
+    {id:'fines',i:'⚠️',t:'Штрафы',n:(REP.fines||[]).length},
+    {id:'loans',i:'💸',t:'Авансы',n:(REP.loans||[]).length}
+  ] : [
+    {id:'orders',i:'📦',t:'Мои заказы',n:(REP.orders||[]).length},
+    {id:'shifts',i:'🥤',t:'Мои смены',n:(REP.shifts||[]).length}
+  ];
+  var h='<div class="sec">📊 Отчёт</div>';
+  h+='<div class="own-grid">';
+  rooms.forEach(function(r){
+    h+='<div class="own-btn" onclick="reportRoom=\''+r.id+'\';render()"><div class="own-btn-i">'+r.i+'</div><div class="own-btn-t">'+r.t+'</div>'+(r.n?'<div class="own-btn-s">'+r.n+'</div>':'')+'</div>';
   });
+  h+='</div>';
+  if(owner&&STD_ACKS&&STD_ACKS.length){
+    h+='<div class="sec" style="margin-top:14px">📖 Стандарт — ознакомились сегодня ('+STD_ACKS.length+')</div>';
+    STD_ACKS.forEach(function(a){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(a.name||'?')+'</div></div><div class="hist-r" style="color:var(--t3);font-weight:600">'+fmtTime(a.at)+'</div></div>';});
+  }
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;
 }
-// Ступени обслуживания — bugün ознакомление yapanlar (owner Отчёт izi)
-if(MY_ROLE==='owner'&&STD_ACKS&&STD_ACKS.length){
-  h+='<div class="sec">📖 Стандарт — ознакомились сегодня ('+STD_ACKS.length+')</div>';
-  STD_ACKS.forEach(function(a){
-    h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(a.name||'?')+'</div></div><div class="hist-r" style="color:var(--t3);font-weight:600">'+fmtTime(a.at)+'</div></div>';
-  });
+function rReportRoom(m,b){
+  b.style.display='none';
+  var room=reportRoom;
+  var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены',tips:'💝 Чаевые',pays:'💵 Выплачено',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
+  var h='<button class="back" onclick="reportRoom=null;render()">‹ Назад</button>';
+  h+='<div class="sec">'+(titles[room]||'Отчёт')+'</div>';
+  var lst;
+  if(room==='kasa'){
+    lst=KASA_REPORTS||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет записей</div>';
+    lst.forEach(function(r,ri){
+      h+='<div class="hist" style="cursor:pointer" onclick="kasaDetail=KASA_REPORTS['+ri+'];render()">'
+        +'<div class="hist-l"><div class="hist-d">'+escH(r.user_name||'?')+' · '+repDay(r.created_at||r.date)+'</div>'
+        +'<div class="hist-m">Продано '+(r.cups_total||0)+' шт · POS '+fmt(r.itogo||0)+'</div></div>'
+        +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+' ›</div></div>';
+    });
+  } else if(room==='orders'){
+    lst=REP.orders||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет заказов</div>';
+    lst.forEach(function(o){
+      var items=[];try{items=typeof o.items==='string'?JSON.parse(o.items):(o.items||[])}catch(e){items=[]}
+      h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">📦 '+escH(o.nm||'')+' · '+repDay(o.at)+' <span style="color:var(--t3);font-weight:500">('+items.length+' поз.)</span></summary>';
+      items.forEach(function(it){h+='<div class="rline"><span>'+escH(it.n||'')+'</span><span>'+escH(String(it.q||''))+'x</span></div>'});
+      h+='</details>';
+    });
+  } else if(room==='shifts'){
+    lst=REP.shifts||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет смен</div>';
+    lst.forEach(function(s){
+      h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+(s.nm?escH(s.nm)+' · ':'')+repDay(s.start_time||s.at)+'</div>'
+        +'<div class="hist-m">'+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+' · '+fmtH(s.hours||0)+'</div></div>'
+        +'<div class="hist-r" style="font-weight:700">'+fmt(s.total||0)+'</div></div>';
+    });
+  } else if(room==='tips'){
+    lst=REP.tips||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет</div>';
+    lst.forEach(function(t){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(t.nm||'?')+' · '+repDay(t.at)+'</div>'+(t.note?'<div class="hist-m">'+escH(t.note)+'</div>':'')+'</div><div class="hist-r" style="color:#10b981;font-weight:800">+'+fmt(t.amount||0)+'</div></div>';});
+  } else if(room==='pays'){
+    lst=REP.pays||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет</div>';
+    lst.forEach(function(p){var sub=p.note||p.kind||'';h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div></div>';});
+  } else if(room==='fines'){
+    lst=REP.fines||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет</div>';
+    lst.forEach(function(f){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(f.nm||'?')+' · '+repDay(f.at)+'</div>'+(f.reason?'<div class="hist-m">'+escH(f.reason)+'</div>':'')+'</div><div class="hist-r" style="color:#ef4444;font-weight:800">-'+fmt(f.amount||0)+'</div></div>';});
+  } else if(room==='loans'){
+    lst=REP.loans||[];
+    if(!lst.length)h+='<div class="empty-mini">Нет</div>';
+    lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div></div>';});
+  }
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;
 }
-if(!h){h='<div class="empty"><div style="font-size:52px">&#128237;</div><p>Записей пока нет</p></div>'}
-h+='<div class="footer">XSYN</div>';m.innerHTML=h}
 
 function esc(s){return String(s||'').replace(/'/g,"\\'")}
 function escH(s){return String(s||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
