@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061814;
+var APP_BUILD=2026061815;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1904,36 +1904,7 @@ function rMMain(m,b){
     +'</div>'
   +'</div>';
 
-  // ── Bahşiş mini-kartı (inline, ayrı sayfa değil) ──
-  h+='<div class="tip-card">'
-    +'<div class="tip-l">'
-      +'<div class="tip-i">💝</div>'
-      +'<div><div class="tip-t">Чаевые в этом месяце</div>'
-      +'<div class="tip-v">+'+fmt(tips)+' сум '+(s.tips_count?'· '+s.tips_count+' раз':'')+'</div></div>'
-    +'</div>'
-    +(MY_ROLE==='owner'?'<button class="tip-btn" onclick="openTips()">+ Раздать</button>':'')
-  +'</div>';
-
-  // ── Аванс mini-kartı (sadece barista) ──
-  if(MY_ROLE!=='owner'){
-    const myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
-    const lastLoans=(LOANS||[]).slice(0,3);
-    h+='<div class="loan-card" onclick="'+(myPending?'':'openLoanRequest()')+'" '+(myPending?'style="cursor:default"':'')+'>'
-      +'<div class="loan-l"><div class="loan-i">💸</div>'
-      +'<div><div class="loan-t">'+(myPending?'⏳ Запрос в обработке':'Запросить аванс у шефа')+'</div>'
-      +'<div class="loan-s">'+(myPending?fmt(myPending.amount)+' сум · '+escH(myPending.reason||''):'Анонимно — только вы и шеф')+'</div></div></div>'
-      +(myPending?'':'<div class="loan-arr">›</div>')
-      +'</div>';
-    if(lastLoans.length){
-      h+='<div class="loan-hist">';
-      lastLoans.forEach(function(l){
-        const stCls=l.status==='approved'?'ok':(l.status==='rejected'?'no':'pn');
-        const stTxt=l.status==='approved'?'✓ одобрен':(l.status==='rejected'?'✗ отклонён':'⏳ в ожидании');
-        h+='<div class="loan-hist-row '+stCls+'"><span>'+fmt(l.amount)+' сум · '+escH((l.reason||'').slice(0,40))+'</span><span class="loan-st">'+stTxt+'</span></div>';
-      });
-      h+='</div>';
-    }
-  }
+  // Чаевые + Аванс kartları aşağıya (istatistiklerin altına) kompakt yan yana taşındı.
 
   // ── Günlük/haftalık özet (sadece basit istatistik) ──
   const stats=calcQuickStats(s.shifts||[]);
@@ -1942,6 +1913,22 @@ function rMMain(m,b){
     +'<div class="stat-box"><div class="stat-l">7 дней</div><div class="stat-v">'+fmt(stats.week)+'</div><div class="stat-s">'+stats.weekShifts+' смен</div></div>'
     +'<div class="stat-box"><div class="stat-l">Месяц</div><div class="stat-v">'+fmt((s.gross||0))+'</div><div class="stat-s">'+(s.shifts_count||0)+' смен</div></div>'
   +'</div>';
+
+  // ── Чаевые + Аванс — kompakt yan yana (nadir → istatistik altına alındı) ──
+  if(MY_ROLE!=='owner'){
+    var myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
+    var _cc='flex:1;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;text-align:center';
+    h+='<div style="display:flex;gap:10px;margin-top:12px">'
+      +'<div style="'+_cc+'"><div style="font-size:20px">💝</div><div style="font-size:11px;color:var(--t3);margin-top:2px">Чаевые</div><div style="font-weight:800;color:#10b981;margin-top:2px">+'+fmt(tips)+'</div></div>'
+      +'<div onclick="'+(myPending?'':'openLoanRequest()')+'" style="'+_cc+';cursor:pointer"><div style="font-size:20px">💸</div><div style="font-size:11px;color:var(--t3);margin-top:2px">Аванс у шефа</div><div style="font-weight:700;font-size:12px;margin-top:4px;color:'+(myPending?'#f59e0b':'var(--t2)')+'">'+(myPending?'⏳ в обработке':'запросить ›')+'</div></div>'
+    +'</div>';
+  } else {
+    // Owner: чаевые dağıtımı zaten Бухгалтерия panelinde — burada tek kompakt buton
+    h+='<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;display:flex;align-items:center;justify-content:space-between">'
+      +'<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">💝</span><span style="font-size:13px;color:var(--t2)">Чаевые: <b style="color:#10b981">+'+fmt(tips)+'</b></span></div>'
+      +'<button class="tip-btn" onclick="openTips()">+ Раздать</button>'
+    +'</div>';
+  }
 
   // Owner paneli (Бухгалтерия)
   if(MY_ROLE==='owner'){
