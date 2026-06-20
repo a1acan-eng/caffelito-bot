@@ -1326,7 +1326,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif role_now == "owner":
         msg = "☕ Caffelito готов."
     else:
-        msg = "☕ Caffelito.\n(Стать владельцем — /setowner)"
+        msg = "☕ Caffelito."
     try:
         await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
     except Exception as e:
@@ -1359,12 +1359,7 @@ async def cmd_setowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
     if has_owner(db):
-        if get_role(db, user.id) == "owner":
-            await update.message.reply_text("✅ Вы уже владелец.")
-        else:
-            await update.message.reply_text(
-                "❌ Владелец уже назначен.\n\n"
-                "Попросите его выдать вам права через /grantowner @username.")
+        # Owner zaten var → baristaya hiçbir şey gösterme (sade DM).
         return
     db.execute("UPDATE users SET role='owner', approved=1 WHERE user_id=?", (user.id,))
     db.commit()
@@ -1423,8 +1418,7 @@ async def cmd_grantowner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     user = update.effective_user
     if get_role(db, user.id) != "owner":
-        await update.message.reply_text("❌ Только владелец может выдавать роли.")
-        return
+        return  # baristaya sessiz
     if not context.args:
         await update.message.reply_text("Использование: /grantowner @username\nили /grantowner <user_id>")
         return
@@ -2853,9 +2847,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 await context.bot.send_message(
                     target_id,
-                    f"🔐 *Ваш пароль для входа в Caffelito*\n\n"
-                    f"Войдите, отправив боту команду:\n`/login {new_pwd}`\n\n"
-                    f"После входа откройте приложение.",
+                    f"🔐 *Ваш код для входа: {new_pwd}*\n\n"
+                    f"Откройте приложение Caffelito и введите *{new_pwd}* на экране входа.\n"
+                    f"(или отправьте боту `/login {new_pwd}`)",
                     parse_mode="Markdown")
             except Exception as e:
                 logger.warning(f"password DM to {target_id} failed: {e}")

@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061817;
+var APP_BUILD=2026061818;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1237,7 +1237,9 @@ let settingsTab='prices'; // prices|desserts|names|passwords|logs
 
 function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.').replace(/,/g,'.')}
 // Binler \u00f6l\u00e7e\u011fi: '455'\u2192455000, '5967'\u21925.967.000; ama '000' ile biten (455000) oldu\u011fu gibi kal\u0131r.
-function scaleK(n){n=parseInt(n)||0;return (n>0&&n%1000!==0)?n*1000:n;}
+// Binler ölçeği: kullanıcı her zaman "binlerce" yazar (300→300.000, 3000→3.000.000).
+// 100.000'den küçük girilen değer ×1000; tam tutar (≥100.000) zaten girilmişse aynen.
+function scaleK(n){n=parseInt(n)||0;return (n>0&&n<100000)?n*1000:n;}
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
@@ -3226,11 +3228,10 @@ function rMSettings(m,b){
         if(brs.r==='owner') return; // Owner'ın şifresine ihtiyacı yok
         if(brs.arch) return; // Arşivlenmiş — şifre yönetimine gerek yok
         const hasPw=!!brs.pw;
-        const isAuth=!!brs.auth;
+        // Not: app passcode client-side doğrulanıyor → 'вошёл' güvenilir izlenemez, o yüzden
+        // sadece "şifre var/yok" gösteriyoruz (yanıltıcı 'не входил' kaldırıldı).
         const statusBadge = hasPw
-          ? (isAuth
-              ? '<span style="color:#16a34a;font-weight:600">🔓 пароль есть · вошёл</span>'
-              : '<span style="color:#f59e0b;font-weight:600">🔐 пароль выдан · не входил</span>')
+          ? '<span style="color:#16a34a;font-weight:600">🔓 пароль установлен · доступ открыт</span>'
           : '<span style="color:#ef4444;font-weight:600">⛔ нет пароля · доступа нет</span>';
         h+='<div class="set-row" style="flex-wrap:wrap;gap:6px">'
           +'<div class="set-row-l" style="min-width:130px">'
