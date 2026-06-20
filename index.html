@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061821;
+var APP_BUILD=2026061822;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1428,23 +1428,46 @@ function buildUCard(k,src,todayKey,highlight){
   return'<div class="'+cls+'" onclick="sub=\''+esc(k)+'\';render()"><div class="card-left">'+iconEl+'<div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+done+'/'+total+' '+fb+'</div></div></div><div class="card-right">'+(ok?'<span class="badge badge-green">&#10003;</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dSe(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>';
 }
 
+// ── Задачи zaman kısıtı: Открытие 07-11, Днём 12-18 (Стоки 14:00'e kadar), Закрытие 18-03 ──
+function taskGate(section){
+  if(tab!=='zadachi')return {open:true,label:''};
+  var hh=gT().getHours();
+  if(section==='Открытие')return {open:(hh>=7&&hh<11),label:'с 07:00 до 11:00'};
+  if(section==='Днём')return {open:(hh>=12&&hh<18),label:'с 12:00 до 18:00'};
+  if(section==='Закрытие')return {open:(hh>=18||hh<3),label:'с 18:00 до 03:00'};
+  return {open:true,label:''};
+}
+function itemGate(section,title){
+  if(tab==='zadachi'&&section==='Днём'&&/сток/i.test(title||'')){
+    return {open:(gT().getHours()<14),label:'до 14:00 (заказ франшизе)'};
+  }
+  return {open:true,label:''};
+}
 function rTL(m,b){const src=T[tab]||{},items=src[sub]||[],sk=tab+'_'+sub;
 if(!ts[sk]||ts[sk].length!==items.length)ts[sk]=new Array(items.length).fill(false);
 const st=ts[sk],done=st.filter(Boolean).length,total=st.length,pct=total?(done/total*100):0;
 let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
 h+='<div class="prog"><div class="prog-top"><span class="prog-label">'+sub+'</span><span class="prog-num">'+done+'/'+total+'</span></div><div class="pbar"><div class="pfill '+(pct===100?'ok':'')+'" style="width:'+pct+'%"></div></div></div>';
+var _gate=taskGate(sub);
+if(!_gate.open)h+='<div class="refresh-hint" style="margin-top:0;border:1px solid #f59e0b;background:rgba(245,158,11,.10);color:var(--t1)">🔒 Доступно '+_gate.label+'. Сейчас можно посмотреть, но не отмечать.</div>';
 if(edit)h+='<div class="add-row"><input class="add-inp" id="nt" placeholder="Задача"><input class="add-inp" id="ntd" placeholder="Описание" style="max-width:140px"><button class="add-btn" onclick="aTk()">+</button></div>';
 items.forEach(function(item,i){const t=typeof item==='string'?item:item.t,d=typeof item==='string'?'':item.d||'';
-h+='<div class="task '+(st[i]?'done':'')+'" onclick="tgl('+i+')"><div class="chk">'+(st[i]?'&#10003;':'')+'</div><div class="task-body"><div class="task-t">'+t+'</div>'+(d?'<div class="task-d">'+d+'</div>':'')+'</div>'+(edit?'<div class="edit-btns">'+(i>0?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',-1)">&#9650;</button>':'')+(i<items.length-1?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',1)">&#9660;</button>':'')+'<button class="xbtn" onclick="event.stopPropagation();dTk('+i+')">&#10005;</button></div>':'')+'</div>'});
+var _ig=itemGate(sub,t),_lock=(!_gate.open)||(!_ig.open);
+h+='<div class="task '+(st[i]?'done':'')+'" '+(_lock?'style="opacity:.45"':'onclick="tgl('+i+')"')+'><div class="chk">'+(st[i]?'&#10003;':(_lock?'🔒':''))+'</div><div class="task-body"><div class="task-t">'+t+((!_ig.open&&_gate.open)?' <span style="color:#f59e0b;font-size:10px">🔒 '+_ig.label+'</span>':'')+'</div>'+(d?'<div class="task-d">'+d+'</div>':'')+'</div>'+(edit?'<div class="edit-btns">'+(i>0?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',-1)">&#9650;</button>':'')+(i<items.length-1?'<button class="mvbtn" onclick="event.stopPropagation();mvT('+i+',1)">&#9660;</button>':'')+'<button class="xbtn" onclick="event.stopPropagation();dTk('+i+')">&#10005;</button></div>':'')+'</div>'});
 h+='<div class="footer">XSYN</div>';
 m.innerHTML=h;b.style.display='block';
 // Kısmi tamamlamaya izin ver: en az 1 işaret varsa kaydedilebilir. Şef neyin
 // yapıldığını/eksik kaldığını görür. (Başka şubede kasa/batch brew olmayabilir.)
-if(done===total&&total)b.innerHTML='<button class="mbtn grn" onclick="svT()">Готово &mdash; сохранить</button>';
+if(!_gate.open)b.innerHTML='<button class="mbtn" disabled>🔒 Доступно '+_gate.label+'</button>';
+else if(done===total&&total)b.innerHTML='<button class="mbtn grn" onclick="svT()">Готово &mdash; сохранить</button>';
 else if(done>0)b.innerHTML='<button class="mbtn" onclick="svT()">Сохранить &middot; '+done+'/'+total+'</button>';
 else b.innerHTML='<button class="mbtn" disabled>Отметьте хотя бы одну</button>'}
 
-function tgl(i){const sk=tab+'_'+sub;ts[sk][i]=!ts[sk][i];if(tg)tg.HapticFeedback?.impactOccurred(ts[sk][i]?'medium':'light');render()}
+function tgl(i){
+  var g=taskGate(sub);if(!g.open){toast('🔒 Доступно '+g.label);return}
+  var it=(T[tab][sub]||[])[i],title=typeof it==='string'?it:((it&&it.t)||'');
+  var ig=itemGate(sub,title);if(!ig.open){toast('🔒 '+ig.label);return}
+  const sk=tab+'_'+sub;ts[sk][i]=!ts[sk][i];if(tg)tg.HapticFeedback?.impactOccurred(ts[sk][i]?'medium':'light');render()}
 function aS(){const v=document.getElementById('ns')?.value?.trim();if(!v)return;if(!T[tab])T[tab]={};T[tab][v]=[];sT();iTS();render()}
 function dSe(k){if(!confirm('Удалить?'))return;delete T[tab][k];sT();iTS();render()}
 function aTk(){const v=document.getElementById('nt')?.value?.trim();if(!v||!sub)return;const d=document.getElementById('ntd')?.value?.trim()||'';T[tab][sub].push({t:v,d:d});sT();iTS();render()}
