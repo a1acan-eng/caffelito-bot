@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061822;
+var APP_BUILD=2026061823;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3337,18 +3337,24 @@ function rMSettings(m,b){
       });
     }
   } else if(settingsTab==='reset'){
-    h+='<div class="refresh-hint" style="margin-top:0">Очистка истории — удаляет смены, штрафы, чаевые, выплаты и авансы. Баристы, цены и каталог заказа ОСТАЮТСЯ. Действие нельзя отменить.</div>';
+    h+='<div class="refresh-hint" style="margin-top:0">Отметьте, ЧТО удалить. Баристы, цены и каталог НЕ удаляются. Действие нельзя отменить.</div>';
+    h+='<div class="sec" style="margin-top:6px;font-size:13px">Выберите данные</div>';
+    h+='<div style="border:1px solid var(--border2);border-radius:10px;padding:10px 12px">';
+    [['shifts','🥤 Смены'],['orders','📦 Заказы'],['cash','📋 Кассовые отчёты'],['fines','⚠️ Штрафы'],['tips','💝 Чаевые'],['payments','💵 Выплаты'],['loans','💸 Авансы']].forEach(function(o){
+      h+='<label style="display:flex;align-items:center;gap:9px;padding:6px 0;cursor:pointer;font-size:14px"><input type="checkbox" class="clr-type" value="'+o[0]+'" checked style="width:18px;height:18px;accent-color:#dc2626"> '+o[1]+'</label>';
+    });
+    h+='</div>';
     // Belirli tarihe kadar sil
-    h+='<div class="set-row" style="flex-wrap:wrap;gap:8px;border:1px solid var(--border2);border-radius:10px;padding:12px">'
-      +'<div class="set-row-t" style="width:100%">🗓 Удалить историю ДО даты</div>'
+    h+='<div class="set-row" style="flex-wrap:wrap;gap:8px;border:1px solid var(--border2);border-radius:10px;padding:12px;margin-top:10px">'
+      +'<div class="set-row-t" style="width:100%">🗓 Удалить отмеченное ДО даты</div>'
       +'<input class="set-input" type="date" id="clrDate" style="flex:1;min-width:140px">'
       +'<button class="add-btn" style="padding:9px 14px;background:#f59e0b" onclick="clrHistBefore()">Удалить до даты</button>'
     +'</div>';
-    // Tum gecmisi sil
+    // Hepsini sil (seçili türler)
     h+='<div class="set-row" style="flex-direction:column;align-items:stretch;gap:8px;border:1px solid var(--red-bg);border-radius:10px;padding:12px;margin-top:10px">'
-      +'<div class="set-row-t">🗑 Удалить ВСЮ историю</div>'
-      +'<div class="set-row-s">Все смены, штрафы, чаевые, выплаты и авансы будут удалены. Начнёте с чистого листа.</div>'
-      +'<button class="mbtn" style="background:#dc2626;color:#fff" onclick="clrHistAll()">Очистить всю историю</button>'
+      +'<div class="set-row-t">🗑 Удалить ВСЁ отмеченное</div>'
+      +'<div class="set-row-s">Отмеченные данные будут удалены полностью.</div>'
+      +'<button class="mbtn" style="background:#dc2626;color:#fff" onclick="clrHistAll()">Очистить отмеченное</button>'
     +'</div>';
   }
 
@@ -3360,17 +3366,20 @@ function rMSettings(m,b){
 function _clrSend(payload){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('clr send',e)}}
 }
+function clrTypes(){var a=[];document.querySelectorAll('.clr-type:checked').forEach(function(c){a.push(c.value)});return a;}
 function clrHistAll(){
-  var msg='Удалить ВСЮ историю (смены, штрафы, чаевые, выплаты, авансы)? Баристы и каталог останутся. Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all'})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all'})}
+  var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
+  var msg='Удалить отмеченное ('+types.length+' видов) НАВСЕГДА? Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all',types:types})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all',types:types})}
 }
 function clrHistBefore(){
   var el=document.getElementById('clrDate');var val=el?el.value:'';
   if(!val){toast('Выберите дату');return}
-  var msg='Удалить всю историю ДО '+val+'? Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val})}
+  var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
+  var msg='Удалить отмеченное ДО '+val+'? Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val,types:types})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val,types:types})}
 }
 
 function savePrice(drinkId){
