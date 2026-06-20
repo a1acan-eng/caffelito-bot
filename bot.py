@@ -151,6 +151,13 @@ def get_db():
         note TEXT,
         added_by INTEGER, added_by_name TEXT,
         created_at TEXT)""")
+    # ─── Click/Payme ödeme akışı (gruptan yakalanan bildirimler) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS pay_feed (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider TEXT, amount INTEGER, ok INTEGER,
+        txid TEXT, pay_at TEXT, chat_id INTEGER, chat_title TEXT,
+        raw TEXT, created_at TEXT,
+        UNIQUE(provider, txid))""")
     # ─── Kasa / Сменный отчёт (vardiya raporu) ───
     db.execute("""CREATE TABLE IF NOT EXISTS cashreports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3569,6 +3576,83 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.warning(f"auto /start failed: {_e}")
 
 
+def parse_payment(text):
+    """Click/Payme bildirim mesajını çöz → {provider,amount,ok,txid,pay_at} veya None."""
+    if not text:
+        return None
+    low = text.lower()
+    if ("сум" not in low) and ("сўм" not in low):
+        return None
+    if not any(w in low for w in ("успешно", "оплачен", "подтвержд", "отмен", "аннулир")):
+        return None
+    m = re.search(r'([0-9][0-9\s .,]*)\s*с[уў]м', text)
+    if not m:
+        return None
+    raw = re.sub(r'[\s ]', '', m.group(1))  # boşlukları sil
+    intpart = raw[:-3] if (len(raw) > 3 and raw[-3] in ',.') else raw  # kuruş (,00/.00) at
+    amount = int(re.sub(r'\D', '', intpart) or 0)
+    if amount <= 0:
+        return None
+    cancelled = ("❌" in text) or ("🔴" in text) or ("отмен" in low) or ("аннулир" in low) or ("возврат" in low)
+    ok = (not cancelled) and (("✅" in text) or ("🟢" in text) or ("успешно" in low))
+    if ("подтвержд" in low) or ("аннулир" in low) or ("clickuz" in low):
+        provider = "click"
+    elif ("оплачен" in low) or ("отмен" in low) or ("payme" in low):
+        provider = "payme"
+    else:
+        provider = "?"
+    pay_at = ""
+    tm = re.search(r'(\d{1,2}:\d{2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})', text)
+    if tm:
+        try:
+            pay_at = datetime.strptime(tm.group(2) + " " + tm.group(1), "%d.%m.%Y %H:%M:%S").replace(tzinfo=TZ).isoformat()
+        except Exception:
+            pay_at = ""
+    idm = re.search(r'🆔\s*([0-9a-fA-F]+)', text)
+    txid = idm.group(1) if idm else ""
+    return {"provider": provider, "amount": amount, "ok": 1 if ok else 0, "txid": txid, "pay_at": pay_at}
+
+
+async def capture_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Click/Payme gruplarındaki bildirimleri yakala + pay_feed'e kaydet (test modunda owner'a DM)."""
+    msg = update.effective_message
+    if not msg:
+        return
+    text = msg.text or msg.caption or ""
+    p = parse_payment(text)
+    if not p:
+        return
+    chat = update.effective_chat
+    try:
+        db = get_db()
+        if not p["txid"]:
+            p["txid"] = (p["pay_at"] or "") + "_" + str(p["amount"])  # txid yoksa fallback
+        cur = db.execute(
+            "INSERT OR IGNORE INTO pay_feed (provider, amount, ok, txid, pay_at, chat_id, chat_title, raw, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (p["provider"], p["amount"], p["ok"], p["txid"], p["pay_at"],
+             chat.id, chat.title or "", text[:500], datetime.now(TZ).isoformat()))
+        db.commit()
+        if cur.rowcount == 0:
+            return  # zaten kaydedildi — tekrar DM atma
+        flag = db.execute("SELECT val FROM meta WHERE k='pay_capture_dm'").fetchone()
+        dm_on = (flag is None) or (flag["val"] == "1")  # test modunda owner'a DM (varsayılan açık)
+        if dm_on:
+            st = "✅" if p["ok"] else "❌ отмена"
+            for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                try:
+                    await context.bot.send_message(
+                        o["user_id"],
+                        f"🔍 *Захвачено* [{p['provider']}] · {st}\n"
+                        f"💰 {p['amount']:,} сум · 🕓 {p['pay_at'][11:19] if p['pay_at'] else '?'}\n"
+                        f"💬 «{md_safe(chat.title or '?')}» (id `{chat.id}`)",
+                        parse_mode="Markdown")
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"capture_payment failed: {e}")
+
+
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Grubu kaydet — grupta /setgroup yaz"""
     chat = update.effective_chat
@@ -4136,6 +4220,8 @@ def main():
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
+    # Click/Payme yakalama — ayrı grup (diğer handler'ları engellemez); text + caption + kanal postu
+    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, capture_payment), group=4)
     print("☕ Caffelito Bot запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
