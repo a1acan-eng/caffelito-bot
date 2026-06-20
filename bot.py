@@ -2262,7 +2262,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user = update.effective_user
         now = datetime.now(TZ)
 
-        group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+        group_id = context.bot_data.get("group_id") or GROUP_CHAT_ID
 
         if action == "order":
             from html import escape as esc_html
@@ -3572,18 +3572,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Grubu kaydet — grupta /setgroup yaz"""
     chat = update.effective_chat
-    if chat.type in ['group', 'supergroup']:
-        context.bot_data["group_id"] = str(chat.id)
-        await update.message.reply_text(
-            f"✅ Группа привязана!\n\n"
-            f"ID: `{chat.id}`\n\n"
-            f"Теперь заказы и задачи из Mini App будут приходить сюда.\n\n"
-            f"💡 Для Railway: добавьте переменную\n"
-            f"`GROUP_CHAT_ID = {chat.id}`",
-            parse_mode="Markdown")
-    else:
+    if chat.type not in ['group', 'supergroup']:
         await update.message.reply_text(
             "❌ Эту команду нужно использовать в группе, не в личном чате.")
+        return
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        return  # sadece owner bağlayabilir
+    context.bot_data["group_id"] = str(chat.id)
+    try:
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('active_group', ?)", (str(chat.id),))
+        db.commit()
+    except Exception as e:
+        logger.warning(f"setgroup meta save failed: {e}")
+    await update.message.reply_text(
+        f"✅ Группа привязана! Отчёты, заказы, задачи и кассы теперь приходят сюда.\n"
+        f"ID: `{chat.id}`\n\n"
+        f"_(Переключить обратно — напишите /setgroup в нужной группе.)_",
+        parse_mode="Markdown")
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3694,7 +3701,7 @@ async def cmd_whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug: chat ID göster"""
     chat = update.effective_chat
-    group_id = GROUP_CHAT_ID or context.bot_data.get("group_id", "не задан")
+    group_id = context.bot_data.get("group_id") or GROUP_CHAT_ID or "не задан"
     await update.message.reply_text(
         f"ℹ️ *Информация:*\n\n"
         f"Этот чат ID: `{chat.id}`\n"
@@ -3705,7 +3712,7 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Test: gruba mesaj göndermeyi dene"""
-    group_id = GROUP_CHAT_ID or context.bot_data.get("group_id")
+    group_id = context.bot_data.get("group_id") or GROUP_CHAT_ID
     if not group_id:
         await update.message.reply_text(
             "❌ GROUP_CHAT_ID не задан.\n\n"
@@ -3823,6 +3830,15 @@ async def payment_reminder_loop(app):
 async def setup_commands(app):
     """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
     await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
+    # Kayıtlı aktif grup (test/şube için /setgroup ile değiştirilebilir) — restart'ta yüklensin
+    try:
+        _db = get_db()
+        _ag = _db.execute("SELECT val FROM meta WHERE k='active_group'").fetchone()
+        if _ag and _ag["val"]:
+            app.bot_data["group_id"] = _ag["val"]
+            logger.info(f"active_group yüklendi: {_ag['val']}")
+    except Exception as e:
+        logger.warning(f"active_group load failed: {e}")
     # Yol B: Mini App'i + API'yi sunan HTTP sunucusunu başlat
     await start_web_server(app)
     # Ödeme hatırlatma arka plan görevi
