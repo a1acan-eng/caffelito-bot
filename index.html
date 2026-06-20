@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061818;
+var APP_BUILD=2026061819;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1178,6 +1178,10 @@ try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
 // Onay bekleyen yeni başlayanlar (owner)
 let PENDING=[];
 try{PENDING=JSON.parse((HP.get('pending')||'[]'))}catch(e){PENDING=[]}
+// Отчёт odaları verisi (owner: hepsi · barista: kendi)
+let REP={};
+try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
+let reportRoom=null; // null=menü, 'shifts'|'orders'|'kassa'|'tips'|'pays'|'fines'|'loans'
 // Ступени обслуживания — bu kullanıcı bugün onayladı mı + (owner) bugün onaylayanlar
 let STD_ACK=(HP.get('std_ack')==='1');
 let STD_ACKS=[];
@@ -1564,11 +1568,31 @@ function rReportRoom(m,b){
   } else if(room==='shifts'){
     lst=REP.shifts||[];
     if(!lst.length)h+='<div class="empty-mini">Нет смен</div>';
-    lst.forEach(function(s){
-      h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+(s.nm?escH(s.nm)+' · ':'')+repDay(s.start_time||s.at)+'</div>'
-        +'<div class="hist-m">'+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+' · '+fmtH(s.hours||0)+'</div></div>'
-        +'<div class="hist-r" style="font-weight:700">'+fmt(s.total||0)+'</div></div>';
-    });
+    else{
+      // Takvim: güne göre grupla (gün başlığı + kim girdi/çıktı + пересменка)
+      var byDay={};
+      lst.forEach(function(s){if(!s.start_time)return;var d=new Date(s.start_time);if(isNaN(d))return;var k=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();(byDay[k]=byDay[k]||[]).push(s);});
+      var keys=Object.keys(byDay).sort(function(a,b){return new Date(byDay[b][0].start_time)-new Date(byDay[a][0].start_time)});
+      keys.forEach(function(k){
+        var ds=byDay[k].slice().sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time)});
+        var d0=new Date(ds[0].start_time);
+        var dayLbl=(DR[d0.getDay()]||'')+' · '+String(d0.getDate()).padStart(2,'0')+'.'+String(d0.getMonth()+1).padStart(2,'0')+'.'+d0.getFullYear();
+        h+='<div style="border-radius:16px;overflow:hidden;margin-bottom:14px;box-shadow:0 6px 18px rgba(0,0,0,.28);border:1px solid var(--border)">'
+          +'<div style="background:linear-gradient(135deg,#b88a2e,#e9c46a);color:#1a1a1a;padding:10px 14px;font-weight:800;display:flex;justify-content:space-between;align-items:center"><span>📅 '+dayLbl+'</span><span style="font-size:12px;opacity:.85">'+ds.length+' смен</span></div>'
+          +'<div style="padding:4px 12px 8px;background:var(--card)">';
+        ds.forEach(function(s,i){
+          if(i>0){var pe=ds[i-1].end_time?(' · '+fmtTime(ds[i-1].end_time)):'';h+='<div style="text-align:center;font-size:11px;color:#10b981;padding:3px 0;font-weight:600">🔄 пересменка'+pe+'</div>';}
+          var outTxt=s.end_time?fmtTime(s.end_time):'<span style="color:#10b981;font-weight:700">в смене</span>';
+          h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0">'
+            +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">👤</div>'
+            +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
+            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+'</div></div>'
+            +'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>'
+          +'</div>';
+        });
+        h+='</div></div>';
+      });
+    }
   } else if(room==='tips'){
     lst=REP.tips||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
