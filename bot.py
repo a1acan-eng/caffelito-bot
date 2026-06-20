@@ -2477,6 +2477,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
+                # Сменный отчёт — 'закрыл смену'dan SONRA gönderilir (cash_report buffer'ladı)
+                try:
+                    rep_t = context.bot_data.get("pending_report", {}).pop(user.id, None)
+                    if rep_t:
+                        await context.bot.send_message(chat_id=int(group_id), text=rep_t, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"KASA report (after close) failed: {e}")
                 # Stok uyarısı — kasa raporu + 'закрыл смену'dan SONRA (en sonda), ayrı mesaj
                 try:
                     entry = context.bot_data.get("pending_stock", {}).pop(user.id, None)
@@ -3221,9 +3228,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
-                    await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                    # HEMEN gönderme — önce 'закрыл смену', SONRA bu отчёт gelsin diye buffer'la (shift_end gönderir)
+                    context.bot_data.setdefault("pending_report", {})[user.id] = t
                 except Exception as e:
-                    logger.error(f"KASA group send failed: {e}")
+                    logger.error(f"KASA report buffer failed: {e}")
                 # ─── Stok uyarısı (kalan bardak) — gruba, herkese ───
                 try:
                     from html import escape as esc_html2

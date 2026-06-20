@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061820;
+var APP_BUILD=2026061821;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1526,8 +1526,10 @@ function rR(m,b){b.style.display='none';
   ];
   var h='<div class="sec">📊 Отчёт</div>';
   h+='<div class="own-grid">';
+  var SEEN={};try{SEEN=JSON.parse(localStorage.getItem('cf_roomseen')||'{}')}catch(e){SEEN={}}
   rooms.forEach(function(r){
-    h+='<div class="own-btn" onclick="reportRoom=\''+r.id+'\';render()"><div class="own-btn-i">'+r.i+'</div><div class="own-btn-t">'+r.t+'</div>'+(r.n?'<div class="own-btn-s">'+r.n+'</div>':'')+'</div>';
+    var isNew=r.n>(SEEN[r.id]||0); // son görülenden fazla → yeni bildirim
+    h+='<div class="own-btn" onclick="openRoom(\''+r.id+'\','+r.n+')"><div class="own-btn-i">'+r.i+'</div><div class="own-btn-t">'+r.t+'</div>'+(isNew?'<div class="own-btn-s" style="background:#ef4444;min-width:11px;width:11px;height:11px;padding:0;border-radius:50%"></div>':'')+'</div>';
   });
   h+='</div>';
   if(owner&&STD_ACKS&&STD_ACKS.length){
@@ -1535,6 +1537,10 @@ function rR(m,b){b.style.display='none';
     STD_ACKS.forEach(function(a){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(a.name||'?')+'</div></div><div class="hist-r" style="color:var(--t3);font-weight:600">'+fmtTime(a.at)+'</div></div>';});
   }
   h+='<div class="footer">XSYN</div>';m.innerHTML=h;
+}
+function openRoom(id,n){
+  try{var s=JSON.parse(localStorage.getItem('cf_roomseen')||'{}');s[id]=n;localStorage.setItem('cf_roomseen',JSON.stringify(s));}catch(e){}
+  reportRoom=id;render();
 }
 function rReportRoom(m,b){
   b.style.display='none';
@@ -1929,10 +1935,10 @@ function rMMain(m,b){
   // ── Чаевые + Аванс — kompakt yan yana (nadir → istatistik altına alındı) ──
   if(MY_ROLE!=='owner'){
     var myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
-    var _cc='flex:1;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;text-align:center';
-    h+='<div style="display:flex;gap:10px;margin-top:12px">'
-      +'<div style="'+_cc+'"><div style="font-size:20px">💝</div><div style="font-size:11px;color:var(--t3);margin-top:2px">Чаевые</div><div style="font-weight:800;color:#10b981;margin-top:2px">+'+fmt(tips)+'</div></div>'
-      +'<div onclick="'+(myPending?'':'openLoanRequest()')+'" style="'+_cc+';cursor:pointer"><div style="font-size:20px">💸</div><div style="font-size:11px;color:var(--t3);margin-top:2px">Аванс у шефа</div><div style="font-weight:700;font-size:12px;margin-top:4px;color:'+(myPending?'#f59e0b':'var(--t2)')+'">'+(myPending?'⏳ в обработке':'запросить ›')+'</div></div>'
+    var _cc='flex:1;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:8px 11px;display:flex;align-items:center;gap:7px';
+    h+='<div style="display:flex;gap:8px;margin-top:10px">'
+      +'<div style="'+_cc+'"><span style="font-size:15px">💝</span><span style="font-size:11px;color:var(--t3)">Чаевые</span><span style="font-weight:800;color:#10b981;margin-left:auto;font-size:13px">+'+fmt(tips)+'</span></div>'
+      +'<div onclick="'+(myPending?'':'openLoanRequest()')+'" style="'+_cc+';cursor:pointer"><span style="font-size:15px">💸</span><span style="font-size:11px;color:var(--t3)">Аванс</span><span style="font-size:11px;font-weight:700;margin-left:auto;color:'+(myPending?'#f59e0b':'var(--t2)')+'">'+(myPending?'⏳':'запросить ›')+'</span></div>'
     +'</div>';
   } else {
     // Owner: чаевые dağıtımı zaten Бухгалтерия panelinde — burada tek kompakt buton
