@@ -4285,11 +4285,8 @@ def main():
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
-    # Click/Payme yakalama — ayrı grup (diğer handler'ları engellemez); text + caption + kanal postu
-    app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, capture_payment), group=4)
-    app.add_handler(CommandHandler("paydebug", cmd_paydebug))
-    # Nero bir gruba/kanala eklenince/admin olunca owner'a teşhis DM'i
-    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    # Click/Payme yakalama İPTAL edildi (notifier'lar bot, grup bot-to-bot engeli, admin gerekiyor).
+    # Handler'lar kayıt edilmiyor → capture/paydebug/my_chat_member çalışmaz.
     print("☕ Caffelito Bot запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

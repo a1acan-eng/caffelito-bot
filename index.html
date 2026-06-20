@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061823;
+var APP_BUILD=2026061824;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1247,6 +1247,26 @@ function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()
 const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'🫧'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'ЗП',i:'💰'}];
 function visTabs(){return TABS.filter(function(t){return !t.owner||MY_ROLE==='owner'}).map(function(t){var o={id:t.id,l:t.l,i:t.i};if(t.id==='salary'&&MY_ROLE==='owner'){o.l='Управление';o.i='🛠'}return o})}
 function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){return '<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
+// ── Soldan sağa kaydırma = geri (OS-tarzı jest) ──
+function goBack(){
+  if(typeof orderExport!=='undefined'&&orderExport){orderExport=false;render();return true}
+  if(typeof reportRoom!=='undefined'&&reportRoom){reportRoom=null;render();return true}
+  if(typeof kasaDetail!=='undefined'&&kasaDetail){kasaDetail=null;render();return true}
+  if(typeof mView!=='undefined'&&mView&&mView!=='main'){mView='main';render();return true}
+  if(typeof sub!=='undefined'&&sub){sub=null;render();return true}
+  if(typeof cat!=='undefined'&&cat){cat=null;render();return true}
+  return false;
+}
+(function(){
+  var sx=0,sy=0,st=0;
+  document.addEventListener('touchstart',function(e){if(e.touches&&e.touches.length===1){sx=e.touches[0].clientX;sy=e.touches[0].clientY;st=Date.now();}},{passive:true});
+  document.addEventListener('touchend',function(e){
+    if(!e.changedTouches||!e.changedTouches.length)return;
+    var dx=e.changedTouches[0].clientX-sx,dy=e.changedTouches[0].clientY-sy,dt=Date.now()-st;
+    // soldan başla (sol ~1/3), sağa belirgin kaydır, dikey küçük, hızlı
+    if(sx<130&&dx>70&&Math.abs(dy)<45&&dt<700){try{goBack()}catch(_){}}
+  },{passive:true});
+})();
 function go(t){
   // Aktif timer'ları temizle (canlı süre güncelleyiciler)
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
@@ -1548,13 +1568,13 @@ function rR(m,b){b.style.display='none';
     {id:'shifts',i:'🥤',t:'Мои смены',n:(REP.shifts||[]).length}
   ];
   var h='<div class="sec">📊 Отчёт</div>';
-  h+='<div class="own-grid">';
+  h+='<div class="own-panel"><div class="own-grid">';
   var SEEN={};try{SEEN=JSON.parse(localStorage.getItem('cf_roomseen')||'{}')}catch(e){SEEN={}}
   rooms.forEach(function(r){
     var isNew=r.n>(SEEN[r.id]||0); // son görülenden fazla → yeni bildirim
     h+='<div class="own-btn" onclick="openRoom(\''+r.id+'\','+r.n+')"><div class="own-btn-i">'+r.i+'</div><div class="own-btn-t">'+r.t+'</div>'+(isNew?'<div class="own-btn-s" style="background:#ef4444;min-width:11px;width:11px;height:11px;padding:0;border-radius:50%"></div>':'')+'</div>';
   });
-  h+='</div>';
+  h+='</div></div>';
   if(owner&&STD_ACKS&&STD_ACKS.length){
     h+='<div class="sec" style="margin-top:14px">📖 Стандарт — ознакомились сегодня ('+STD_ACKS.length+')</div>';
     STD_ACKS.forEach(function(a){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(a.name||'?')+'</div></div><div class="hist-r" style="color:var(--t3);font-weight:600">'+fmtTime(a.at)+'</div></div>';});
