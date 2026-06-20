@@ -15,7 +15,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes, MessageHandler, filters
+    ContextTypes, MessageHandler, ChatMemberHandler, filters
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
@@ -3619,10 +3619,25 @@ async def capture_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
     text = msg.text or msg.caption or ""
+    chat = update.effective_chat
     p = parse_payment(text)
     if not p:
+        # DEBUG: kanal/grup mesajı Nero'ya geliyor mu? (meta pay_debug=1 iken owner'a DM)
+        try:
+            if chat and chat.type != "private":
+                _d = get_db()
+                _flag = _d.execute("SELECT val FROM meta WHERE k='pay_debug'").fetchone()
+                if _flag and _flag["val"] == "1":
+                    for o in _d.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                        try:
+                            await context.bot.send_message(
+                                o["user_id"], f"🐞 получено из [{chat.type}] id `{chat.id}`:\n«{(text or '')[:60]}»",
+                                parse_mode="Markdown")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         return
-    chat = update.effective_chat
     try:
         db = get_db()
         if not p["txid"]:
@@ -3651,6 +3666,45 @@ async def capture_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
     except Exception as e:
         logger.warning(f"capture_payment failed: {e}")
+
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nero bir gruba/kanala eklenince veya admin olunca owner'a durum DM'i (teşhis)."""
+    cm = update.my_chat_member
+    if not cm:
+        return
+    chat = cm.chat
+    new_status = cm.new_chat_member.status if cm.new_chat_member else "?"
+    try:
+        db = get_db()
+        for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+            try:
+                await context.bot.send_message(
+                    o["user_id"],
+                    f"🤖 *Nero статус изменён*\n"
+                    f"Чат: «{md_safe(chat.title or '?')}»\n"
+                    f"Тип: *{chat.type}* · ID: `{chat.id}`\n"
+                    f"Новый статус Nero: *{new_status}*\n\n"
+                    + ("✅ Для чтения сообщений в канале Nero должен быть *администратором*." if chat.type == "channel"
+                       else "ℹ️ В группе бот не видит сообщения других ботов (Click/Payme)."),
+                    parse_mode="Markdown")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"on_my_chat_member failed: {e}")
+
+
+async def cmd_paydebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner: ödeme yakalama debug DM'ini aç/kapat. /paydebug on|off"""
+    db = get_db()
+    user = update.effective_user
+    if get_role(db, user.id) != "owner":
+        return
+    arg = (context.args[0].lower() if context.args else "")
+    val = "1" if arg == "on" else "0"
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('pay_debug', ?)", (val,))
+    db.commit()
+    await update.message.reply_text(f"🐞 Отладка приёма платежей: {'ВКЛ' if val=='1' else 'выкл'}")
 
 
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4222,6 +4276,9 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     # Click/Payme yakalama — ayrı grup (diğer handler'ları engellemez); text + caption + kanal postu
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, capture_payment), group=4)
+    app.add_handler(CommandHandler("paydebug", cmd_paydebug))
+    # Nero bir gruba/kanala eklenince/admin olunca owner'a teşhis DM'i
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     print("☕ Caffelito Bot запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
