@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061819;
+var APP_BUILD=2026061820;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1178,10 +1178,6 @@ try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
 // Onay bekleyen yeni başlayanlar (owner)
 let PENDING=[];
 try{PENDING=JSON.parse((HP.get('pending')||'[]'))}catch(e){PENDING=[]}
-// Отчёт odaları verisi (owner: hepsi · barista: kendi)
-let REP={};
-try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
-let reportRoom=null; // null=menü, 'shifts'|'orders'|'kassa'|'tips'|'pays'|'fines'|'loans'
 // Ступени обслуживания — bu kullanıcı bugün onayladı mı + (owner) bugün onaylayanlar
 let STD_ACK=(HP.get('std_ack')==='1');
 let STD_ACKS=[];
@@ -3367,6 +3363,15 @@ function approveUser(uid,name){
   toast('✅ Принят — задайте пароль');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'approve_user',target:uid}))}catch(e){console.warn(e)}}
+  render();
+}
+function unapproveUser(uid,name){
+  if(!confirm('Убрать '+(name||'')+' из баристов?\nВернётся в «Новые заявки», доступ закроется.'))return;
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});
+  if(b){PENDING=PENDING||[];PENDING.unshift({id:uid,n:b.n,u:b.u,at:new Date().toISOString()});BARISTAS=BARISTAS.filter(function(x){return x.id!==uid});}
+  toast('↩️ Возвращён в заявки');
+  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'unapprove_user',target:uid}))}catch(e){console.warn(e)}}
   render();
 }
 function rejectUser(uid,name){
