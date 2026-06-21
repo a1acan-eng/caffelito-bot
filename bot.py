@@ -2281,37 +2281,52 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             groups = data.get("g", [])
             order_items = []  # Отчёт → Заказы odası için kayıt
 
-            # HTML mesaj oluştur
-            text = f"<b>ЗАКАЗ — CAFFELITO</b>\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            text += f"<b>{esc_html(shown)}</b>\n"
-            text += f"<b>{now.strftime('%d.%m.%Y  %H:%M')}</b>\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━\n"
-
+            # Önce tüm kalemleri topla: rows = [(имя, "Nx") | (имя, None) | None(=boşluk)]
+            rows = []
             if groups:
                 # Yeni kompakt format: ["Кофе|Эспрессо:1|Колумбия:3", ...]
-                # Kategori başlıkları gösterilmiyor — gruplar arası boşlukla ayrılır
-                for group_str in groups:
+                for gi, group_str in enumerate(groups):
                     parts = group_str.split('|')
-                    text += "\n\n"  # kategori arası uzun boşluk
+                    if gi > 0:
+                        rows.append(None)  # kategori arası boşluk
                     for item_str in parts[1:]:
                         if ':' in item_str:
                             iname, iqty = item_str.rsplit(':', 1)
-                            text += f"<b>  — {esc_html(_clean(iname))}:  {iqty}x</b>\n"
-                            order_items.append({"n": _clean(iname), "q": iqty.strip()})
+                            nm, q = _clean(iname), iqty.strip()
+                            rows.append((nm, q + "x"))
+                            order_items.append({"n": nm, "q": q})
                         else:
-                            text += f"<b>  — {esc_html(_clean(item_str))}</b>\n"
+                            rows.append((_clean(item_str), None))
             else:
                 # Eski format desteği
                 items = data.get("items") or data.get("i", {})
                 names_from_app = data.get("names") or data.get("n", {})
                 total = sum(items.values()) if items else total
                 for pid, qty in items.items():
-                    name = names_from_app.get(pid) or NAMES.get(pid, pid)
-                    text += f"<b>  — {esc_html(_clean(name))}:  {qty}x</b>\n"
-                    order_items.append({"n": _clean(name), "q": str(qty)})
+                    nm = _clean(names_from_app.get(pid) or NAMES.get(pid, pid))
+                    rows.append((nm, str(qty) + "x"))
+                    order_items.append({"n": nm, "q": str(qty)})
 
-            text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
+            # Sağa hizalı monospace tablo: isim solda, adет sağ kolonda hizalı
+            named = [r for r in rows if r]
+            maxn = min(max((len(r[0]) for r in named), default=0), 34)
+            body_lines = []
+            for r in rows:
+                if r is None:
+                    body_lines.append("")
+                    continue
+                nm, q = r
+                if q is None:
+                    body_lines.append(nm)
+                elif len(nm) <= maxn:
+                    body_lines.append(nm + " " * (maxn - len(nm) + 2) + q)
+                else:
+                    body_lines.append(nm + "  " + q)
+            pre_body = esc_html("\n".join(body_lines))
+
+            text = "<b>ЗАКАЗ — CAFFELITO</b>\n"
+            text += f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
+            text += f"<pre>{pre_body}</pre>"
             text += f"<b>Итого: {total} позиций</b>"
 
             if group_id:

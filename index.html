@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062131;
+var APP_BUILD=2026062132;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1599,14 +1599,65 @@ function rKasaDetail(m,b){
   m.innerHTML=h;
 }
 function repDay(at){if(!at)return '';var d=new Date(at);if(isNaN(d))return String(at).slice(0,16);return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+// 📊 Аналитика бариста — Отчёт odası için (Тренажёр'den taşındı)
+function analyticsHTML(){
+  if(MY_ROLE!=='owner')return '<div class="empty-mini">Нет доступа</div>';
+  var trainees=(BARISTAS||[]).filter(function(x){return !x.arch});
+  var h='<div class="rt-hero-s" style="margin:0 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Готовимся к проверке центра · 2 раза в месяц</div>';
+  if(!trainees.length){h+='<div class="card"><div class="card-left"><div class="card-info"><div class="card-title">Нет данных</div></div></div></div>';return h;}
+  trainees.forEach(function(bar){
+    const r=bar.rt||{};
+    const acc=r.tq?Math.round((r.tc/r.tq)*100):0;
+    const rec=r.rec||[];
+    const last3=rec.slice(0,3),prev=rec.slice(3);
+    const p1=last3.filter(x=>x.p).length,p2=prev.filter(x=>x.p).length;
+    let trend='flat',ticon='→';
+    if(rec.length>=2){if(p1>p2){trend='up';ticon='↗'}else if(p1<p2){trend='down';ticon='↘'}}
+    const dim=(r.ts||0)===0;
+    const lvl=r.lvl||1,mx=r.max||1;
+    h+='<div class="rt-an-card'+(dim?' rt-an-inactive':'')+'">';
+    h+='<div class="rt-an-head"><div class="rt-an-name">'+esc(bar.n)+'</div><span class="rt-trend-ic rt-trend-'+trend+'">'+ticon+'</span><span class="rt-an-lvl'+(dim?' z':'')+'">Ур. '+lvl+'/'+Math.max(mx,lvl)+'</span></div>';
+    h+='<div class="rt-an-grid"><div class="rt-an-g"><div class="rt-an-g-v">'+acc+'%</div><div class="rt-an-g-k">ТОЧНОСТЬ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.ts||0)+'</div><div class="rt-an-g-k">СЕССИЙ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.bs||0)+'</div><div class="rt-an-g-k">СЕРИЯ</div></div></div>';
+    if(rec.length){
+      h+='<div class="rt-an-trend">';
+      rec.slice().reverse().forEach(function(s){
+        const ok=s.p===1;
+        h+='<span class="rt-an-chip '+(ok?'ok':'no')+'">У'+s.l+' '+s.c+'/'+s.t+'</span>';
+      });
+      h+='</div>';
+    }
+    if(r.exam){
+      const ex=r.exam;
+      let edStr='';
+      try{const d=new Date(ex.d);edStr=d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')}catch(e){}
+      h+='<div class="rt-an-trend" style="margin-top:6px"><span class="rt-an-chip '+(ex.p?'ok':'no')+'" style="font-size:11px;padding:3px 9px">🎓 Зачёт: '+ex.s+'%'+(edStr?' · '+edStr:'')+'</span></div>';
+    }
+    if(r.lp){
+      try{
+        const d=new Date(r.lp);
+        const diffMs=new Date()-d;
+        const mins=Math.floor(diffMs/60000),hrs=Math.floor(mins/60),days=Math.floor(hrs/24);
+        let label='только что';
+        if(days>=1)label=days+' дн. назад';
+        else if(hrs>=1)label=hrs+' ч. назад';
+        else if(mins>=2)label=mins+' мин. назад';
+        h+='<div class="rt-an-last">Последний раз: '+label+'</div>';
+      }catch(e){}
+    } else {
+      h+='<div class="rt-an-last" style="color:#ef4444">⚠️ Ни разу не играл</div>';
+    }
+    h+='</div>';
+  });
+  return h;
+}
 function rR(m,b){b.style.display='none';
   if(kasaDetail){return rKasaDetail(m,b)}
   if(reportRoom){return rReportRoom(m,b)}
   var owner=(MY_ROLE==='owner');
   var rooms = owner ? [
-    {id:'kasa',i:'📋',t:'Кассовые отчёты',n:(KASA_REPORTS||[]).length},
+    {id:'shifts',i:'🥤',t:'Смены и кассы',n:(REP.shifts||[]).length},
     {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).length},
-    {id:'shifts',i:'🥤',t:'Смены',n:(REP.shifts||[]).length},
+    {id:'analytics',i:'📊',t:'Аналитика бариста',n:((BARISTAS||[]).filter(function(x){return !x.arch}).length)},
     {id:'tips',i:'💝',t:'Чаевые',n:(REP.tips||[]).length},
     {id:'pays',i:'💵',t:'Выплачено',n:(REP.pays||[]).length},
     {id:'fines',i:'⚠️',t:'Штрафы',n:(REP.fines||[]).length},
@@ -1636,7 +1687,7 @@ function openRoom(id,n){
 function rReportRoom(m,b){
   b.style.display='none';
   var room=reportRoom;
-  var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены',tips:'💝 Чаевые',pays:'💵 Выплачено',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
+  var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
   var h='<button class="back" onclick="reportRoom=null;render()">‹ Назад</button>';
   h+='<div class="sec">'+(titles[room]||'Отчёт')+'</div>';
   var lst;
@@ -1662,6 +1713,8 @@ function rReportRoom(m,b){
     lst=REP.shifts||[];
     if(!lst.length)h+='<div class="empty-mini">Нет смен</div>';
     else{
+      // Vardiya → kasa raporu eşleşmesi (başlangıç saatine göre)
+      var kByStart={};(KASA_REPORTS||[]).forEach(function(r,ri){if(r.start_time)kByStart[r.start_time]=ri;});
       // Takvim: güne göre grupla (gün başlığı + kim girdi/çıktı + пересменка)
       var byDay={};
       lst.forEach(function(s){if(!s.start_time)return;var d=new Date(s.start_time);if(isNaN(d))return;var k=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();(byDay[k]=byDay[k]||[]).push(s);});
@@ -1676,11 +1729,14 @@ function rReportRoom(m,b){
         ds.forEach(function(s,i){
           if(i>0){var pe=ds[i-1].end_time?(' · '+fmtTime(ds[i-1].end_time)):'';h+='<div style="text-align:center;font-size:11px;color:#10b981;padding:3px 0;font-weight:600">🔄 пересменка'+pe+'</div>';}
           var outTxt=s.end_time?fmtTime(s.end_time):'<span style="color:#10b981;font-weight:700">в смене</span>';
-          h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0">'
+          var kri=(s.start_time&&kByStart[s.start_time]!=null)?kByStart[s.start_time]:null;
+          var hasRep=(kri!=null);
+          var kr=hasRep?KASA_REPORTS[kri]:null;
+          h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0'+(hasRep?';cursor:pointer':'')+'"'+(hasRep?' onclick="kasaDetail=KASA_REPORTS['+kri+'];render()"':'')+'>'
             +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">👤</div>'
             +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
-            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+'</div></div>'
-            +'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>'
+            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':'')+'</div></div>'
+            +(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
           +'</div>';
         });
         h+='</div></div>';
@@ -1702,6 +1758,8 @@ function rReportRoom(m,b){
     lst=REP.loans||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
     lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div></div>';});
+  } else if(room==='analytics'){
+    h+=analyticsHTML();
   }
   h+='<div class="footer">XSYN</div>';m.innerHTML=h;
 }
@@ -2555,6 +2613,7 @@ function rMStandard(m,b){
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">📖 Ступени обслуживания</div>';
   h+='<div class="refresh-hint" style="margin-bottom:10px">Стандарт, который должен знать каждый бариста. Прочитай и подтверди ознакомление в начале смены.</div>';
+  h+='<div class="card" onclick="openReference()" style="border:1px solid var(--gold);margin-bottom:12px"><div class="card-left"><div class="card-icon">📚</div><div class="card-info"><div class="card-title">Полный справочник Caffelito</div><div class="card-sub">Рецепты · сроки · сервис-дерево · санитария</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
   if(MY_ROLE==='owner'){
     h+='<div class="sf-card"><div class="sf-label">✅ Ознакомились сегодня ('+STD_ACKS.length+')</div>';
     if(STD_ACKS.length){STD_ACKS.forEach(function(a){h+='<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px"><span>'+escH(a.name||'?')+'</span><span style="color:var(--t3)">'+fmtTime(a.at)+'</span></div>'});}
@@ -2578,6 +2637,7 @@ function rMStandard(m,b){
   if(STD_ACK){b.innerHTML='<button class="mbtn" style="background:#10b981;opacity:.85" disabled>✅ Вы ознакомлены сегодня</button>';}
   else{b.innerHTML='<button class="mbtn grn" onclick="ackStandard()">✅ Я ознакомлен со стандартом</button>';}
 }
+function openReference(){tab='zadachi';sub='__ref__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
 function ackStandard(){
   STD_ACK=true;
   STD_ACKS=STD_ACKS||[];STD_ACKS.unshift({name:MY_NAME,at:new Date().toISOString()});
@@ -3867,56 +3927,7 @@ function rGame(m,b){
         if(bar.id===MY_UID)return;
         h+='<div class="card" onclick="examInvite('+bar.id+',\''+esc(bar.n)+'\')"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">'+escH(bar.n)+'</div><div class="card-sub">Назначить экзамен</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
       });
-      h+='<div class="sec" style="margin-top:18px">📊 Аналитика бариста</div>';
-      h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Готовимся к проверке центра · 2 раза в месяц</div>';
-      if(!trainees.length){h+='<div class="card"><div class="card-left"><div class="card-info"><div class="card-title">Нет данных</div></div></div></div>';}
-      trainees.forEach(function(bar){
-        const r=bar.rt||{};
-        const acc=r.tq?Math.round((r.tc/r.tq)*100):0;
-        const rec=r.rec||[];
-        // Trend: son 3 session pass oranı
-        const last3=rec.slice(0,3),prev=rec.slice(3);
-        const p1=last3.filter(x=>x.p).length,p2=prev.filter(x=>x.p).length;
-        let trend='flat',ticon='→';
-        if(rec.length>=2){if(p1>p2){trend='up';ticon='↗'}else if(p1<p2){trend='down';ticon='↘'}}
-        const dim=(r.ts||0)===0;
-        const lvl=r.lvl||1,mx=r.max||1;
-        h+='<div class="rt-an-card'+(dim?' rt-an-inactive':'')+'">';
-        h+='<div class="rt-an-head"><div class="rt-an-name">'+esc(bar.n)+'</div><span class="rt-trend-ic rt-trend-'+trend+'">'+ticon+'</span><span class="rt-an-lvl'+(dim?' z':'')+'">Ур. '+lvl+'/'+Math.max(mx,lvl)+'</span></div>';
-        h+='<div class="rt-an-grid"><div class="rt-an-g"><div class="rt-an-g-v">'+acc+'%</div><div class="rt-an-g-k">ТОЧНОСТЬ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.ts||0)+'</div><div class="rt-an-g-k">СЕССИЙ</div></div><div class="rt-an-g"><div class="rt-an-g-v">'+(r.bs||0)+'</div><div class="rt-an-g-k">СЕРИЯ</div></div></div>';
-        if(rec.length){
-          h+='<div class="rt-an-trend">';
-          rec.slice().reverse().forEach(function(s){
-            const ok=s.p===1;
-            h+='<span class="rt-an-chip '+(ok?'ok':'no')+'">У'+s.l+' '+s.c+'/'+s.t+'</span>';
-          });
-          h+='</div>';
-        }
-        // Son sınav sonucu
-        if(r.exam){
-          const ex=r.exam;
-          let edStr='';
-          try{const d=new Date(ex.d);edStr=d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')}catch(e){}
-          h+='<div class="rt-an-trend" style="margin-top:6px"><span class="rt-an-chip '+(ex.p?'ok':'no')+'" style="font-size:11px;padding:3px 9px">🎓 Зачёт: '+ex.s+'%'+(edStr?' · '+edStr:'')+'</span></div>';
-        }
-        // Last played
-        if(r.lp){
-          try{
-            const d=new Date(r.lp);
-            const now=new Date();
-            const diffMs=now-d;
-            const mins=Math.floor(diffMs/60000),hrs=Math.floor(mins/60),days=Math.floor(hrs/24);
-            let label='только что';
-            if(days>=1)label=days+' дн. назад';
-            else if(hrs>=1)label=hrs+' ч. назад';
-            else if(mins>=2)label=mins+' мин. назад';
-            h+='<div class="rt-an-last">Последний раз: '+label+'</div>';
-          }catch(e){}
-        } else {
-          h+='<div class="rt-an-last" style="color:#ef4444">⚠️ Ни разу не играл</div>';
-        }
-        h+='</div>';
-      });
+      // 📊 Аналитика бариста → артык Отчёт → «Аналитика бариста» одасында (taşındı)
     }
     h+='<div class="footer">XSYN</div>';
     m.innerHTML=h;b.style.display='none';return;
