@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062139;
+var APP_BUILD=2026062140;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1429,10 +1429,8 @@ function rTM(m,b){
       const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
       h+='<div class="card" onclick="sub=\''+esc(k)+'\';render()"><div class="card-left"><div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+done+'/'+total+'</div></div></div><div class="card-right">'+(ok?'<span class="badge badge-green">&#10003;</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dSe(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>';
     });
-    // Сертификация + Справочник — en alta alındı
-    h+='<div class="sec" style="margin-top:14px">Обучение</div>';
-    h+='<div class="card" onclick="sub=\'__game__\';render()" style="border-color:var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">Сертификация бариста</div><div class="card-sub">Программа Caffelito · сертификат + 1 000 000</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
-    h+='<div class="card" onclick="sub=\'__ref__\';render()"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    // Справочник — подготовка к экзамену (сам экзамен/Сертификация — на главной)
+    h+='<div class="card" onclick="sub=\'__ref__\';render()" style="margin-top:14px;border:1px solid var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты · подготовка</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
   }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
@@ -1451,9 +1449,56 @@ function rReference(m,b){
   h+=sec('☕','Рецепты ('+RT_RECIPES.length+')',reci);
   // Эспрессо/параметры
   h+=sec('⚡','Эспрессо и параметры','<div style="font-size:13px;line-height:1.8">Молотый кофе: <b>17,8–18,3 г</b><br>Экстракция: <b>23–28 сек</b><br>Выход: <b>36–40 г</b> (≈60 мл)<br>Температура экстракции: <b>92–96 °C</b><br>Взбивание молока: <b>60–70 °C</b><br>Batch Brew: <b>120 г кофе / 2 л воды</b> (7–8 мин)<br>Брендированный чай: настоять <b>3–4 мин</b></div>');
-  // Сроки хранения
-  var stor=row('Молоко 3,2%','24 часа')+row('Растительное молоко','96 часов')+row('Безлактозное молоко','48 часов')+row('Сливки (откр.)','48 часов')+row('Какао (откр.)','72 часа')+row('Сок (откр.)','24 часа')+row('Кофе декаф (откр.)','48 часов')+row('Заготовка «Батч брю» (термос)','6 часов')+row('Заготовка «Холодный батч»','7 дней')+row('Заготовка «Взбитые сливки»','7 суток')+row('Заготовка «Охлаждённый чай»','24 часа')+row('Лёд герметичный','30 дней')+row('Лёд негерметичный','24 часа')+row('Чай матча','5 месяцев')+row('Мёд (откр.)','8 месяцев')+row('Температуры','холодильник +2/+4 · морозилка −18/−15 · витрина +21/+25 °C')+row('Влажность','не более 65%');
-  h+=sec('🧊','Сроки хранения',stor);
+  // Сроки хранения — полная таблица (30.03.2026), по зонам
+  var zh=function(t){return '<div style="font-size:11px;font-weight:800;color:var(--gold2);margin:12px 0 4px;letter-spacing:.5px">'+t+'</div>';};
+  var stor=zh('🧊 Морозильник −18/−15 °C')
+    +row('Лёд негерметичный','24 часа')
+    +row('Лёд герметичный','30 дней · вскрытый 24 часа')
+    +row('Мороженое пломбир / в ассортименте','12 месяцев')
+    +row('Мороженое мини-попс','по упаковке')
+    +zh('❄️ Холодильник +2/+4 °C')
+    +row('Вода без газа / с газом','по упаковке')
+    +row('Джем в ассортименте','вскрытый 3 месяца')
+    +row('Желе кокосовое','вскрытое 1 месяц')
+    +row('Лайм / Лимон','24 часа')
+    +row('Молоко 3,2% / 2%','вскрытое 24 часа')
+    +row('Молоко растительное','вскрытое 96 часов')
+    +row('Молоко безлактозное','вскрытое 48 часов')
+    +row('Пюре в ассортименте','вскрытое 48 часов')
+    +row('Сливки 11% / 27%','вскрытые 48 часов')
+    +row('Топинг шоколадный','вскрытый 3 месяца')
+    +row('Швепс Индиан Тоник','по упаковке')
+    +row('Сок в ассортименте','вскрытый 24 часа')
+    +row('Заготовка «Взбитые сливки»','7 суток (кремер/сифон)')
+    +row('Заготовка «Охлаждённый чай»','24 часа')
+    +row('Заготовка «Мята»','до потери органолепт. свойств')
+    +row('Заготовка «Холодный батч»','7 дней')
+    +row('Сэндвичи / чиабатты / салаты / вафли / дубайский шоколад','по упаковке')
+    +row('Чай матча','вскрытый 5 месяцев')
+    +row('Чизкейк Сан-Себастьян','по упаковке')
+    +zh('🪟 Витрина +21/+25 °C')
+    +row('Кофе Эспрессо смесь (1 кг)','по упаковке')
+    +row('Кофе Декаф (0,25 кг)','3 месяца обжарки · вскрытый 48 часов')
+    +row('Кофе 0,25 кг (кроме декаф)','6 месяцев обжарки · вскрытый 48 часов')
+    +row('Кофе в дрип-пакетах','3 месяца')
+    +row('Какао','3 месяца обжарки · вскрытое 72 часа')
+    +row('Корица молотая','по упаковке')
+    +row('Сахар / Сахарозаменитель','6 месяцев')
+    +row('Круассаны в ассортименте','24 часа от поставки')
+    +row('Соус Creami (1,4 кг)','по упаковке · под стеклянным куполом')
+    +row('Струппи','вскрытые 1 месяц')
+    +row('Chocolate Balls / Cookies / Chocoberry','по упаковке')
+    +row('Сиропы в ассортименте','вскрытые 3 месяца')
+    +row('Мёд','вскрытый 8 месяцев')
+    +row('Заготовка «Батч брю» (термос)','6 часов')
+    +row('Заготовка «Сахарный сироп»','7 суток')
+    +row('Чай на продажу в ассортименте','вскрытый 6 месяцев')
+    +zh('🌡 Общие правила')
+    +row('Температуры','холодильник +2/+4 · морозилка −18/−15 · витрина +21/+25 °C')
+    +row('Влажность / свет','не более 65% · не под прямыми лучами')
+    +row('Шоколадосодержащее','при >25 °C в помещении — хранить в холодильнике')
+    +row('Вторичный срок','не может превышать первичный');
+  h+=sec('🧊','Сроки хранения (полная таблица)',stor);
   // Ступени
   var st='';SERVICE_STEPS.forEach(function(s){st+=row(s.n+'. '+s.t,(s.d||'')+(s.e?' · '+s.e:''));});
   h+=sec('📋','Ступени обслуживания (7)',st);
@@ -2041,7 +2086,13 @@ function rMMain(m,b){
     : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
   h+=rolePill;
 
-  // Стандарт обслуживания kartı kaldırıldı — içerik artık «Справочник Caffelito»da (Задачи sekmesi).
+  // Сертификация бариста — экзамен/сертификат (Стандарт yerine, ana ekrandan)
+  h+='<div class="loan-card" onclick="openCert()" style="border-color:var(--gold);background:var(--gold-bg)">'
+    +'<div class="loan-l"><div class="loan-i">🎓</div>'
+    +'<div><div class="loan-t">Сертификация бариста</div>'
+    +'<div class="loan-s">Экзамен Caffelito · сертификат + 1 000 000</div></div></div>'
+    +'<div class="loan-arr">›</div>'
+  +'</div>';
 
   // ⚠️ Aktif vardiya kartı / Başlat butonu artık ayrı «Смена» tab'ında.
   // Burada sadece kısa bilgilendirme:
@@ -2631,6 +2682,7 @@ function rMStandard(m,b){
   else{b.innerHTML='<button class="mbtn grn" onclick="ackStandard()">✅ Я ознакомлен со стандартом</button>';}
 }
 function openReference(){tab='zadachi';sub='__ref__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
+function openCert(){tab='zadachi';sub='__game__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
 function ackStandard(){
   STD_ACK=true;
   STD_ACKS=STD_ACKS||[];STD_ACKS.unshift({name:MY_NAME,at:new Date().toISOString()});
@@ -3147,17 +3199,21 @@ function rMTips(m,b){
 
   // Toplam
   const calc=calcTipPlan();
-  h+='<div class="sf-total">'
-    +'<div class="sf-tot-row"><span>Получателей</span><span>'+calc.cnt+'</span></div>'
-    +'<div class="sf-tot-row"><span>Сумма</span><span id="tpTotal">'+fmt(calc.total)+' сум</span></div>'
-    +(calc.cnt>0&&tipDraft.mode==='equal'?'<div class="sf-tot-row"><span>Каждому</span><span>+'+fmt(calc.per)+' сум</span></div>':'')
-    +'<div class="sf-tot-big"><span>ИТОГО</span><span>+'+fmt(calc.sum)+' сум</span></div>'
-  +'</div>';
+  h+='<div class="sf-total" id="tpSummary">'+tipSummaryInner(calc)+'</div>';
 
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='block';
-  const ok=calc.cnt>0&&calc.sum>0;
-  b.innerHTML='<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="saveTips()">'+(ok?'💝 Раздать +'+fmt(calc.sum)+' сум':'Введите сумму и выберите бариста')+'</button>';
+  b.innerHTML=tipButtonInner(calc);
+}
+function tipSummaryInner(calc){
+  return '<div class="sf-tot-row"><span>Получателей</span><span>'+calc.cnt+'</span></div>'
+    +'<div class="sf-tot-row"><span>Сумма</span><span>'+fmt(calc.total)+' сум</span></div>'
+    +(calc.cnt>0&&tipDraft.mode==='equal'?'<div class="sf-tot-row"><span>Каждому</span><span>+'+fmt(calc.per)+' сум</span></div>':'')
+    +'<div class="sf-tot-big"><span>ИТОГО</span><span>+'+fmt(calc.sum)+' сум</span></div>';
+}
+function tipButtonInner(calc){
+  var ok=calc.cnt>0&&calc.sum>0;
+  return '<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="saveTips()">'+(ok?'💝 Раздать +'+fmt(calc.sum)+' сум':'Введите сумму и выберите бариста')+'</button>';
 }
 function toggleTipTarget(uid){
   if(tipDraft.distributions[uid]!==undefined)delete tipDraft.distributions[uid];
@@ -3180,7 +3236,8 @@ function calcTipPlan(){
 }
 function recalcTips(){
   const calc=calcTipPlan();
-  const e=document.getElementById('tpTotal');if(e)e.textContent=fmt(calc.total)+' сум';
+  const s=document.getElementById('tpSummary');if(s)s.innerHTML=tipSummaryInner(calc);
+  const bt=document.getElementById('bot');if(bt)bt.innerHTML=tipButtonInner(calc);
 }
 function saveTips(){
   const calc=calcTipPlan();
@@ -3730,7 +3787,7 @@ function addNewDessert(){
    ═══════════════════════════════════════ */
 const RT_RECIPES=[
   {n:'Эспрессо',i:[['Молотый кофе','18 г']]},
-  {n:'Американо 150мл',i:[['Эспрессо','36–40 г'],['Горячая вода','90 мл']]},
+  {n:'Американо 200мл',i:[['Эспрессо','36–40 г'],['Горячая вода','90 мл']]},
   {n:'Американо 300мл',i:[['Эспрессо','36–40 г'],['Горячая вода','240 мл']]},
   {n:'Американо 400мл',i:[['Эспрессо','36–40 г'],['Горячая вода','340 мл']]},
   {n:'Американо 500мл',i:[['Эспрессо','54–60 г'],['Горячая вода','410 мл']]},
@@ -3780,7 +3837,12 @@ const RT_RECIPES=[
   {n:'Дрип кофе 200мл',i:[['Дрип кофе в ассортименте','1 шт'],['Горячая вода','180 мл']]},
   {n:'Айс дрип кофе 300мл',i:[['Дрип кофе в ассортименте','1 шт'],['Горячая вода','180 мл'],['Лед','100 мл']]},
   {n:'Айс батч брю 300мл',i:[['Заготовка "Холодный батч"','130 мл'],['Сироп в ассортименте','5 мл'],['Лед','100 г']]},
-  {n:'Айс батч брю 500мл',i:[['Заготовка "Холодный батч"','260 мл'],['Сироп в ассортименте','10 мл'],['Лед','150 г']]}
+  {n:'Айс батч брю 500мл',i:[['Заготовка "Холодный батч"','260 мл'],['Сироп в ассортименте','10 мл'],['Лед','150 г']]},
+  {n:'Франпело помело 400мл',i:[['Эспрессо','36–40 г'],['Молоко 3,2%','80 г'],['Джем помело красное','50 г'],['Лёд','200 г'],['Взбитые сливки','30 г'],['Топинг шоколадный','10 г']]},
+  {n:'Матча кокос-помело 400мл',i:[['Матча','2 г'],['Горячая вода','30 г'],['Лёд','200 г'],['Молоко кокосовое','200 г'],['Джем помело красное','20 г']]},
+  {n:'Айс ти личи-кокос 400мл',i:[['Зелёный чай','200 г'],['Лёд','150 г'],['Джем личи','50 г'],['Желе кокосовое','30 г'],['Лимон','20 г'],['Мята','1 г']]},
+  {n:'Матча бамбл с фисташкой 400мл',i:[['Матча','2 г'],['Горячая вода','30 г'],['Апельсиновый сок','200 г'],['Сироп фисташка','20 г'],['Лёд','150 г']]},
+  {n:'Айс латте кокос-фисташка 400мл',i:[['Эспрессо','36–40 г'],['Молоко 3,2%','200 г'],['Желе кокосовое','30 г'],['Сироп фисташка','30 г'],['Лёд','200 г']]}
 ];
 const RT_LEVELS=[
   {n:1,t:'Новичок',d:'Простые вопросы',q:8,mix:{q1:1,q2:0,q3:0},pass:70},
