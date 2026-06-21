@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062140;
+var APP_BUILD=2026062141;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2086,13 +2086,15 @@ function rMMain(m,b){
     : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
   h+=rolePill;
 
-  // Сертификация бариста — экзамен/сертификат (Стандарт yerine, ana ekrandan)
-  h+='<div class="loan-card" onclick="openCert()" style="border-color:var(--gold);background:var(--gold-bg)">'
-    +'<div class="loan-l"><div class="loan-i">🎓</div>'
-    +'<div><div class="loan-t">Сертификация бариста</div>'
-    +'<div class="loan-s">Экзамен Caffelito · сертификат + 1 000 000</div></div></div>'
-    +'<div class="loan-arr">›</div>'
-  +'</div>';
+  // Сертификация бариста — экзамен/сертификат (barista ana ekrandan; owner — из Бухгалтерии)
+  if(MY_ROLE!=='owner'){
+    h+='<div class="loan-card" onclick="openCert()" style="border-color:var(--gold);background:var(--gold-bg)">'
+      +'<div class="loan-l"><div class="loan-i">🎓</div>'
+      +'<div><div class="loan-t">Сертификация бариста</div>'
+      +'<div class="loan-s">Экзамен Caffelito · сертификат + 1 000 000</div></div></div>'
+      +'<div class="loan-arr">›</div>'
+    +'</div>';
+  }
 
   // ⚠️ Aktif vardiya kartı / Başlat butonu artık ayrı «Смена» tab'ında.
   // Burada sadece kısa bilgilendirme:
@@ -2153,7 +2155,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
-        +'<div class="own-btn" onclick="mView=\'standard\';render()"><div class="own-btn-i">📖</div><div class="own-btn-t">Стандарт</div>'+(STD_ACKS&&STD_ACKS.length?'<div class="own-btn-s">'+STD_ACKS.length+'</div>':'')+'</div>'
+        +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
