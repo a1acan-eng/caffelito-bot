@@ -278,7 +278,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .qb:active{background:rgba(0,0,0,.06);transform:scale(.92)}
 .qb.m{color:var(--red)}
 .qb.p{color:var(--green)}
-.qv{min-width:34px;text-align:center;font-size:15px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums;cursor:pointer;padding:6px 4px;border-radius:6px;user-select:none}
+.qv{min-width:34px;text-align:center;font-size:15px;font-weight:800;color:var(--t1);font-variant-numeric:tabular-nums;cursor:pointer;padding:6px 4px;border-radius:var(--r3);user-select:none}
 .qv:active{background:rgba(0,0,0,.08)}
 .qv.z{color:var(--t3);font-weight:600}
 .qv.editing{background:#fff;border:1.5px solid var(--gold);outline:none;width:50px}
@@ -358,16 +358,16 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .stat-s{font-size:9px;color:var(--t3);font-weight:600}
 /* ─── Settings tabs ─── */
 .set-tabs{display:flex;gap:4px;background:var(--card2);padding:4px;border-radius:10px;margin-bottom:12px}
-.set-tab{flex:1;padding:8px 6px;text-align:center;font-size:11px;font-weight:700;color:var(--t2);border-radius:7px;cursor:pointer;transition:all .15s}
+.set-tab{flex:1;padding:8px 6px;text-align:center;font-size:11px;font-weight:700;color:var(--t2);border-radius:var(--r3);cursor:pointer;transition:all .15s}
 .set-tab.on{background:#fff;color:var(--t1);box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .set-row{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:5px;gap:10px}
 .set-row-l{flex:1;min-width:0}
 .set-row-t{font-size:13px;font-weight:700;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .set-row-s{font-size:10px;color:var(--t3);margin-top:1px;font-weight:500}
-.set-input{padding:7px 9px;border:1px solid var(--border2);border-radius:7px;font-family:inherit;font-size:12px;font-weight:700;width:90px;text-align:right;outline:none;color:var(--t1);background:#fff;font-variant-numeric:tabular-nums}
+.set-input{padding:7px 9px;border:1px solid var(--border2);border-radius:var(--r3);font-family:inherit;font-size:12px;font-weight:700;width:90px;text-align:right;outline:none;color:var(--t1);background:#fff;font-variant-numeric:tabular-nums}
 .set-input:focus{border-color:var(--gold)}
 .set-input.wide{width:140px;text-align:left}
-.set-save{padding:7px 11px;border:none;border-radius:7px;background:var(--gold);color:#1a1a1a;font-family:inherit;font-size:11px;font-weight:800;cursor:pointer;flex-shrink:0}
+.set-save{padding:7px 11px;border:none;border-radius:var(--r3);background:var(--gold);color:#1a1a1a;font-family:inherit;font-size:11px;font-weight:800;cursor:pointer;flex-shrink:0}
 .set-save:active{transform:scale(.95)}
 .log-row{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 11px;margin-bottom:4px;font-size:11px;line-height:1.4}
 .log-h{display:flex;justify-content:space-between;font-weight:700;color:var(--t1)}
@@ -467,7 +467,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .rt-exam-c{flex:1;min-width:0;color:#fff}
 .rt-exam-t{font-size:15px;font-weight:800;letter-spacing:.3px}
 .rt-exam-s{font-size:11px;font-weight:600;color:rgba(255,255,255,.78);margin-top:3px;line-height:1.4}
-.rt-exam-last{font-size:11px;font-weight:700;margin-top:5px;padding:2px 8px;border-radius:6px;display:inline-block}
+.rt-exam-last{font-size:11px;font-weight:700;margin-top:5px;padding:2px 8px;border-radius:var(--r3);display:inline-block}
 .rt-exam-last.ok{background:rgba(16,185,129,.25);color:#a7f3d0}
 .rt-exam-last.no{background:rgba(239,68,68,.25);color:#fca5a5}
 .rt-exam-lock{font-size:10px;font-weight:600;color:#fbbf24;margin-top:5px}
@@ -550,7 +550,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .rt-an-g-v{font-size:14px;font-weight:800;color:var(--t1)}
 .rt-an-g-k{font-size:9px;font-weight:700;color:var(--t3);letter-spacing:.3px;margin-top:1px}
 .rt-an-trend{display:flex;gap:3px;align-items:center;flex-wrap:wrap;margin-top:4px}
-.rt-an-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--card2);color:var(--t3);border:1px solid var(--border2)}
+.rt-an-chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:var(--r3);background:var(--card2);color:var(--t3);border:1px solid var(--border2)}
 .rt-an-chip.ok{background:#ecfdf5;color:#065f46;border-color:#10b98166}
 .rt-an-chip.no{background:#fef2f2;color:#991b1b;border-color:#ef444466}
 .rt-an-last{font-size:10px;color:var(--t3);margin-top:6px;font-weight:600}
@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062133;
+var APP_BUILD=2026062134;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
