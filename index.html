@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026061827;
+var APP_BUILD=2026061828;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1301,7 +1301,7 @@ function render(){
   if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
   if(tab==='shift'){rShift(m,b)}
   else if(tab==='order'){cat?rOC(m,b):rOCs(m,b)}
-  else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub?rTL(m,b):rTM(m,b))}
+  else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub==='__ref__'?rReference(m,b):(sub?rTL(m,b):rTM(m,b)))}
   else if(tab==='salary'){rM(m,b)}
   else rR(m,b);
   // View/sub-view/tab değiştiyse sayfayı en üste kaydır —
@@ -1424,7 +1424,9 @@ function rTM(m,b){
       restKeys.concat(lastKeys).forEach(function(k){h+=buildUCard(k,src,todayKey,false);});
     }
   } else {
-    // Тренажёр рецептов kartı kaldırıldı (kullanıcı isteği) — giriş noktası yok.
+    // Тренажёр + Справочник giriş kartları
+    h+='<div class="card" onclick="sub=\'__game__\';render()" style="border-color:var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">Тренажёр и зачёт</div><div class="card-sub">Обучение играя + экзамен · приз 1 000 000</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    h+='<div class="card" onclick="sub=\'__ref__\';render()"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
     if(edit)h+='<div class="add-row"><input class="add-inp" id="ns" placeholder="Новый раздел"><button class="add-btn" onclick="aS()">+</button></div>';
     Object.keys(src).forEach(function(k){
       const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
@@ -1433,6 +1435,35 @@ function rTM(m,b){
   }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+}
+
+// ── 📖 Справочник Caffelito (referans — okuma) ──
+function rReference(m,b){
+  b.style.display='none';
+  function sec(ic,title,inner){return '<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:14px">'+ic+' '+title+'</summary><div style="margin-top:8px">'+inner+'</div></details>';}
+  function row(t,d){return '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:13px"><b>'+escH(t)+'</b>'+(d?'<div style="font-size:12px;color:var(--t2);margin-top:1px">'+escH(d)+'</div>':'')+'</div>';}
+  var h='<button class="back" onclick="sub=null;render()">‹ Назад</button>';
+  h+='<div class="sec">📖 Справочник Caffelito</div>';
+  h+='<div class="refresh-hint" style="margin-top:0">Рецепты, сроки хранения и стандарты. Нажми на раздел.</div>';
+  // Рецепты
+  var reci='';RT_RECIPES.forEach(function(r){reci+=row(r.n, r.i.map(function(x){return x[0]+' '+x[1]}).join(' · '));});
+  h+=sec('☕','Рецепты ('+RT_RECIPES.length+')',reci);
+  // Эспрессо/параметры
+  h+=sec('⚡','Эспрессо и параметры','<div style="font-size:13px;line-height:1.8">Молотый кофе: <b>17,8–18,3 г</b><br>Экстракция: <b>23–28 сек</b><br>Выход: <b>36–40 г</b> (≈60 мл)<br>Температура экстракции: <b>92–96 °C</b><br>Взбивание молока: <b>60–70 °C</b><br>Batch Brew: <b>120 г кофе / 2 л воды</b> (7–8 мин)<br>Брендированный чай: настоять <b>3–4 мин</b></div>');
+  // Сроки хранения
+  var stor=row('Молоко 3,2%','24 часа')+row('Растительное молоко','48 часов')+row('Безлактозное молоко','96 часов')+row('Сливки (откр.)','48 часов')+row('Какао (откр.)','72 часа')+row('Сок (откр.)','24 часа')+row('Кофе декаф (откр.)','48 часов')+row('Заготовка «Батч брю» (термос)','6 часов')+row('Заготовка «Холодный батч»','7 дней')+row('Заготовка «Взбитые сливки»','7 суток')+row('Заготовка «Охлаждённый чай»','24 часа')+row('Лёд герметичный','30 дней')+row('Лёд негерметичный','24 часа')+row('Чай матча','5 месяцев')+row('Мёд (откр.)','8 месяцев')+row('Температуры','холодильник +2/+4 · морозилка −18/−15 · витрина +21/+25 °C')+row('Влажность','не более 65%');
+  h+=sec('🧊','Сроки хранения',stor);
+  // Ступени
+  var st='';SERVICE_STEPS.forEach(function(s){st+=row(s.n+'. '+s.t,(s.d||'')+(s.e?' · '+s.e:''));});
+  h+=sec('📋','Ступени обслуживания (7)',st);
+  // Санитария
+  h+=sec('🧼','Санитария','<div style="font-size:13px;line-height:1.7">Ротация <b>FIFO</b> (первым — старший срок).<br>Одна открытая упаковка (две — нарушение).<br>Разморозка только в холодильнике <b>+2/+4</b> (не на мармите/в воде).<br>Чистая посуда <b>≥0,5 м</b> от пола, одноразовая <b>≥0,2 м</b>.<br>Поверхности дезинфицировать <b>≥раз в час</b>.<br>Тряпки: 2 угла — поверхности · 1 угол — оборудование · целая — форсунки.<br>Аллергены: молоко, орехи, мёд, клубника/киви, морепродукты.</div>');
+  // Внешний вид
+  h+=sec('👤','Внешний вид','<div style="font-size:13px;line-height:1.7">Униформа чистая/выглаженная, ежедневно.<br>Борода <b>≤2 см</b>. Ноготь <b>≤2 мм</b>, лак запрещён (гель-лак ок).<br>Запрещено: парфюм, жвачка, наушники, украшения (кроме крестика/венчального).<br>Обувь закрытая, нескользящая.<br>Заряд устройств в течение дня <b>≥45%</b>.</div>');
+  // Ледогенератор
+  h+=sec('❄️','Ледогенератор','<div style="font-size:13px;line-height:1.7">Фасовка <b>каждый час</b>, чистые перчатки + совок.<br>Срок: герметичный <b>30 дней</b>, негерметичный <b>24 часа</b>, при −15/−18 °C.<br>Ротация. Не трогать лёд руками.<br>Раз в неделю — полная чистка (уксус/лимонная кислота 1:10, 10–15 мин).</div>');
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
 }
 
 function buildUCard(k,src,todayKey,highlight){
