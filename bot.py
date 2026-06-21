@@ -3475,6 +3475,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"Результат: *{score}%* ({correct}/{total})\n"
                     f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
                 )
+                if passed:
+                    msg += "\n\n💰 *Приз: 1 000 000 сум* — выплатите бариста через ✅ Выплатить."
                 await context.bot.send_message(inv["owner_id"], msg, parse_mode="Markdown")
             except Exception as e:
                 logger.warning(f"exam finish notify failed: {e}")
@@ -3482,7 +3484,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 if passed:
                     await update.message.reply_text(
-                        f"🏆 *Зачёт сдан!* {score}%\n\nМолодец!", parse_mode="Markdown")
+                        f"🏆 *Зачёт сдан!* {score}%\n\n💰 Приз *1 000 000 сум* — шеф скоро выплатит. Молодец!",
+                        parse_mode="Markdown")
                 else:
                     await update.message.reply_text(f"💪 Не сдан · {score}%\n\nПродолжайте тренироваться.")
             except Exception:
