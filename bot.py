@@ -3455,6 +3455,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 pass
 
+        # ─── Owner: sertifikayı geri al (yanlışlıkla/şüpheli geçen barista) ───
+        elif action == "cert_revoke":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может отзывать сертификат.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            if not target_id:
+                return
+            # Geçmiş başarılı sınavları sıfırla → artık sertifikalı sayılmaz; yeni sınav atanabilir
+            db.execute("UPDATE rt_exams SET passed=0 WHERE user_id=? AND passed=1", (target_id,))
+            db.execute("UPDATE rt_exam_invites SET status='revoked' WHERE barista_id=? AND status IN ('pending','active')", (target_id,))
+            db.commit()
+            log_action(db, "cert_revoke", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id), {})
+            try:
+                await context.bot.send_message(
+                    target_id,
+                    "⚠️ *Сертификат отозван*\n\nВладелец отозвал ваш сертификат Caffelito. "
+                    "При необходимости вы сможете пройти сертификационный экзамен заново.",
+                    parse_mode="Markdown")
+            except Exception:
+                pass
+
         # ─── Barista: resmi sınavı bitirir ───
         elif action == "exam_finish":
             db = get_db()
