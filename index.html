@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062135;
+var APP_BUILD=2026062136;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1425,7 +1425,7 @@ function rTM(m,b){
     }
   } else {
     // Тренажёр + Справочник giriş kartları
-    h+='<div class="card" onclick="sub=\'__game__\';render()" style="border-color:var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">Тренажёр и зачёт</div><div class="card-sub">Обучение играя + экзамен · приз 1 000 000</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    h+='<div class="card" onclick="sub=\'__game__\';render()" style="border-color:var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">Сертификация бариста</div><div class="card-sub">Программа Caffelito · сертификат + 1 000 000</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
     h+='<div class="card" onclick="sub=\'__ref__\';render()"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
     if(edit)h+='<div class="add-row"><input class="add-inp" id="ns" placeholder="Новый раздел"><button class="add-btn" onclick="aS()">+</button></div>';
     Object.keys(src).forEach(function(k){
@@ -3890,39 +3890,35 @@ function rGame(m,b){
   const gs=getGameState();
   if(!RT){
     let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
-    h+='<div class="rt-hero"><div class="rt-hero-ic">🎯</div><div class="rt-hero-t">Тренажёр рецептов</div><div class="rt-hero-s">Изучай рецептуру играя · Caffelito</div></div>';
-    h+='<div class="rt-stats"><div class="rt-stat"><div class="rt-stat-v">'+gs.level+'</div><div class="rt-stat-k">УРОВЕНЬ</div></div><div class="rt-stat"><div class="rt-stat-v">'+gs.xp+'</div><div class="rt-stat-k">XP</div></div><div class="rt-stat"><div class="rt-stat-v">'+gs.bestStreak+'</div><div class="rt-stat-k">СЕРИЯ</div></div></div>';
-    h+='<div class="sec">Уровни</div><div class="rt-levels">';
-    RT_LEVELS.forEach(function(L){
-      const locked=L.n>gs.maxLevel,done=L.n<gs.maxLevel;
-      const cls='rt-lvl'+(locked?' locked':'')+(done?' done':'');
-      const badge=locked?'🔒':(done?'✓':'▶');
-      h+='<div class="'+cls+'" onclick="'+(locked?'':'rtStart('+L.n+')')+'"><div class="rt-lvl-badge">'+badge+'</div><div class="rt-lvl-n">УР. '+L.n+'</div><div class="rt-lvl-t">'+L.t+'</div><div class="rt-lvl-s">'+L.d+' · '+L.q+' вопр.</div></div>';
-    });
-    h+='</div>';
-    // Resmi sınav bilgi kartı — sadece owner davet edebilir, kullanıcı kendi başlatamaz
+    h+='<div class="rt-hero"><div class="rt-hero-ic">🎓</div><div class="rt-hero-t">Сертификация бариста</div><div class="rt-hero-s">Caffelito · это не игра, а программа сертификации</div></div>';
+    h+='<div class="alert" style="text-align:center;font-size:13px"><b>🏅 Сертификат + 1 000 000 сум</b> — за сдачу экзамена на 100%</div>';
+    if(examShouldOpen()){
+      h+='<div class="card today-card" onclick="examOpen()"><div class="card-left"><div class="card-icon today-icon">▶️</div><div class="card-info"><div class="card-title">Начать сертификационный экзамен</div><div class="card-sub">Назначен владельцем · открывается 1 раз</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    }
+    h+='<div class="sec">Как получить сертификат</div>';
+    [['📚','Изучите материалы','рецепты · сроки · стандарты'],['🥤','Выучите рецептуру','все напитки Caffelito'],['🧊','Сроки и условия хранения','что и сколько хранится'],['📋','Стандарты смены','открытие · ведение · закрытие · сервис · чистота · To-Go'],['📝','Сдайте экзамен','когда назначит владелец']].forEach(function(s,i){h+='<div class="item"><div class="item-left"><div class="item-name">'+s[0]+'  '+(i+1)+'. '+s[1]+'</div><div class="item-note" style="font-style:normal">'+s[2]+'</div></div></div>';});
+    h+='<div class="sec">Правила</div>';
+    h+='<div class="rcard"><div style="font-size:13px;line-height:1.85">• Экзамен открывается <b>только 1 раз</b>.<br>• Для сдачи нужно <b>100%</b>.<br>• <b>Любая ошибка</b> — экзамен не сдан.<br>• Приз <b>1 000 000 сум</b> начисляется автоматически при 100%.</div></div>';
+    h+='<div class="sec">Что входит в экзамен</div>';
+    h+='<div class="rcard"><div style="font-size:13px;line-height:1.85">Рецепты · сроки хранения · сроки годности · открытие · контроль смены · стандарты чистоты · зона To-Go · сервис гостя · закрытие — и другие стандарты Caffelito.</div></div>';
+    h+='<div class="sec">Подготовка</div>';
+    h+='<div class="card" onclick="openReference()" style="border-color:var(--gold-border)"><div class="card-left"><div class="card-icon">📚</div><div class="card-info"><div class="card-title">Изучить материалы</div><div class="card-sub">Полный справочник Caffelito</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    h+='<div class="card" onclick="rtStartExam()"><div class="card-left"><div class="card-icon">📝</div><div class="card-info"><div class="card-title">Пробный тест</div><div class="card-sub">Тренировка · без приза, для подготовки</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    // Son sınav/тест sonucu (barista)
     if(MY_ROLE!=='owner'){
-      h+='<div class="sec" style="margin-top:18px">🎓 Официальный зачёт</div>';
-      h+='<div class="rt-exam-card rt-exam-locked" style="cursor:default">';
-      h+='<div class="rt-exam-l"><div class="rt-exam-ic">🏅</div></div>';
-      h+='<div class="rt-exam-c">';
-      h+='<div class="rt-exam-t">Зачётная сессия</div>';
-      h+='<div class="rt-exam-s">Запускается шефом удалённо.<br>Тренируйтесь в уровнях, чтобы быть готовым.</div>';
+      if(!examShouldOpen())h+='<div class="rt-exam-last no" style="display:block;text-align:center;margin-top:12px;background:var(--card2);color:var(--t2)">Экзамен назначает владелец, когда вы будете готовы</div>';
       const lastExam=getLastExam();
       if(lastExam){
         const dt=new Date(lastExam.date);
         const dStr=dt.getDate()+'.'+String(dt.getMonth()+1).padStart(2,'0')+'.'+dt.getFullYear();
-        h+='<div class="rt-exam-last '+(lastExam.passed?'ok':'no')+'">'+(lastExam.passed?'🏆 Последний сдан':'❌ Не сдан')+' · '+lastExam.score+'% · '+dStr+'</div>';
+        h+='<div class="rt-exam-last '+(lastExam.passed?'ok':'no')+'" style="display:block;text-align:center;margin-top:8px">'+(lastExam.passed?'🏆 Сдан на':'Последний тест')+' '+lastExam.score+'% · '+dStr+'</div>';
       }
-      h+='</div>';
-      h+='<div class="rt-exam-r">⏳</div>';
-      h+='</div>';
     }
-    // Owner için analytics bölümü
+    // Owner: sertifikasyon sınavı atama
     if(MY_ROLE==='owner'&&BARISTAS&&BARISTAS.length){
       const trainees=BARISTAS.filter(x=>!x.arch);
-      h+='<div class="sec" style="margin-top:18px">🎯 Назначить зачёт</div>';
-      h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Удалённый запуск экзамена · бариста получит уведомление</div>';
+      h+='<div class="sec" style="margin-top:18px">Назначить экзамен бариста</div>';
+      h+='<div class="rt-hero-s" style="margin:-6px 0 10px;padding:0 4px;font-size:11px;color:var(--t3);text-align:left">Сертификационный экзамен · бариста получит уведомление</div>';
       trainees.forEach(function(bar){
         if(bar.id===MY_UID)return;
         h+='<div class="card" onclick="examInvite('+bar.id+',\''+esc(bar.n)+'\')"><div class="card-left"><div class="card-icon">🎓</div><div class="card-info"><div class="card-title">'+escH(bar.n)+'</div><div class="card-sub">Назначить экзамен</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
@@ -3938,15 +3934,15 @@ function rGame(m,b){
     let h='<div class="rt-ready"'+(RT.mode==='exam'?' style="background:linear-gradient(135deg,#1a1a2e,#0f3460);color:#fff"':'')+'>';
     if(RT.mode==='exam'){
       h+='<div class="rt-ready-ic">🏅</div>';
-      h+='<div class="rt-ready-t" style="color:#ffd257">Зачётная сессия</div>';
-      h+='<div class="rt-ready-s" style="color:rgba(255,255,255,.85)">Подготовка к проверке центра<br>1 попытка в день · результат уйдёт владельцу</div>';
+      h+='<div class="rt-ready-t" style="color:#ffd257">Пробный тест</div>';
+      h+='<div class="rt-ready-s" style="color:rgba(255,255,255,.85)">Подготовка к сертификационному экзамену<br>тренировка · без приза</div>';
       h+='<div class="rt-ready-rules" style="background:rgba(255,255,255,.08);color:#fff">';
       h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">📋</div>30 вопросов · все типы (вкл. провокации)</div>';
-      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">⏱</div>15 секунд на вопрос — без права на потерю</div>';
-      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">🎯</div>Нужно 90% правильных для зачёта</div>';
-      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">🏆</div>При успехе — сертификат на день</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">⏱</div>15 секунд на вопрос</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">🎯</div>На экзамене нужно 100% — тренируйтесь без ошибок</div>';
+      h+='<div class="rt-rule" style="color:#fff"><div class="rt-rule-ic">📚</div>Не уверены — сначала изучите материалы</div>';
       h+='</div>';
-      h+='<button class="rt-go-btn" style="background:#ffd257;color:#3a2800" onclick="rtBegin()">Я готов · Начать зачёт ▸</button>';
+      h+='<button class="rt-go-btn" style="background:#ffd257;color:#3a2800" onclick="rtBegin()">Начать тренировку ▸</button>';
       h+='<button class="rt-cancel" style="color:rgba(255,255,255,.7)" onclick="rtAbort()">Не сейчас</button>';
     } else {
       const cfg=RT_LEVELS[RT.level-1];

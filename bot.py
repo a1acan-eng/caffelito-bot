@@ -3520,36 +3520,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "exam_taken", user.id, user.first_name, user.id, user.first_name,
                        {"score": score, "passed": passed})
-            # Owner'lara bildirim — kim, ne zaman, sonuç
+            # NOT: Bu PROBA (Пробный тест / hazırlık) — owner'a bildirim GİTMEZ (spam olmasın).
+            # Sertifika + 1 000 000 sadece owner-atamalı resmi sınavdan (exam_finish) gelir.
+            # Baristaya sessiz, kısa hazırlık geri bildirimi:
             try:
-                shown = display_name_for(db, user.id, fallback=user.first_name)
-                owners = db.execute("SELECT user_id FROM users WHERE role='owner' AND user_id != ?", (user.id,)).fetchall()
-                msg_owner = (
-                    f"🎓 *Зачёт пройден!*\n\n"
-                    f"Бариста: *{md_safe(shown)}*\n"
-                    f"Результат: *{score}%* ({correct}/{total})\n"
-                    f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
-                )
-                for o in owners:
-                    try:
-                        await context.bot.send_message(o["user_id"], msg_owner, parse_mode="Markdown")
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.warning(f"exam notify owners failed: {e}")
-            # Baristaya tebrik/teselli mesajı
-            try:
-                if passed:
-                    await update.message.reply_text(
-                        f"🏆 *Зачёт сдан!*\n\n"
-                        f"Результат: *{score}%* ({correct}/{total})\n"
-                        f"Молодец — рецептура освоена!",
-                        parse_mode="Markdown")
-                else:
-                    await update.message.reply_text(
-                        f"💪 Зачёт не пройден\n\n"
-                        f"Результат: {score}% ({correct}/{total})\n"
-                        f"Нужно 90%. Тренируйтесь и приходите завтра.")
+                await update.message.reply_text(
+                    f"📝 Пробный тест: {score}% ({correct}/{total})\n"
+                    f"На сертификационном экзамене нужно 100%. Тренируйтесь!")
             except Exception:
                 pass
 
