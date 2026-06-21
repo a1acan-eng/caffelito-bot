@@ -3462,7 +3462,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             correct = int(data.get("correct", 0) or 0)
             total = int(data.get("total", 0) or 0)
             score = int(data.get("score", 0) or 0)
-            passed = 1 if data.get("passed") else 0
+            passed = 1 if score >= 100 else 0  # 1 000 000 prizi için TAM скор şart (sunucu da doğrular)
             now = datetime.now(TZ).isoformat()
             inv = db.execute("SELECT * FROM rt_exam_invites WHERE id=? AND barista_id=?",
                              (invite_id, user.id)).fetchone()

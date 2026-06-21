@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062134;
+var APP_BUILD=2026062135;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4219,7 +4219,7 @@ function examRender(){
     h+='</div>';
     const ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift;
     h+='<button class="ex-go" '+(ready?'':'disabled')+' onclick="examBegin()">Начать зачёт ▸</button>';
-    h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>20 вопросов · бил. (10 сек) + фото (30 сек)</div>';
+    h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>20 вопросов · бил. (10 сек) + фото (30 сек)<br><b style="color:#ffd257">Приз 1 000 000 — только за 100% (без единой ошибки)</b></div>';
     h+='</div>';
   } else if(EX.phase==='question'){
     const q=EX.qs[EX.idx],pct=(EX.idx/EX.qs.length)*100;
@@ -4260,11 +4260,12 @@ function examRender(){
       }
     }
   } else if(EX.phase==='done'){
-    const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=80;
+    const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=100;
     h+='<div class="ex-pre">';
     h+='<div class="ex-pre-ic">'+(passed?'🏆':'💪')+'</div>';
     h+='<div class="ex-pre-t" style="color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'Зачёт сдан':'Не сдан')+'</div>';
     h+='<div class="ex-pre-by">Результат: '+score+'% ('+EX.correct+'/'+total+')</div>';
+    h+='<div style="font-size:12px;margin-top:8px;color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'🎉 Идеально! Приз 1 000 000 сум':'Для приза нужно 100% — без единой ошибки')+'</div>';
     h+='<button class="ex-go" style="margin-top:24px" onclick="examClose()">Закрыть</button>';
     h+='</div>';
   }
@@ -4365,7 +4366,7 @@ function examNext(){
 function examFinish(){
   if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
   if(!EX)return;
-  const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=80;
+  const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=100;
   if(tg&&tg.sendData){
     try{tg.sendData(JSON.stringify({
       action:'exam_finish',invite_id:EX.inviteId,correct:EX.correct,total:total,score:score,passed:passed?1:0
