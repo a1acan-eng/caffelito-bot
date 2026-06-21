@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062130;
+var APP_BUILD=2026062131;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1456,6 +1456,19 @@ function rReference(m,b){
   // Ступени
   var st='';SERVICE_STEPS.forEach(function(s){st+=row(s.n+'. '+s.t,(s.d||'')+(s.e?' · '+s.e:''));});
   h+=sec('📋','Ступени обслуживания (7)',st);
+  // Сервис-дерево (выявление потребности — реальный диалог)
+  var tree='<div style="font-size:13px;line-height:1.85">'
+    +'<b>Гость:</b> «Кофе»<br>'
+    +'<b>Бариста:</b> «Чёрный или с молоком?»<br>'
+    +'<b>Гость:</b> «С молоком»<br>'
+    +'<b>Бариста:</b> «Горячий или холодный?» · «Пробовали сезонные?»<br>'
+    +'<b>Гость:</b> «Сейчас попроще»<br>'
+    +'<b>Бариста:</b> «Капучино, Латте или Раф?»<br>'
+    +'<b>Гость:</b> «Раф»<br>'
+    +'<b>Бариста:</b> «Сделаем ванильным или лавандовым?»<br>'
+    +'<b>Гость:</b> «Лавандовый» ✓'
+    +'<div style="margin-top:8px;color:var(--t2);font-size:12px">Веди гостя по дереву вопросов. Знай стоп-лист до приёма заказа. Если сразу «…и всё» / «больше ничего» — доп. не предлагаем.</div></div>';
+  h+=sec('🌳','Сервис-дерево (выявление потребности)',tree);
   // Санитария
   h+=sec('🧼','Санитария','<div style="font-size:13px;line-height:1.7">Ротация <b>FIFO</b> (первым — старший срок).<br>Одна открытая упаковка (две — нарушение).<br>Разморозка только в холодильнике <b>+2/+4</b> (не на мармите/в воде).<br>Чистая посуда <b>≥0,5 м</b> от пола, одноразовая <b>≥0,2 м</b>.<br>Поверхности дезинфицировать <b>≥раз в час</b>.<br>Тряпки: 2 угла — поверхности · 1 угол — оборудование · целая — форсунки.<br>Аллергены: молоко, орехи, мёд, клубника/киви, морепродукты.</div>');
   // Внешний вид
