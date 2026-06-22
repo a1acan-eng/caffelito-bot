@@ -3508,10 +3508,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Owner'a sonuç bildirimi
             try:
                 shown = display_name_for(db, user.id, fallback=user.first_name)
+                cert_name = (data.get("name") or "").strip()
                 msg = (
                     f"🎓 *Зачёт завершён*\n\n"
                     f"Бариста: *{md_safe(shown)}*\n"
-                    f"Результат: *{score}%* ({correct}/{total})\n"
+                    + (f"На сертификате: *{md_safe(cert_name)}*\n" if cert_name else "")
+                    + f"Результат: *{score}%* ({correct}/{total})\n"
                     f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
                 )
                 if passed:

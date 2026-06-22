@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062143;
+var APP_BUILD=2026062144;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4076,6 +4076,7 @@ function rGame(m,b){
     let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
     h+='<div class="rt-hero"><div class="rt-hero-ic">🎓</div><div class="rt-hero-t">Сертификация бариста</div><div class="rt-hero-s">Caffelito · это не игра, а программа сертификации</div></div>';
     h+='<div class="alert" style="text-align:center;font-size:13px"><b>🏅 Сертификат + 1 000 000 сум</b> — за сдачу экзамена на 100%</div>';
+    h+='<img src="sertifikat.png?v=1" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:12px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
     if(examShouldOpen()){
       h+='<div class="card today-card" onclick="examOpen()"><div class="card-left"><div class="card-icon today-icon">▶️</div><div class="card-info"><div class="card-title">Начать сертификационный экзамен</div><div class="card-sub">Назначен владельцем · открывается 1 раз</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
     }
@@ -4399,7 +4400,7 @@ function examBuild(){
 }
 function examOpen(){
   if(!PENDING_EXAM)return;
-  EX={inviteId:PENDING_EXAM.id,by:PENDING_EXAM.by,phase:'preflight',pre:{battery:false,camera:false,shift:false},qs:[],idx:0,correct:0,answered:false,pickedIdx:-1,timeLeft:0,timePerQ:10,qStartedAt:0,timedOut:false,results:[],photos:{}};
+  EX={inviteId:PENDING_EXAM.id,by:PENDING_EXAM.by,phase:'preflight',pre:{battery:false,camera:false,shift:false},certName:(MY_NAME||''),qs:[],idx:0,correct:0,answered:false,pickedIdx:-1,timeLeft:0,timePerQ:10,qStartedAt:0,timedOut:false,results:[],photos:{}};
   document.getElementById('exam-fs').classList.add('on');
   document.body.style.overflow='hidden';
   if(tg&&tg.expand)try{tg.expand()}catch(e){}
@@ -4424,13 +4425,17 @@ function examRender(){
     h+='<div class="ex-pre-ic">🎓</div>';
     h+='<div class="ex-pre-t">Зачётная сессия</div>';
     h+='<div class="ex-pre-by">Подтвердите готовность</div>';
+    h+='<div style="width:100%;max-width:380px;margin:6px auto 0;text-align:left">'
+      +'<div style="font-size:12px;color:rgba(255,255,255,.7);margin-bottom:5px">Ваше имя и фамилия (для сертификата)</div>'
+      +'<input id="exName" type="text" value="'+escH(EX.certName||'')+'" oninput="EX.certName=this.value;exUpdateGate()" placeholder="например: Хасан Каримов" autocomplete="name" style="width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:#fff;font-family:inherit;font-size:14px;outline:none"></div>';
     h+='<div class="ex-check-list">';
     h+='<label class="ex-check '+(EX.pre.battery?'ok':'')+'"><input type="checkbox" '+(EX.pre.battery?'checked':'')+' onclick="EX.pre.battery=this.checked;examRender()"><span>🔋 Заряд телефона ≥ 50%</span></label>';
     h+='<label class="ex-check '+(EX.pre.camera?'ok':'')+'"><input type="checkbox" '+(EX.pre.camera?'checked':'')+' onclick="EX.pre.camera=this.checked;examRender()"><span>📷 Камера и интернет работают</span></label>';
     h+='<label class="ex-check '+(EX.pre.shift?'ok':'')+'"><input type="checkbox" '+(EX.pre.shift?'checked':'')+' onclick="EX.pre.shift=this.checked;examRender()"><span>🟢 Я нахожусь в смене</span></label>';
     h+='</div>';
-    const ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift;
-    h+='<button class="ex-go" '+(ready?'':'disabled')+' onclick="examBegin()">Начать зачёт ▸</button>';
+    const ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
+    h+='<button id="exGoBtn" class="ex-go" '+(ready?'':'disabled')+' onclick="examBegin()">Начать зачёт ▸</button>';
+    h+='<div id="exNameWarn" style="font-size:11px;color:#fca5a5;margin-top:8px;text-align:center;display:'+((EX.certName||'').trim().length<2?'block':'none')+'">Введите имя — оно появится на сертификате</div>';
     h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>100 вопросов · сложность растёт · бил. (10 сек) + фото (30 сек)<br><b style="color:#ffd257">Приз 1 000 000 — только за 100% (без единой ошибки)</b></div>';
     h+='</div>';
   } else if(EX.phase==='question'){
@@ -4478,10 +4483,25 @@ function examRender(){
     h+='<div class="ex-pre-t" style="color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'Зачёт сдан':'Не сдан')+'</div>';
     h+='<div class="ex-pre-by">Результат: '+score+'% ('+EX.correct+'/'+total+')</div>';
     h+='<div style="font-size:12px;margin-top:8px;color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'🎉 Идеально! Приз 1 000 000 сум':'Для приза нужно 100% — без единой ошибки')+'</div>';
+    if(passed){
+      var cn=escH((EX.certName||MY_NAME||'').trim());
+      var cd=new Date(),cds=String(cd.getDate()).padStart(2,'0')+'.'+String(cd.getMonth()+1).padStart(2,'0')+'.'+cd.getFullYear();
+      h+='<div class="certwrap" style="position:relative;width:100%;max-width:540px;margin:18px auto 0;border-radius:8px;overflow:hidden">'
+        +'<img src="sertifikat.png?v=1" style="width:100%;display:block" onerror="this.closest(\'.certwrap\').style.display=\'none\'">'
+        +'<div style="position:absolute;top:40.5%;left:6%;right:6%;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-weight:700;color:#2a1d00;font-size:clamp(13px,3.7vw,23px);text-shadow:0 1px 0 rgba(255,255,255,.4)">'+cn+'</div>'
+        +'<div style="position:absolute;top:84.5%;left:8%;width:26%;text-align:center;font-family:Georgia,serif;color:#2a1d00;font-size:clamp(9px,2.3vw,13px)">'+cds+'</div>'
+      +'</div>';
+    }
     h+='<button class="ex-go" style="margin-top:24px" onclick="examClose()">Закрыть</button>';
     h+='</div>';
   }
   fs.innerHTML=h;
+}
+function exUpdateGate(){
+  if(!EX)return;
+  var ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
+  var b=document.getElementById('exGoBtn');if(b)b.disabled=!ready;
+  var w=document.getElementById('exNameWarn');if(w)w.style.display=((EX.certName||'').trim().length<2)?'block':'none';
 }
 function examBegin(){
   EX.qs=examBuild();EX.phase='question';EX.idx=0;
@@ -4581,7 +4601,7 @@ function examFinish(){
   const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=100;
   if(tg&&tg.sendData){
     try{tg.sendData(JSON.stringify({
-      action:'exam_finish',invite_id:EX.inviteId,correct:EX.correct,total:total,score:score,passed:passed?1:0
+      action:'exam_finish',invite_id:EX.inviteId,correct:EX.correct,total:total,score:score,passed:passed?1:0,name:(EX.certName||'').trim()
     }));}catch(e){console.warn('exam finish fail',e)}
   }
 }
