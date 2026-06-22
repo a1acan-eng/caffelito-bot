@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062147;
+var APP_BUILD=2026062148;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4091,12 +4091,7 @@ function rGame(m,b){
     let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
     h+='<div class="rt-hero"><div class="rt-hero-ic">🎓</div><div class="rt-hero-t">Сертификация бариста</div><div class="rt-hero-s">Caffelito · это не игра, а программа сертификации</div></div>';
     h+='<div class="alert" style="text-align:center;font-size:13px"><b>🏅 Сертификат + 1 000 000 сум</b> — за сдачу экзамена на 100%</div>';
-    h+='<img src="sertifikat.png?v=2" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:8px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
-    h+='<div class="card" onclick="certPreview=!certPreview;render()" style="cursor:pointer;justify-content:center;font-weight:700;color:var(--gold2)">👁 '+(certPreview?'Скрыть образец':'Показать с моим именем (образец)')+'</div>';
-    if(certPreview){
-      h+='<div style="position:relative;margin-bottom:10px">'+certOverlayHTML(MY_NAME,certDateStr())
-        +'<div style="position:absolute;top:2%;right:2%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;z-index:2">ОБРАЗЕЦ</div></div>';
-    }
+    h+='<img src="sertifikat.png?v=2" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:10px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
     if(examShouldOpen()){
       h+='<div class="card today-card" onclick="examOpen()"><div class="card-left"><div class="card-icon today-icon">▶️</div><div class="card-info"><div class="card-title">Начать сертификационный экзамен</div><div class="card-sub">Назначен владельцем · открывается 1 раз</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
     }
