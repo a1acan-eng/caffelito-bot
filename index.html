@@ -6,7 +6,7 @@
 <title>Caffelito</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700;800;900&display=swap');
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 :root{--bg:#faf8f4;--bg-rgb:250,248,244;--card:#fff;--card2:#f5f2ec;--card3:#ece8e0;--border:rgba(0,0,0,.06);--border2:rgba(0,0,0,.1);--t1:#1a1a1a;--t2:#6b6356;--t3:#a69e92;--gold:#d4a020;--gold2:#c4941a;--gold-bg:rgba(212,160,32,.08);--gold-border:rgba(212,160,32,.2);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.15);--yellow-border:rgba(245,212,75,.4);--green:#16a34a;--green-bg:rgba(22,163,74,.06);--green-border:rgba(22,163,74,.15);--red:#dc2626;--red-bg:rgba(220,38,38,.06);--r:16px;--r2:12px;--shadow:0 1px 2px rgba(0,0,0,.04);--shadow-lg:0 4px 16px rgba(0,0,0,.08);--r3:9px;--rp:999px}
 [data-theme="dark"]{--bg:#0f1115;--bg-rgb:15,17,21;--card:#1a1d24;--card2:#22262f;--card3:#2a2f3a;--border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.1);--t1:#f1f1f1;--t2:#b0b6c0;--t3:#7a8290;--gold:#e6b942;--gold2:#f0c45a;--gold-bg:rgba(230,185,66,.12);--gold-border:rgba(230,185,66,.25);--yellow:#f5d44b;--yellow-bg:rgba(245,212,75,.18);--yellow-border:rgba(245,212,75,.35);--green:#22c55e;--green-bg:rgba(34,197,94,.12);--green-border:rgba(34,197,94,.25);--red:#ef4444;--red-bg:rgba(239,68,68,.12);--shadow:0 1px 2px rgba(0,0,0,.4);--shadow-lg:0 4px 16px rgba(0,0,0,.5)}
@@ -2689,6 +2689,26 @@ function rMStandard(m,b){
 }
 function openReference(){tab='zadachi';sub='__ref__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
 function openCert(){tab='zadachi';sub='__game__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
+// Sertifika — isim/tarih bindirilmiş görsel (spec: ad merkez banda, lüks serif, altın outline/glow, otomatik sığdırma)
+function certOverlayHTML(name,dateStr){
+  return '<div class="certwrap" style="position:relative;width:100%;border-radius:8px;overflow:hidden">'
+    +'<img src="sertifikat.png?v=2" style="width:100%;display:block" onload="fitCertNameIn(this)" onerror="this.closest(\'.certwrap\').style.display=\'none\'">'
+    +'<div style="position:absolute;top:30.5%;left:18%;width:64%;height:11%;display:flex;align-items:center;justify-content:center;overflow:hidden">'
+      +'<span class="certname" style="font-family:\'Playfair Display\',Georgia,\'Times New Roman\',serif;font-weight:800;letter-spacing:.05em;color:#141414;white-space:nowrap;line-height:1;font-size:22px;-webkit-text-stroke:.6px rgba(170,130,30,.55);text-shadow:0 0 10px rgba(201,162,39,.42),0 1px 2px rgba(0,0,0,.28)">'+escH((name||'').trim())+'</span>'
+    +'</div>'
+    +'<div style="position:absolute;top:82%;left:55%;width:18%;text-align:center;font-family:Georgia,serif;color:#1e1600;font-size:clamp(8px,2.1vw,12px)">'+dateStr+'</div>'
+  +'</div>';
+}
+function fitCertNameIn(img){
+  try{
+    var wrap=img.parentElement, span=wrap.querySelector('.certname'); if(!span)return;
+    var box=span.parentElement, maxW=box.clientWidth*0.99, maxH=box.clientHeight*0.99;
+    var lo=8, hi=Math.max(24,box.clientHeight*1.4), best=8;
+    for(var i=0;i<18;i++){var mid=(lo+hi)/2;span.style.fontSize=mid+'px';if(span.scrollWidth<=maxW&&span.scrollHeight<=maxH){best=mid;lo=mid;}else{hi=mid;}}
+    span.style.fontSize=best+'px';
+  }catch(e){}
+}
+function certDateStr(){var d=new Date();return String(d.getDate()).padStart(2,'0')+'.'+String(d.getMonth()+1).padStart(2,'0')+'.'+d.getFullYear();}
 function ackStandard(){
   STD_ACK=true;
   STD_ACKS=STD_ACKS||[];STD_ACKS.unshift({name:MY_NAME,at:new Date().toISOString()});
@@ -4071,16 +4091,11 @@ function rGame(m,b){
     let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
     h+='<div class="rt-hero"><div class="rt-hero-ic">🎓</div><div class="rt-hero-t">Сертификация бариста</div><div class="rt-hero-s">Caffelito · это не игра, а программа сертификации</div></div>';
     h+='<div class="alert" style="text-align:center;font-size:13px"><b>🏅 Сертификат + 1 000 000 сум</b> — за сдачу экзамена на 100%</div>';
-    h+='<img src="sertifikat.png?v=1" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:8px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
+    h+='<img src="sertifikat.png?v=2" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:8px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
     h+='<div class="card" onclick="certPreview=!certPreview;render()" style="cursor:pointer;justify-content:center;font-weight:700;color:var(--gold2)">👁 '+(certPreview?'Скрыть образец':'Показать с моим именем (образец)')+'</div>';
     if(certPreview){
-      var pcn=escH((MY_NAME||'').trim()),pcd=new Date(),pcds=String(pcd.getDate()).padStart(2,'0')+'.'+String(pcd.getMonth()+1).padStart(2,'0')+'.'+pcd.getFullYear();
-      h+='<div class="certwrap" style="position:relative;width:100%;border-radius:8px;overflow:hidden;margin-bottom:10px;border:1px solid var(--border)">'
-        +'<img src="sertifikat.png?v=1" style="width:100%;display:block" onerror="this.closest(\'.certwrap\').style.display=\'none\'">'
-        +'<div style="position:absolute;top:35.5%;left:6%;right:6%;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-weight:700;color:#2a1d00;font-size:clamp(14px,5vw,24px);text-shadow:0 1px 0 rgba(255,255,255,.4)">'+pcn+'</div>'
-        +'<div style="position:absolute;top:82%;left:57.5%;width:18%;text-align:center;font-family:Georgia,serif;color:#2a1d00;font-size:clamp(8px,2.2vw,12px)">'+pcds+'</div>'
-        +'<div style="position:absolute;top:2%;right:2%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px">ОБРАЗЕЦ</div>'
-      +'</div>';
+      h+='<div style="position:relative;margin-bottom:10px">'+certOverlayHTML(MY_NAME,certDateStr())
+        +'<div style="position:absolute;top:2%;right:2%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;z-index:2">ОБРАЗЕЦ</div></div>';
     }
     if(examShouldOpen()){
       h+='<div class="card today-card" onclick="examOpen()"><div class="card-left"><div class="card-icon today-icon">▶️</div><div class="card-info"><div class="card-title">Начать сертификационный экзамен</div><div class="card-sub">Назначен владельцем · открывается 1 раз</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
@@ -4489,13 +4504,7 @@ function examRender(){
     h+='<div class="ex-pre-by">Результат: '+score+'% ('+EX.correct+'/'+total+')</div>';
     h+='<div style="font-size:12px;margin-top:8px;color:'+(passed?'#a7f3d0':'#fca5a5')+'">'+(passed?'🎉 Идеально! Приз 1 000 000 сум':'Для приза нужно 100% — без единой ошибки')+'</div>';
     if(passed){
-      var cn=escH((EX.certName||MY_NAME||'').trim());
-      var cd=new Date(),cds=String(cd.getDate()).padStart(2,'0')+'.'+String(cd.getMonth()+1).padStart(2,'0')+'.'+cd.getFullYear();
-      h+='<div class="certwrap" style="position:relative;width:100%;max-width:540px;margin:18px auto 0;border-radius:8px;overflow:hidden">'
-        +'<img src="sertifikat.png?v=1" style="width:100%;display:block" onerror="this.closest(\'.certwrap\').style.display=\'none\'">'
-        +'<div style="position:absolute;top:35.5%;left:6%;right:6%;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-weight:700;color:#2a1d00;font-size:clamp(14px,5vw,24px);text-shadow:0 1px 0 rgba(255,255,255,.4)">'+cn+'</div>'
-        +'<div style="position:absolute;top:82%;left:57.5%;width:18%;text-align:center;font-family:Georgia,serif;color:#2a1d00;font-size:clamp(8px,2.2vw,12px)">'+cds+'</div>'
-      +'</div>';
+      h+='<div style="max-width:540px;margin:18px auto 0">'+certOverlayHTML(EX.certName||MY_NAME,certDateStr())+'</div>';
     }
     h+='<button class="ex-go" style="margin-top:24px" onclick="examClose()">Закрыть</button>';
     h+='</div>';
