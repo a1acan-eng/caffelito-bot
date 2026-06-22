@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062146;
+var APP_BUILD=2026062147;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2223,7 +2223,6 @@ function rMMain(m,b){
     h+='<div class="hist paid"><div class="hist-l"><div class="hist-d">За '+escH(fmtMonth(period))+'</div></div><div class="hist-r grey">-'+fmt(paid)+'</div></div>';
   }
 
-  h+='<div class="refresh-hint">🔄 Все данные сохраняются в боте — после закрытия не пропадут. Откройте /menu для свежих данных.</div>';
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
 }
@@ -2330,10 +2329,12 @@ function rMShiftEnd(m,b){
   if(zv)h+='<div style="font-size:10px;color:var(--t3);padding:0 4px 4px">📦 Завоз: пришёл заказ (+) · отдали на другую точку (−)</div>';
   var iw=zv?52:64,pw=zv?44:54;
   h+='<div style="display:flex;font-size:10px;color:var(--t3);font-weight:700;padding:0 4px 4px"><div style="flex:1.3">Стакан</div><div style="width:'+iw+'px;text-align:center">Было</div>'+(zv?'<div style="width:52px;text-align:center;color:#2563eb">Завоз</div>':'')+'<div style="width:'+iw+'px;text-align:center">Осталось</div><div style="width:'+pw+'px;text-align:center">Прод.</div></div>';
+  var totalSold=0;
   DRINK_LIST.forEach(function(d){
     var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
     var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
     var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0; // Осталость boşken Прод=0
+    totalSold+=s;
     h+='<div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">'
       +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(d.r)+' / шт</div></div>'
       +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
@@ -2342,25 +2343,16 @@ function rMShiftEnd(m,b){
       +'<div id="es_'+d.id+'" style="width:'+pw+'px;text-align:center;font-weight:800;color:var(--gold)">'+s+'</div>'
     +'</div>';
   });
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--gold-bg);border:1px solid var(--gold-border);border-radius:10px;padding:10px 13px;margin-top:6px;font-weight:800;font-size:14px"><span>🥤 Продано всего</span><span id="esTotalCups" style="color:var(--gold2)">'+totalSold+' шт</span></div>';
   // Склад — kalan kahve çekirdeği (kg). Boş bırakılabilir; girilirse stok uyarısı tetikler (≤3🔴/≤5⚠️/≤8📦).
   h+='<div class="sec">📦 Склад (на конец смены)</div>';
   h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">☕ Кофе в зёрнах (кг)</div><div style="font-size:10px;color:var(--t3)">сколько осталось — для заказа</div></div>'
     +'<input class="set-input" type="number" inputmode="decimal" step="0.1" min="0" value="'+(endDraft.coffeeKg||'')+'" placeholder="напр. 4.5" oninput="endDraft.coffeeKg=this.value"></div>';
   // Tatlılar (kataloğu owner Settings'ten yönetir)
-  h+='<div class="sec">🍰 Десерты за смену <span style="font-weight:500;color:var(--t3);font-size:10px">'+(MY_ROLE==='owner'?'(каталог в Настройках)':'')+'</span></div>';
-  DESSERT_LIST.forEach(function(d){
-    const q=parseInt(endDraft.desserts[d.id])||0;
-    const rate=parseInt(d.r)||DESSERT_RATE;
-    const sub=q*rate;
-    h+='<div class="dr-item '+(q?'has':'')+'">'
-      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(rate)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
-      +'<div class="qty-box">'
-        +'<button class="qb m" onclick="dqDes(\''+d.id+'\',-1)">&minus;</button>'
-        +'<span class="qv '+(q?'':'z')+'" onclick="dqDesManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'·')+'</span>'
-        +'<button class="qb p" onclick="dqDes(\''+d.id+'\',1)">+</button>'
-      +'</div>'
-    +'</div>';
-  });
+  var _dt=parseInt(endDraft.dessertsTotal)||0;
+  h+='<div class="sec">🍰 Десерты / еда — всего за смену</div>';
+  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Всего продано (шт)</div><div style="font-size:10px;color:var(--t3)">сэндвичи + круассаны + шоколад + десерты — одним числом</div></div>'
+    +'<input class="set-input" type="number" inputmode="numeric" min="0" value="'+(_dt||'')+'" placeholder="0" oninput="endDraft.dessertsTotal=parseInt(this.value)||0;recalcEnd()"></div>';
   // ─── Kasa (сменный отчёт): ödemeler + POS + harcamalar + Вышло ───
   h+='<div class="sec">💳 Безналичные оплаты</div>';
   [['click','CLICK'],['payme','PAYME'],['karta','KARTA'],['terminal','TERMINAL']].forEach(function(p){
@@ -2452,17 +2444,18 @@ function recalcEnd(){
   // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
   const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
-  let drinkBonus=0;
+  let drinkBonus=0,drinkSold=0;
   DRINK_LIST.forEach(function(d){
     var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
     var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
     var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;  // Осталость boşsa Продано=0
     endDraft.drinks[d.id]=s;  // Продано = Было + Завоз − Осталось → bonus + сменный отчёт
     var el=document.getElementById('es_'+d.id);if(el)el.textContent=s;
-    drinkBonus+=s*d.r;
+    drinkBonus+=s*d.r; drinkSold+=s;
   });
-  let desBonus=0;
-  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
+  var etc=document.getElementById('esTotalCups');if(etc)etc.textContent=fmt(drinkSold)+' шт';
+  const desN=parseInt(endDraft.dessertsTotal)||0;
+  let desBonus=desN*DESSERT_RATE;
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+drinkBonus+desBonus;
   // Kasa canlı özeti
@@ -2498,15 +2491,16 @@ async function endShiftSave(){
     endDraft.drinks[d.id]=s;
     drinkBonus+=s*d.r;
   });
-  let desBonus=0;
-  DESSERT_LIST.forEach(function(d){desBonus+=(parseInt(endDraft.desserts[d.id])||0)*(parseInt(d.r)||DESSERT_RATE)});
+  const desN=parseInt(endDraft.dessertsTotal)||0;
+  let desBonus=desN*DESSERT_RATE;
+  const _desObj=desN>0?{'Десерты (всего)':desN}:{};
   const bonus=drinkBonus+desBonus;
   const hourly=Math.round(liveH*HOURLY_RATE);
   const total=hourly+bonus;
   const payload={
     action:'shift_end',
     drinks:endDraft.drinks,
-    desserts:endDraft.desserts,
+    desserts:_desObj,
     note:endDraft.note
   };
   if(endDraft.endTime)payload.end_time=endDraft.endTime;
@@ -2520,7 +2514,7 @@ async function endShiftSave(){
     end_time:effEnd.toISOString(),
     hours:Math.round(liveH*100)/100,
     drinks:JSON.stringify(endDraft.drinks),
-    desserts:JSON.stringify(endDraft.desserts),
+    desserts:JSON.stringify(_desObj),
     bonus:bonus,dessert_bonus:desBonus,hourly_pay:hourly,total:total,
     note:endDraft.note,
     created_at:active.start_time
@@ -2538,7 +2532,7 @@ async function endShiftSave(){
   SUMMARY.active=null;
   if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
   if(window._actTimer){clearInterval(window._actTimer);window._actTimer=null}
-  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,desserts:endDraft.desserts,note:endDraft.note,total:total});
+  hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,desserts:_desObj,note:endDraft.note,total:total});
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
