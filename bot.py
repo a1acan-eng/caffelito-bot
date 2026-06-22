@@ -3228,26 +3228,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             rtxt = (f" +{r}" if r > 0 else f" {r}") if r else ""
                             t += f"  <b>{esc_html(str(c.get('n','')))}:    {b}{rtxt} → {o} = {s}</b>\n"
                     t += f"\n  <b>🧮 ИТОГО ПРОДАНО:  {cups_total} шт</b>\n"
-                    t += "━━━━━━━━━━━━━━━━━━━━\n<b>💳 Оплаты</b>\n"
-                    if clk: t += f"  <b>CLICK: {fmt_sum(clk)}</b>\n"
-                    if pay: t += f"  <b>PAYME: {fmt_sum(pay)}</b>\n"
-                    if kar: t += f"  <b>KARTA: {fmt_sum(kar)}</b>\n"
-                    if term: t += f"  <b>TERMINAL: {fmt_sum(term)}</b>\n"
-                    t += f"  <b>Безнал итого: {fmt_sum(cashless)} сум</b>\n"
+                    # POS para mutabakatı KALDIRILDI (onu POS yapıyor) — sadece расходы + günlük bonus
                     if exps:
                         t += "━━━━━━━━━━━━━━━━━━━━\n<b>💸 Расходы</b>\n"
                         for e in exps:
                             t += f"  <b>{esc_html(str(e.get('n','')))}: {fmt_sum(int(e.get('a',0) or 0))}</b>\n"
                         t += f"  <b>Итого расходы: {fmt_sum(exp_total)} сум</b>\n"
-                    t += "━━━━━━━━━━━━━━━━━━━━\n"
-                    t += f"<b>Итого (POS): {fmt_sum(itg)} сум</b>\n"
-                    t += f"<b>Считано (нал.): {fmt_sum(schitano)} сум</b>\n"
-                    t += f"<b>Вышло: {fmt_sum(vsh)} сум</b>\n"
-                    if sdachi:
-                        t += f"<b>На сдачи: {fmt_sum(sdachi)} сум</b>\n"
                     if daily_pay:
-                        t += f"<b>− Зарплата дневная: {fmt_sum(daily_pay)} сум</b>\n"
-                    t += f"<b>💰 КАССА К СДАЧЕ: {fmt_sum(kassa)} сум</b>"
+                        t += "━━━━━━━━━━━━━━━━━━━━\n"
+                        t += f"<b>💵 Дневной бонус: {fmt_sum(daily_pay)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
                     # HEMEN gönderme — önce 'закрыл смену', SONRA bu отчёт gelsin diye buffer'la (shift_end gönderir)
