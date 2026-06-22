@@ -4125,7 +4125,7 @@ async def web_index(request):
 async def web_image(request):
     """nero.jpg gibi yerel görselleri sun."""
     fname = request.match_info.get("fname", "")
-    if fname not in ("nero.jpg",):
+    if fname not in ("nero.jpg", "sertifikat.png"):
         return web.Response(status=404)
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
     if not os.path.exists(path):
@@ -4254,6 +4254,7 @@ async def start_web_server(app):
         web.get("/health", web_health),
         web.get("/api/ver", web_ver),
         web.get("/{fname:.+\\.jpg}", web_image),
+        web.get("/{fname:.+\\.png}", web_image),
         web.post("/api/state", api_state),
         web.post("/api/action", api_action),
         web.post("/api/admin", api_admin),
