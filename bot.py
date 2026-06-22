@@ -523,12 +523,17 @@ def calc_bonus(drinks, prices=None):
 
 
 # ─── Display name (Owner tarafından özel atanmış isim) ───
+def _valid_name(s):
+    # En az 2 karakter VE en az bir harf/rakam olmalı — "•", ".", "-" gibi tek anlamsız ad geçersiz
+    s = (s or "").strip()
+    return s if (len(s) >= 2 and any(c.isalnum() for c in s)) else ""
+
 def display_name_for(db, user_id, fallback=None):
     row = db.execute("SELECT display_name, name FROM users WHERE user_id=?", (user_id,)).fetchone()
-    if row and (row["display_name"] or "").strip():
-        return row["display_name"].strip()
-    if row and row["name"]:
-        return row["name"]
+    if row and _valid_name(row["display_name"]):
+        return _valid_name(row["display_name"])
+    if row and _valid_name(row["name"]):
+        return _valid_name(row["name"])
     return fallback or "Бариста"
 
 
@@ -2322,30 +2327,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     body_lines.append(nm + " " * (maxn - len(nm) + 2) + q)
                 else:
                     body_lines.append(nm + "  " + q)
-            pre_body = esc_html("\n".join(body_lines))
-
-            text = "<b>ЗАКАЗ — CAFFELITO</b>\n"
-            text += f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"<pre>{pre_body}</pre>"
-            text += f"<b>Итого: {total} позиций</b>"
+            header = "<b>ЗАКАЗ — CAFFELITO</b>\n" + f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
+            footer = f"<b>Итого: {total} позиций</b>"
+            esc_lines = [esc_html(x) for x in body_lines]
 
             if group_id:
                 try:
-                    if len(text.encode('utf-8')) <= 4096:
-                        await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
+                    full = header + "<pre>" + "\n".join(esc_lines) + "</pre>" + footer
+                    if len(full.encode('utf-8')) <= 4096:
+                        await context.bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
                     else:
-                        lines_all = text.split('\n')
-                        chunk = ""
-                        for line in lines_all:
-                            test = chunk + line + "\n"
-                            if len(test.encode('utf-8')) > 3900:
-                                if chunk.strip():
-                                    await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
-                                chunk = line + "\n"
-                            else:
-                                chunk = test
-                        if chunk.strip():
-                            await context.bot.send_message(chat_id=int(group_id), text=chunk, parse_mode="HTML")
+                        # Uzun sipariş → satırları gruplara böl, HER parça KENDİ <pre> ile tam mesaj
+                        # (önceki hata: <pre> bloğu bölününce etiket kırılıyordu → Telegram reddediyordu)
+                        batches, cur, clen = [], [], 0
+                        for ln in esc_lines:
+                            if cur and clen + len(ln) + 1 > 3500:
+                                batches.append(cur); cur, clen = [], 0
+                            cur.append(ln); clen += len(ln) + 1
+                        if cur:
+                            batches.append(cur)
+                        n = len(batches)
+                        for i, b in enumerate(batches):
+                            msg = (header if i == 0 else "") + "<pre>" + "\n".join(b) + "</pre>" + (footer if i == n - 1 else "")
+                            await context.bot.send_message(chat_id=int(group_id), text=msg, parse_mode="HTML")
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
