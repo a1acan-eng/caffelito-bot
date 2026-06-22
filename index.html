@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062144;
+var APP_BUILD=2026062145;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4488,8 +4488,8 @@ function examRender(){
       var cd=new Date(),cds=String(cd.getDate()).padStart(2,'0')+'.'+String(cd.getMonth()+1).padStart(2,'0')+'.'+cd.getFullYear();
       h+='<div class="certwrap" style="position:relative;width:100%;max-width:540px;margin:18px auto 0;border-radius:8px;overflow:hidden">'
         +'<img src="sertifikat.png?v=1" style="width:100%;display:block" onerror="this.closest(\'.certwrap\').style.display=\'none\'">'
-        +'<div style="position:absolute;top:40.5%;left:6%;right:6%;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-weight:700;color:#2a1d00;font-size:clamp(13px,3.7vw,23px);text-shadow:0 1px 0 rgba(255,255,255,.4)">'+cn+'</div>'
-        +'<div style="position:absolute;top:84.5%;left:8%;width:26%;text-align:center;font-family:Georgia,serif;color:#2a1d00;font-size:clamp(9px,2.3vw,13px)">'+cds+'</div>'
+        +'<div style="position:absolute;top:35.5%;left:6%;right:6%;text-align:center;font-family:Georgia,\'Times New Roman\',serif;font-weight:700;color:#2a1d00;font-size:clamp(14px,5vw,24px);text-shadow:0 1px 0 rgba(255,255,255,.4)">'+cn+'</div>'
+        +'<div style="position:absolute;top:82%;left:57.5%;width:18%;text-align:center;font-family:Georgia,serif;color:#2a1d00;font-size:clamp(8px,2.2vw,12px)">'+cds+'</div>'
       +'</div>';
     }
     h+='<button class="ex-go" style="margin-top:24px" onclick="examClose()">Закрыть</button>';
