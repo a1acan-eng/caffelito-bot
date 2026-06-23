@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062149;
+var APP_BUILD=2026062150;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -710,13 +710,49 @@ if(tg){
         body:JSON.stringify({initData:initData,data:dataStr})})
         .then(function(r){return r.json();})
         .then(function(res){
-          // İşlem başarılı → app'i tazele (orijinalde sendData app'i kapatıp yeniden açtırıyordu)
-          if(res&&res.ok){setTimeout(function(){location.reload();},700);}
+          // İşlem başarılı → ARKA PLANDA state'i tazele (sayfa yeniden YÜKLENMEZ — flash/scroll sıçraması yok)
+          if(res&&res.ok){setTimeout(refreshState,600);}
           else{console.error('action error',res);}
         })
         .catch(function(e){console.error('action failed',e);if(_origSend)_origSend(dataStr);});
     }catch(e){if(_origSend)_origSend(dataStr);}
   };
+}
+// ─── Arka plan state tazeleme (sayfa reload YOK) — aksiyon sonrası sessiz güncelleme ───
+function refreshState(){
+  try{
+    var initData=(tg&&tg.initData)?tg.initData:'';
+    if(!initData)return; // tarayıcı testinde dokunma
+    fetch(API_BASE+'/api/state',{method:'POST',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify({initData:initData})})
+      .then(function(r){return r.text();})
+      .then(function(txt){
+        if(!txt)return;
+        window.__cf=txt;
+        var P=new URLSearchParams(txt);
+        function J(k,d){try{return JSON.parse(P.get(k)||d)}catch(e){try{return JSON.parse(d)}catch(_){return d}}}
+        MY_UID=parseInt(P.get('uid'))||MY_UID;
+        MY_ROLE=P.get('role')||MY_ROLE;
+        MY_NAME=(P.get('name')||'')||MY_NAME;
+        SUMMARY=J('summary','{}');
+        BARISTAS=J('baristas','[]');
+        RT_SELF=J('rt','{}');
+        try{var _ex=(P.get('exam')||'');PENDING_EXAM=(_ex&&_ex!=='null'&&_ex!=='""')?JSON.parse(_ex):null;}catch(e){}
+        LOANS=J('loans','[]');
+        LOGS=J('logs','[]');
+        KASA_LAST=J('kasa_last','{}');
+        KASA_REPORTS=J('kasa_reports','[]');
+        REP=J('rep','{}');
+        PENDING=J('pending','[]');
+        STD_ACK=(P.get('std_ack')==='1');
+        STD_ACKS=J('std_acks','[]');
+        PRICES=J('prices','{}');
+        DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
+        DESSERT_CAT=J('desserts','[]');
+        DESSERT_LIST=DESSERT_CAT.filter(function(d){return d.active!==0}).map(function(d){return {id:d.id,l:d.label,c:d.icon||'🍮',r:parseInt(d.price)||DESSERT_RATE,active:d.active!==0};});
+        if(typeof render==='function')render();
+      })
+      .catch(function(){});
+  }catch(e){}
 }
 // ─── Passcode auth (Wallet style, client-side SHA-256) ───
 (function(){
