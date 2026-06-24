@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062153;
+var APP_BUILD=2026062154;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1511,7 +1511,11 @@ function rReference(m,b){
     +row('Заготовка «Охлаждённый чай»','24 часа')
     +row('Заготовка «Мята»','до потери органолепт. свойств')
     +row('Заготовка «Холодный батч»','7 дней')
-    +row('Сэндвичи / чиабатты / салаты / вафли / дубайский шоколад','по упаковке')
+    +row('Сэндвичи в ассортименте','по упаковке (вторичный —)')
+    +row('Чиабатты в ассортименте','по упаковке (вторичный —)')
+    +row('Салаты в ассортименте','по упаковке (вторичный —)')
+    +row('Вафли Wafers в ассортименте','по упаковке (вторичный —)')
+    +row('Дубайский шоколад в ассортименте','по упаковке (вторичный —)')
     +row('Чай матча','вскрытый 5 месяцев')
     +row('Чизкейк Сан-Себастьян','по упаковке')
     +zh('🪟 Витрина +21/+25 °C')
