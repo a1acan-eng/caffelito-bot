@@ -385,7 +385,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .tg-sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:all .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
 .tg-sw.on::after{left:18px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.wrap>*{animation:fadeIn .25s ease both}.wrap>*:nth-child(2){animation-delay:.03s}.wrap>*:nth-child(3){animation-delay:.06s}.wrap>*:nth-child(n+4){animation-delay:.09s}
+/* .wrap>* fadeIn KALDIRILDI — her render'da tüm ekranı opacity:0'dan belirtip flash/yanıp-sönme yapıyordu (sadece navigasyonda değil, her butonda) */
 /* ─── Recipe Trainer (Тренажёр рецептов) ─── */
 .rt-card{background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border:1px solid var(--gold-border);border-radius:18px;padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:transform .15s;box-shadow:0 4px 14px rgba(212,160,32,.15)}
 .rt-card:active{transform:scale(.98)}
@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062157;
+var APP_BUILD=2026062158;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
