@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062158;
+var APP_BUILD=2026062159;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4096,12 +4096,35 @@ function rtAllValues(){const s=new Set();RT_RECIPES.forEach(r=>r.i.forEach(x=>s.
 function rtShuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a;}
 function rtPick(a){return a[Math.floor(Math.random()*a.length)];}
 function rtUnit(v){const m=/(г|мл|шт)$/.exec(v);return m?m[1]:'';}
-function rtFakeVals(correct,n){const u=rtUnit(correct),pool=rtAllValues().filter(v=>rtUnit(v)===u&&v!==correct);return rtShuffle(pool).slice(0,n);}
+function rtIsRange(v){return /\d\s*[–-]\s*\d/.test(String(v));}
+function rtFakeRange(correct,n){
+  // "36–40 г" → yakın YANLIŞ aralıklar (38–42, 34–38, 18–23...) — tek sayı değil, aralık olsun
+  var m=/(\d+)\s*[–-]\s*(\d+)\s*(\D.*)?$/.exec(correct);
+  if(!m)return [];
+  var lo=parseInt(m[1]),hi=parseInt(m[2]),unit=(m[3]||'').trim(),span=Math.max(1,hi-lo),out=[],seen={},t=0;
+  seen[lo+'–'+hi]=1;
+  while(out.length<n&&t<50){
+    t++;
+    var nlo=lo+(Math.floor(Math.random()*11)-5); if(nlo<1)continue;       // ±5 kaydır
+    var nhi=nlo+Math.max(1,span+(Math.floor(Math.random()*5)-2));          // span ±2
+    var key=nlo+'–'+nhi; if(seen[key])continue; seen[key]=1;
+    out.push(nlo+'–'+nhi+(unit?' '+unit:''));
+  }
+  return out;
+}
+function rtFakeVals(correct,n){
+  if(rtIsRange(correct)){var rr=rtFakeRange(correct,n);if(rr.length>=n)return rr.slice(0,n);}
+  var u=rtUnit(correct),pool=rtAllValues().filter(function(v){return rtUnit(v)===u&&v!==correct&&!rtIsRange(v);});
+  return rtShuffle(pool).slice(0,n);
+}
 function rtMakeQ(type){
   const r=rtPick(RT_RECIPES);
   if(type==='q1'||(!r.i.length)){
     const ing=rtPick(r.i);
-    const opts=rtShuffle([ing[1],...rtFakeVals(ing[1],3)]);
+    var fakes=rtFakeVals(ing[1],3);
+    // Tuzak: bazı sorulara «не добавляется» şıkkı ekle (ingredient VAR ama bu yanlış cevap)
+    if(Math.random()<0.4&&fakes.length)fakes[Math.floor(Math.random()*fakes.length)]='не добавляется';
+    const opts=rtShuffle([ing[1],...fakes]);
     return{type:'q1',text:'Сколько «'+ing[0]+'» в напитке «'+r.n+'»?',opts:opts,correct:ing[1],hint:r.n};
   }
   if(type==='q2'){
