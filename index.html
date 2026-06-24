@@ -665,7 +665,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062155;
+var APP_BUILD=2026062156;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1210,6 +1210,7 @@ try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORT
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
 let reportRoom=null; // Отчёт oda görünümü (null=menü)
 let certPreview=false; // Сертификация — kendi adıyla örnek sertifika önizleme
+let certBack=null; // Сертификация'ya nereden girildi (geri tuşu oraya dönsün)
 let REP={}; // Отчёт odaları verisi (owner: hepsi, barista: orders+shifts)
 try{REP=JSON.parse((HP.get('rep')||'{}'))}catch(e){REP={}}
 // Onay bekleyen yeni başlayanlar (owner)
@@ -1290,6 +1291,7 @@ function goBack(){
   if(typeof reportRoom!=='undefined'&&reportRoom){reportRoom=null;render();return true}
   if(typeof kasaDetail!=='undefined'&&kasaDetail){kasaDetail=null;render();return true}
   if(typeof mView!=='undefined'&&mView&&mView!=='main'){mView='main';render();return true}
+  if(tab==='zadachi'&&sub==='__game__'&&typeof certBack!=='undefined'&&certBack){certBackGo();return true}
   if(typeof sub!=='undefined'&&sub){sub=null;render();return true}
   if(typeof cat!=='undefined'&&cat){cat=null;render();return true}
   return false;
@@ -2721,7 +2723,8 @@ function rMStandard(m,b){
   else{b.innerHTML='<button class="mbtn grn" onclick="ackStandard()">✅ Я ознакомлен со стандартом</button>';}
 }
 function openReference(){tab='zadachi';sub='__ref__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
-function openCert(){tab='zadachi';sub='__game__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
+function openCert(){certBack={tab:tab,mView:(typeof mView!=='undefined'?mView:'main')};tab='zadachi';sub='__game__';cat=null;mView='main';kasaDetail=null;reportRoom=null;if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');render();}
+function certBackGo(){if(certBack){tab=certBack.tab;mView=certBack.mView;certBack=null;}sub=null;cat=null;render();}
 // Sertifika — isim/tarih bindirilmiş görsel (spec: ad merkez banda, lüks serif, altın outline/glow, otomatik sığdırma)
 function certOverlayHTML(name,dateStr){
   return '<div class="certwrap" style="position:relative;width:100%;border-radius:8px;overflow:hidden">'
@@ -4121,7 +4124,7 @@ let RT=null; // active session
 function rGame(m,b){
   const gs=getGameState();
   if(!RT){
-    let h='<button class="back" onclick="sub=null;render()">&#8249; Назад</button>';
+    let h='<button class="back" onclick="certBackGo()">&#8249; Назад</button>';
     h+='<div class="rt-hero"><div class="rt-hero-ic">🎓</div><div class="rt-hero-t">Сертификация бариста</div><div class="rt-hero-s">Caffelito · это не игра, а программа сертификации</div></div>';
     h+='<div class="alert" style="text-align:center;font-size:13px"><b>🏅 Сертификат + 1 000 000 сум</b> — за сдачу экзамена на 100%</div>';
     h+='<img src="sertifikat.png?v=2" alt="Сертификат Caffelito" style="width:100%;border-radius:var(--r);margin-bottom:10px;border:1px solid var(--border);box-shadow:var(--shadow)" onerror="this.style.display=\'none\'">';
