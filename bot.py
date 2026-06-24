@@ -2314,7 +2314,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             # Sağa hizalı monospace tablo: isim solda, adет sağ kolonda hizalı
             named = [r for r in rows if r]
-            maxn = min(max((len(r[0]) for r in named), default=0), 34)
+            maxn = max((len(r[0]) for r in named), default=0)  # gerçek en uzun isim → hepsi aynı kolona hizalı (cap yok)
             body_lines = []
             for r in rows:
                 if r is None:
