@@ -671,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070105;
+var APP_BUILD=2026070106;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1266,11 +1266,9 @@ try{STD_ACKS=JSON.parse((HP.get('std_acks')||'[]'))}catch(e){STD_ACKS=[]}
 let BRANCHES=[];
 try{BRANCHES=JSON.parse((HP.get('branches')||'[]'))}catch(e){BRANCHES=[]}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
-// Owner'ın uygulamada seçtiği aktif şube (localStorage). 0 = «Все филиалы».
+// Owner header şube seçici KALDIRILDI → ACTIVE_BRANCH her zaman 0 (tüm şubeler görünür).
 let ACTIVE_BRANCH=0;
-try{var _ab=localStorage.getItem('cf_active_branch');ACTIVE_BRANCH=_ab?(parseInt(_ab)||0):0;}catch(e){ACTIVE_BRANCH=0}
-// Seçili şube artık mevcut değilse (arşiv/silinme) sıfırla
-if(ACTIVE_BRANCH&&!BRANCHES.some(function(b){return b.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
+try{localStorage.removeItem('cf_active_branch')}catch(e){}
 function branchName(id){var b=BRANCHES.find(function(x){return x.id===id});return b?b.name:('Филиал '+id);}
 // Barista'nın oturum şubesi: girişte seçilir (cf_cur_branch), yoksa ev şubesi.
 let startBranch=MY_BRANCH;
@@ -1398,22 +1396,10 @@ dT();
 
 const DAY_MAP={0:'ВС Воскресенье',1:'ПН Понедельник',2:'ВТ Вторник',3:'СР Среда',4:'ЧТ Четверг',5:'ПТ Пятница',6:'СБ Суббота'};
 let _lastViewKey='';
-// ── Owner header şube seçici ──
+// ── Owner header şube seçici KALDIRILDI (kullanıcı isteğiyle). Çubuk hep gizli. ──
 function renderBranchBar(){
   const bar=document.getElementById('branchBar');
-  if(!bar)return;
-  // Sadece owner + birden fazla şube varsa göster
-  if(MY_ROLE!=='owner'||(BRANCHES||[]).length<2){bar.style.display='none';bar.innerHTML='';return}
-  const curName=ACTIVE_BRANCH?branchName(ACTIVE_BRANCH):'Все филиалы';
-  // Şu anki şube SEÇENEK olarak gösterilmez — sadece geçilebilecek şubeler.
-  const opts=[{id:0,name:'Все филиалы'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}))
-    .filter(function(o){return o.id!==ACTIVE_BRANCH});
-  bar.style.display='flex';
-  bar.style.cssText='display:flex;gap:6px;align-items:center;overflow-x:auto;padding:0 20px 10px;-webkit-overflow-scrolling:touch';
-  bar.innerHTML='<span style="font-size:12px;color:var(--t1);font-weight:800;white-space:nowrap">🏢 '+escH(curName)+'</span>'
-    +'<span style="font-size:12px;color:var(--t3);white-space:nowrap">→</span>'
-    +opts.map(function(o){
-      return '<button onclick="setActiveBranchUI('+o.id+')" style="white-space:nowrap;padding:6px 12px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t1);font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('');
+  if(bar){bar.style.display='none';bar.innerHTML='';}
 }
 function _applyActiveBranch(id){
   ACTIVE_BRANCH=id;
