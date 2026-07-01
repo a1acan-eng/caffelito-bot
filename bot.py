@@ -4031,8 +4031,15 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     db = get_db()
     user = update.effective_user
-    if get_role(db, user.id) != "owner":
-        await update.message.reply_text("❌ Привязать группу может только владелец.")
+    _role = get_role(db, user.id)
+    if _role != "owner":
+        await update.message.reply_text(
+            "❌ Привязать группу может только владелец.\n"
+            f"Ваш ID: `{user.id}` · роль: `{_role or 'нет'}`\n"
+            "_Если вы владелец и видите это — вероятно, где-то ещё запущен второй экземпляр бота "
+            "(например, локально на компьютере). Закройте его: два бота с одним токеном крадут "
+            "команды друг у друга._",
+            parse_mode="Markdown")
         return
     branches = get_branches(db, only_active=True)
     if not branches:
