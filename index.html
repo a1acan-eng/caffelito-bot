@@ -671,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070104;
+var APP_BUILD=2026070105;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1415,12 +1415,33 @@ function renderBranchBar(){
     +opts.map(function(o){
       return '<button onclick="setActiveBranchUI('+o.id+')" style="white-space:nowrap;padding:6px 12px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t1);font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('');
 }
-function setActiveBranchUI(id){
+function _applyActiveBranch(id){
   ACTIVE_BRANCH=id;
   try{if(id)localStorage.setItem('cf_active_branch',String(id));else localStorage.removeItem('cf_active_branch')}catch(e){}
   // Sunucuya bildir → /setgroup doğru şubeye bağlanır (0=Все için de kaydedilir, grup bağlamada ana şubeye düşer)
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_active_branch',branch_id:id}))}catch(e){}}
   render();
+}
+function setActiveBranchUI(id){
+  // Açık vardiya varken FARKLI şubeye geçiliyorsa uyar + süreyi taşımayı öner
+  var act=(SUMMARY&&SUMMARY.active)?SUMMARY.active:null;
+  var shB=act?(parseInt(act.branch_id)||1):0;
+  if(act && id && id!==shB){
+    var msg='⚠️ Ваша смена ещё открыта в филиале «'+branchName(shB)+'».\n\n'
+      +'Перенести смену в «'+branchName(id)+'»? Отработанное время сохранится, дальнейшие отчёты (заказы, касса) уйдут в «'+branchName(id)+'».';
+    var doMove=function(){
+      if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'move_shift_branch',branch_id:id}))}catch(e){}}
+      if(act)act.branch_id=id;
+      try{sessionStorage.setItem('cf_cur_branch',String(id))}catch(e){}
+      startBranch=id;
+      toast('🏢 Смена перенесена в «'+branchName(id)+'»');
+      _applyActiveBranch(id);
+    };
+    if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)doMove();})}
+    else if(confirm(msg)){doMove();}
+    return; // onaylanmazsa hiçbir şey değişmez (görünüm de değişmez)
+  }
+  _applyActiveBranch(id);
 }
 function render(){
   const m=document.getElementById('main'),b=document.getElementById('bot');
@@ -2033,7 +2054,7 @@ function rShift(m,b){
         +'<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="padding:6px 10px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">сменить</button>'
         +'</div>'
         +(brSwitchOpen?('<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'
-          +BRANCHES.map(function(b){var on=b.id===startBranch;return '<button onclick="pickStartBranch('+b.id+');brSwitchOpen=false;render()" style="padding:9px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(b.name)+'</button>'}).join('')
+          +BRANCHES.filter(function(b){return b.id!==startBranch}).map(function(b){return '<button onclick="pickStartBranch('+b.id+');brSwitchOpen=false;render()" style="padding:9px 14px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t1);font-weight:700;font-size:13px;cursor:pointer">🏢 '+escH(b.name)+'</button>'}).join('')
           +'</div>'):'')
         +'</div>';
     }

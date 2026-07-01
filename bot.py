@@ -3017,6 +3017,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                            (f"cur_branch_{user.id}", str(bid)))
                 db.commit()
 
+        elif action == "move_shift_branch":
+            # Açık vardiyayı başka şubeye taşı (çalışma süresi korunur, sonraki
+            # raporlar yeni şubenin grubuna gider).
+            db = get_db()
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            if bid and get_branch(db, bid):
+                act = get_active_shift(db, user.id)
+                if act is not None:
+                    db.execute("UPDATE shifts SET branch_id=? WHERE id=?", (bid, act["id"]))
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
+                           (f"cur_branch_{user.id}", str(bid)))
+                db.commit()
+
         elif action == "create_branch":
             db = get_db()
             if get_role(db, user.id) != "owner":
