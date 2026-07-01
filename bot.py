@@ -368,12 +368,21 @@ def branch_group_id(db, branch_id):
 
 
 def acting_branch_id(db, user_id):
-    """Bir aksiyonun ait olduğu şube: kullanıcının AÇIK vardiyasının şubesi,
-    yoksa ev şubesi. (Sipariş/kasa kayıtlarına branch_id yazmak için.)"""
+    """Bir aksiyonun ait olduğu şube: 1) AÇIK vardiyanın şubesi →
+    2) girişte seçilen oturum şubesi (cur_branch) → 3) ev şubesi.
+    (Sipariş/kasa/grup yönlendirmesi için.)"""
     try:
         act = get_active_shift(db, user_id)
         if act is not None and act["branch_id"]:
             return int(act["branch_id"])
+    except Exception:
+        pass
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k=?", (f"cur_branch_{user_id}",)).fetchone()
+        if r and r["val"]:
+            b = int(r["val"])
+            if get_branch(db, b):
+                return b
     except Exception:
         pass
     return user_branch_id(db, user_id)
@@ -2964,6 +2973,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
                        (f"owner_branch_{user.id}", str(bid)))
             db.commit()
+
+        elif action == "set_my_branch":
+            # Barista girişte (veya vardiya ekranından) çalıştığı şubeyi seçti →
+            # oturum şubesi meta'ya yazılır; grup yönlendirmesi bunu kullanır.
+            db = get_db()
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            if bid and get_branch(db, bid):
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
+                           (f"cur_branch_{user.id}", str(bid)))
+                db.commit()
 
         elif action == "create_branch":
             db = get_db()

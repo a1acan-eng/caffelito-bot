@@ -628,6 +628,11 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
   </div>
   <div class="pass-msg" id="passMsg"></div>
   <div class="pass-hint" id="passHint">Пароль выдаёт владелец кофейни</div>
+  <div id="passBranch" style="display:none;width:100%;max-width:340px;margin:0 auto">
+    <div class="pass-title" style="font-size:18px">🏢 Выберите филиал</div>
+    <div style="font-size:13px;color:var(--t2);margin:6px 0 16px;text-align:center">Где вы сегодня работаете? Отчёты уйдут в группу этого филиала.</div>
+    <div id="passBranchList" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>
 </div>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand()}
@@ -666,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070102;
+var APP_BUILD=2026070103;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -764,6 +769,8 @@ function refreshState(){
   const role=HP2.get('role')||'barista';
   const pwh=(HP2.get('pwh')||'').trim();
   const myName=(HP2.get('name')||'').trim();
+  const pBranches=(function(){try{return JSON.parse(HP2.get('branches')||'[]')||[]}catch(e){return[]}})();
+  const pMyBranch=parseInt(HP2.get('my_branch'))||0;
   function greetWord(){var hh=new Date().getHours();if(hh>=5&&hh<12)return'Доброе утро';if(hh>=12&&hh<17)return'Добрый день';if(hh>=17&&hh<23)return'Добрый вечер';return'Доброй ночи';}
   // Owner her zaman içeri girer, passcode yok
   if(role==='owner')return;
@@ -796,6 +803,35 @@ function refreshState(){
     const hash=await crypto.subtle.digest('SHA-256',buf2);
     return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
   }
+  function finishLogin(bid){
+    // Oturum şubesini kaydet + sunucuya bildir (grup yönlendirmesi bu an belli olur).
+    try{if(bid)sessionStorage.setItem('cf_cur_branch',String(bid));}catch(e){}
+    if(bid){try{window.Telegram?.WebApp?.sendData&&window.Telegram.WebApp.sendData(JSON.stringify({action:'set_my_branch',branch_id:bid}));}catch(e){}}
+    // Bellekteki oturum şubesini de güncelle (aynı oturumda reload olmadan tutarlı olsun).
+    try{if(bid&&typeof startBranch!=='undefined'){startBranch=bid;}}catch(e){}
+    ov.style.display='none';
+    try{if(typeof render==='function')render();}catch(e){}
+  }
+  function showBranchStep(){
+    document.getElementById('passBoxes').style.display='none';
+    var pad=document.querySelector('#pass-overlay .pass-pad');if(pad)pad.style.display='none';
+    document.getElementById('passMsg').style.display='none';
+    document.getElementById('passHint').style.display='none';
+    document.getElementById('passTitle').style.display='none';
+    var wrap=document.getElementById('passBranch');wrap.style.display='block';
+    var list=document.getElementById('passBranchList');
+    var esc=(typeof escH==='function')?escH:function(x){return x;};
+    list.innerHTML=pBranches.map(function(b){
+      var def=(b.id===pMyBranch);
+      return '<button class="pass-branch-btn" data-bid="'+b.id+'" style="width:100%;padding:16px;border-radius:14px;border:1px solid '+(def?'var(--gold-border)':'var(--border)')+';background:var(--card);color:var(--t1);font-size:16px;font-weight:700;cursor:pointer;text-align:center">🏢 '+esc(b.name)+(def?' <span style="font-size:11px;color:var(--t3);font-weight:500">· ваш филиал</span>':'')+'</button>';
+    }).join('');
+    list.querySelectorAll('.pass-branch-btn').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        try{window.Telegram?.WebApp?.HapticFeedback?.selectionChanged?.()}catch(e){}
+        finishLogin(parseInt(btn.dataset.bid)||0);
+      });
+    });
+  }
   async function submit(){
     if(buf.length!==4)return;
     msg.textContent='⏳ Проверка...';
@@ -806,7 +842,9 @@ function refreshState(){
         try{sessionStorage.setItem('cf_pass_ok','1')}catch(e){}
         msg.textContent='✅ Доступ открыт';
         try{window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success')}catch(e){}
-        setTimeout(()=>{ov.style.display='none'},250);
+        // Birden fazla şube varsa: girişte şube seç → grup o an belli olur.
+        if(pBranches.length>1){setTimeout(showBranchStep,250);}
+        else{finishLogin(pBranches.length?pBranches[0].id:(pMyBranch||0));}
       }else{
         msg.textContent='❌ Неверный пароль';
         msg.classList.add('err');
@@ -1234,9 +1272,17 @@ try{var _ab=localStorage.getItem('cf_active_branch');ACTIVE_BRANCH=_ab?(parseInt
 // Seçili şube artık mevcut değilse (arşiv/silinme) sıfırla
 if(ACTIVE_BRANCH&&!BRANCHES.some(function(b){return b.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
 function branchName(id){var b=BRANCHES.find(function(x){return x.id===id});return b?b.name:('Филиал '+id);}
-// Barista'nın vardiya başlatırken seçtiği şube (default ev şubesi)
+// Barista'nın oturum şubesi: girişte seçilir (cf_cur_branch), yoksa ev şubesi.
 let startBranch=MY_BRANCH;
-function pickStartBranch(id){startBranch=id;render();}
+let brSwitchOpen=false;
+try{var _cb=sessionStorage.getItem('cf_cur_branch');if(_cb){var _cbi=parseInt(_cb)||0;if(_cbi)startBranch=_cbi;}}catch(e){}
+if(!BRANCHES.some(function(b){return b.id===startBranch}))startBranch=MY_BRANCH;
+function pickStartBranch(id){
+  startBranch=id;
+  // Oturum şubesini güncelle → grup yönlendirmesi de bu şubeye geçsin
+  try{sessionStorage.setItem('cf_cur_branch',String(id))}catch(e){}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_my_branch',branch_id:id}))}catch(e){}}
+}
 // Owner filtresi: kayıt bu şubeye ait mi? (bid yoksa/ACTIVE_BRANCH=0 → hepsi geçer)
 function inActiveBranch(bid){if(!ACTIVE_BRANCH)return true;return (parseInt(bid)||1)===ACTIVE_BRANCH;}
 const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
@@ -1974,14 +2020,18 @@ function rShift(m,b){
       el.textContent=liveDur(active.start_time);
     },1000);
   } else {
-    // Çok şube: hangi şubede çalışıyorsun? (birden fazla aktif şube varsa)
+    // Çok şube: şube GİRİŞTE seçildi. Burada sadece göster + gerekirse değiştir.
     if((BRANCHES||[]).length>1){
       if(!startBranch||!BRANCHES.some(function(b){return b.id===startBranch}))startBranch=(BRANCHES[0]&&BRANCHES[0].id)||1;
-      h+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:var(--r2);background:var(--card)">'
-        +'<div style="font-size:12px;color:var(--t2);margin-bottom:8px;font-weight:600">🏢 Филиал смены</div>'
-        +'<div style="display:flex;flex-wrap:wrap;gap:8px">'
-        +BRANCHES.map(function(b){var on=b.id===startBranch;return '<button onclick="pickStartBranch('+b.id+')" style="padding:9px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(b.name)+'</button>'}).join('')
-        +'</div></div>';
+      h+='<div style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--gold-border);border-radius:var(--r2);background:var(--card)">'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+        +'<div style="font-size:14px;font-weight:800">🏢 Смена в филиале: '+escH(branchName(startBranch))+'</div>'
+        +'<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="padding:6px 10px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">сменить</button>'
+        +'</div>'
+        +(brSwitchOpen?('<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'
+          +BRANCHES.map(function(b){var on=b.id===startBranch;return '<button onclick="pickStartBranch('+b.id+');brSwitchOpen=false;render()" style="padding:9px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(b.name)+'</button>'}).join('')
+          +'</div>'):'')
+        +'</div>';
     }
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
     h+='<div class="refresh-hint" style="margin-top:10px">Нажмите «Начать смену» как только пришли. Время прихода фиксируется автоматически.</div>';
