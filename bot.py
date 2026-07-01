@@ -332,6 +332,8 @@ def get_db():
 #  ФИЛИАЛЫ (ŞUBELER)
 # ═══════════════════════════════════════
 DEFAULT_BRANCH_ID = 1
+# Telegram "анонимный администратор" grup adına yazınca from.id bu olur (GroupAnonymousBot).
+ANON_ADMIN_ID = 1087968824
 
 
 def get_branches(db, only_active=True):
@@ -2173,7 +2175,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (IndexError, ValueError):
             return
         db = get_db()
-        if get_role(db, query.from_user.id) != "owner":
+        # Owner ya da anonim grup admini (GroupAnonymousBot) bağlayabilir
+        if get_role(db, query.from_user.id) != "owner" and query.from_user.id != ANON_ADMIN_ID:
             try: await query.edit_message_text("❌ Только владелец может привязать группу.")
             except Exception: pass
             return
@@ -4032,13 +4035,17 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = get_db()
     user = update.effective_user
     _role = get_role(db, user.id)
-    if _role != "owner":
+    # Anonim yönetici (Telegram "Remain Anonymous") → from = GroupAnonymousBot (1087968824)
+    # veya mesaj grup adına gönderilir (sender_chat == bu grup). Anonim = grup admini → izin ver.
+    msg = update.effective_message
+    is_anon = (user and user.id == ANON_ADMIN_ID) or bool(
+        getattr(msg, "sender_chat", None) and msg.sender_chat.id == chat.id)
+    if _role != "owner" and not is_anon:
         await update.message.reply_text(
             "❌ Привязать группу может только владелец.\n"
             f"Ваш ID: `{user.id}` · роль: `{_role or 'нет'}`\n"
-            "_Если вы владелец и видите это — вероятно, где-то ещё запущен второй экземпляр бота "
-            "(например, локально на компьютере). Закройте его: два бота с одним токеном крадут "
-            "команды друг у друга._",
+            "_Если вы владелец и видите это — либо вы пишете как «анонимный администратор» "
+            "(отключите анонимность в правах админа), либо где-то запущен второй экземпляр бота._",
             parse_mode="Markdown")
         return
     branches = get_branches(db, only_active=True)
