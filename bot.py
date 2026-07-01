@@ -2166,6 +2166,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _decide_loan(context, db, query.from_user, loan_id, decision, "", _reply)
         return
 
+    # ─── /setgroup şube seçimi (inline) ───
+    if data.startswith("setgrp:"):
+        try:
+            bid = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        db = get_db()
+        if get_role(db, query.from_user.id) != "owner":
+            try: await query.edit_message_text("❌ Только владелец может привязать группу.")
+            except Exception: pass
+            return
+        b = get_branch(db, bid)
+        if not b:
+            try: await query.edit_message_text("❌ Филиал не найден.")
+            except Exception: pass
+            return
+        chat_id = query.message.chat_id
+        bind_group_to_branch(db, context, bid, chat_id)
+        try:
+            await query.edit_message_text(
+                f"✅ Группа привязана к филиалу «{b['name']}»!\n"
+                f"Отчёты, заказы, задачи и кассы этого филиала теперь приходят сюда.\nID: {chat_id}")
+        except Exception:
+            try: await context.bot.send_message(chat_id, f"✅ Группа привязана к филиалу «{b['name']}»! ID: {chat_id}")
+            except Exception: pass
+        return
+
     # ─── Main Menu ───
     if data == "menu_order":
         context.user_data["order"] = {}
@@ -3984,42 +4011,48 @@ async def cmd_paydebug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🐞 Отладка приёма платежей: {'ВКЛ' if val=='1' else 'выкл'}")
 
 
+def bind_group_to_branch(db, context, branch_id, chat_id):
+    """Bir Telegram grubunu (chat_id) bir şubeye bağla. Ana şube ise eski tekil
+    grup mekanizmasını da güncelle (geriye dönük fallback)."""
+    db.execute("UPDATE branches SET group_chat_id=? WHERE id=?", (str(chat_id), int(branch_id)))
+    if int(branch_id) == DEFAULT_BRANCH_ID:
+        if context is not None:
+            context.bot_data["group_id"] = str(chat_id)
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('active_group', ?)", (str(chat_id),))
+    db.commit()
+
+
 async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Grubu kaydet — grupta /setgroup yaz"""
+    """Grubu bir şubeye bağla — grupta /setgroup yaz, çıkan butonlardan şube seç."""
     chat = update.effective_chat
     if chat.type not in ['group', 'supergroup']:
         await update.message.reply_text(
-            "❌ Эту команду нужно использовать в группе, не в личном чате.")
+            "❌ Эту команду нужно использовать в ГРУППЕ (добавьте бота в группу филиала), а не в личном чате.")
         return
     db = get_db()
     user = update.effective_user
     if get_role(db, user.id) != "owner":
-        return  # sadece owner bağlayabilir
-    # Çok şube: owner uygulamada hangi şubeyi seçtiyse (meta owner_branch_<uid>) o şubeye bağla.
-    # Seçim yoksa / «Все филиалы» (0) ise ana şubeye (DEFAULT_BRANCH_ID) bağla.
-    try:
-        _ob = db.execute("SELECT val FROM meta WHERE k=?", (f"owner_branch_{user.id}",)).fetchone()
-        target_branch = int(_ob["val"]) if (_ob and _ob["val"]) else 0
-    except Exception:
-        target_branch = 0
-    if not target_branch or not get_branch(db, target_branch):
-        target_branch = DEFAULT_BRANCH_ID
-    try:
-        db.execute("UPDATE branches SET group_chat_id=? WHERE id=?", (str(chat.id), target_branch))
-        # Ana şube ise eski tekil grup mekanizmasını da güncelle (geriye dönük fallback).
-        if target_branch == DEFAULT_BRANCH_ID:
-            context.bot_data["group_id"] = str(chat.id)
-            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('active_group', ?)", (str(chat.id),))
-        db.commit()
-    except Exception as e:
-        logger.warning(f"setgroup meta save failed: {e}")
-    bname = (get_branch(db, target_branch) or {}).get("name") or "?"
+        await update.message.reply_text("❌ Привязать группу может только владелец.")
+        return
+    branches = get_branches(db, only_active=True)
+    if not branches:
+        bind_group_to_branch(db, context, DEFAULT_BRANCH_ID, chat.id)
+        await update.message.reply_text(f"✅ Группа привязана.\nID: `{chat.id}`", parse_mode="Markdown")
+        return
+    if len(branches) == 1:
+        b = branches[0]
+        bind_group_to_branch(db, context, b["id"], chat.id)
+        await update.message.reply_text(
+            f"✅ Группа привязана к филиалу *{md_safe(b['name'])}*!\nID: `{chat.id}`", parse_mode="Markdown")
+        return
+    # Birden fazla şube → owner butondan seçsin (app'te önceden seçmeye gerek yok)
+    kb = [[InlineKeyboardButton(
+        ("✅ " if str(b.get("group_chat_id") or "") == str(chat.id) else "🏢 ") + b["name"],
+        callback_data=f"setgrp:{b['id']}")] for b in branches]
     await update.message.reply_text(
-        f"✅ Группа привязана к филиалу *{md_safe(bname)}*!\n"
-        f"Отчёты, заказы, задачи и кассы этого филиала теперь приходят сюда.\n"
-        f"ID: `{chat.id}`\n\n"
-        f"_(Другой филиал — выберите его в приложении и напишите /setgroup в его группе.)_",
-        parse_mode="Markdown")
+        f"🏢 *К какому филиалу привязать эту группу?*\n"
+        f"Отчёты выбранного филиала будут приходить сюда.\nID: `{chat.id}`",
+        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
