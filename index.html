@@ -671,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070106;
+var APP_BUILD=2026070107;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1266,9 +1266,10 @@ try{STD_ACKS=JSON.parse((HP.get('std_acks')||'[]'))}catch(e){STD_ACKS=[]}
 let BRANCHES=[];
 try{BRANCHES=JSON.parse((HP.get('branches')||'[]'))}catch(e){BRANCHES=[]}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
-// Owner header şube seçici KALDIRILDI → ACTIVE_BRANCH her zaman 0 (tüm şubeler görünür).
+// Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
-try{localStorage.removeItem('cf_active_branch')}catch(e){}
+try{var _ab=localStorage.getItem('cf_active_branch');ACTIVE_BRANCH=_ab?(parseInt(_ab)||0):0;}catch(e){ACTIVE_BRANCH=0}
+if(ACTIVE_BRANCH&&!(BRANCHES||[]).some(function(b){return b.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
 function branchName(id){var b=BRANCHES.find(function(x){return x.id===id});return b?b.name:('Филиал '+id);}
 // Barista'nın oturum şubesi: girişte seçilir (cf_cur_branch), yoksa ev şubesi.
 let startBranch=MY_BRANCH;
@@ -1408,25 +1409,9 @@ function _applyActiveBranch(id){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_active_branch',branch_id:id}))}catch(e){}}
   render();
 }
+// Owner Управление ekranında şube filtresi seçimi (sadece görünüm — kimin nerede
+// çalıştığını + o şubenin verilerini görmek için). Vardiyaya dokunmaz.
 function setActiveBranchUI(id){
-  // Açık vardiya varken FARKLI şubeye geçiliyorsa uyar + süreyi taşımayı öner
-  var act=(SUMMARY&&SUMMARY.active)?SUMMARY.active:null;
-  var shB=act?(parseInt(act.branch_id)||1):0;
-  if(act && id && id!==shB){
-    var msg='⚠️ Ваша смена ещё открыта в филиале «'+branchName(shB)+'».\n\n'
-      +'Перенести смену в «'+branchName(id)+'»? Отработанное время сохранится, дальнейшие отчёты (заказы, касса) уйдут в «'+branchName(id)+'».';
-    var doMove=function(){
-      if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'move_shift_branch',branch_id:id}))}catch(e){}}
-      if(act)act.branch_id=id;
-      try{sessionStorage.setItem('cf_cur_branch',String(id))}catch(e){}
-      startBranch=id;
-      toast('🏢 Смена перенесена в «'+branchName(id)+'»');
-      _applyActiveBranch(id);
-    };
-    if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)doMove();})}
-    else if(confirm(msg)){doMove();}
-    return; // onaylanmazsa hiçbir şey değişmez (görünüm de değişmez)
-  }
   _applyActiveBranch(id);
 }
 function render(){
@@ -2273,6 +2258,26 @@ function rMMain(m,b){
     : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
   h+=rolePill;
 
+  // ── Owner: şube seçici + "kim çalışıyor" (Управление'nin en üstü) ──
+  if(MY_ROLE==='owner' && (BRANCHES||[]).length){
+    var _bopts=[{id:0,name:'Все филиалы'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}));
+    var _activeHere=(BARISTAS||[]).filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
+    h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;margin-bottom:12px;box-shadow:var(--shadow)">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">'
+        +'<div style="font-size:12px;font-weight:800;color:var(--t2);letter-spacing:.3px">🏢 ФИЛИАЛ</div>'
+        +'<button onclick="mView=\'branches\';render()" title="Добавить / изменить филиалы" style="padding:6px 12px;border-radius:var(--rp);border:1px solid var(--gold-border);background:transparent;color:var(--gold2,var(--t1));font-size:12px;font-weight:700;cursor:pointer">✏️ Изменить</button>'
+      +'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+      +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:8px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
+      +'</div>'
+      +'<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);font-size:13px;line-height:1.5">'
+      +(_activeHere.length
+          ? '🟢 <b>Сейчас в смене'+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+':</b><br>'+_activeHere.map(function(x){return '• '+escH(x.n)+' <span style="color:var(--t3);font-size:11px">('+fmtTime(x.active.start_time)+(!ACTIVE_BRANCH&&(BRANCHES||[]).length>1?' · '+escH(branchName((x.active&&x.active.branch_id)||x.bid)):'')+')</span>'}).join('<br>')
+          : '<span style="color:var(--t3)">Сейчас никто не в смене'+(ACTIVE_BRANCH?' в «'+escH(branchName(ACTIVE_BRANCH))+'»':'')+'</span>')
+      +'</div>'
+    +'</div>';
+  }
+
   // Сертификация бариста — экзамен/сертификат (barista ana ekrandan; owner — из Бухгалтерии)
   if(MY_ROLE!=='owner'){
     h+='<div class="loan-card" onclick="openCert()" style="border-color:var(--gold);background:var(--gold-bg)">'
@@ -2343,7 +2348,6 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
-        +'<div class="own-btn" onclick="mView=\'branches\';render()"><div class="own-btn-i">🏢</div><div class="own-btn-t">Филиалы</div>'+((BARISTAS.length&&(BRANCHES||[]).length)?'<div class="own-btn-s">'+(BRANCHES||[]).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
