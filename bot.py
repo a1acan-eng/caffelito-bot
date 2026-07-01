@@ -3356,17 +3356,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Только владелец может очищать историю.")
             else:
                 mode = data.get("mode", "all")
-                # Seçilebilir türler → (tablo, tarih-kolonu, etiket)
+                # Seçilebilir türler → (tablo, tarih-kolonu, etiket, branch-filtre-kolonu)
+                # branch-filtre-kolonu: ('branch_id', None)=doğrudan şube · (None,'user_id')=personel (şube üyesi)
                 TMAP = {
-                    "shifts": ("shifts", "date", "Смен"),
-                    "orders": ("orders", "created_at", "Заказов"),
-                    "cash": ("cashreports", "created_at", "Кассовых отчётов"),
-                    "fines": ("fines", "created_at", "Штрафов"),
-                    "tips": ("tips", "created_at", "Чаевых"),
-                    "payments": ("payments", "paid_at", "Выплат"),
-                    "loans": ("loans", "created_at", "Авансов"),
+                    "shifts": ("shifts", "date", "Смен", ("branch_id", None)),
+                    "orders": ("orders", "created_at", "Заказов", ("branch_id", None)),
+                    "cash": ("cashreports", "created_at", "Кассовых отчётов", ("branch_id", None)),
+                    "fines": ("fines", "created_at", "Штрафов", (None, "user_id")),
+                    "tips": ("tips", "created_at", "Чаевых", (None, "user_id")),
+                    "payments": ("payments", "paid_at", "Выплат", (None, "user_id")),
+                    "loans": ("loans", "created_at", "Авансов", (None, "barista_id")),
                 }
                 sel = data.get("types") or list(TMAP.keys())  # boşsa hepsi (eski uyumluluk)
+                try:
+                    bid = int(data.get("branch_id") or 0)
+                except Exception:
+                    bid = 0
+                if bid and not get_branch(db, bid):
+                    bid = 0
                 d = (data.get("date") or "").strip() if mode == "before" else ""
                 if mode == "before" and not d:
                     await update.message.reply_text("❌ Дата не указана.")
@@ -3375,17 +3382,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     for key in sel:
                         if key not in TMAP:
                             continue
-                        tbl, col, lbl = TMAP[key]
+                        tbl, col, lbl, (bcol, ucol) = TMAP[key]
+                        conds, params = [], []
+                        if mode == "before":
+                            conds.append(f"{col} < ?"); params.append(d)
+                        if bid:
+                            if bcol:
+                                conds.append(f"COALESCE({bcol},1)=?"); params.append(bid)
+                            elif ucol:
+                                conds.append(f"{ucol} IN (SELECT user_id FROM users WHERE COALESCE(branch_id,1)=?)"); params.append(bid)
+                        where = (" WHERE " + " AND ".join(conds)) if conds else ""
                         try:
-                            if mode == "before":
-                                n = db.execute(f"DELETE FROM {tbl} WHERE {col} < ?", (d,)).rowcount
-                            else:
-                                n = db.execute(f"DELETE FROM {tbl}").rowcount
+                            n = db.execute(f"DELETE FROM {tbl}{where}", params).rowcount
                             parts_msg.append(f"{lbl}: {n}")
                         except Exception as ex:
                             logger.warning(f"clear {tbl} failed: {ex}")
                     db.commit()
-                    head = (f"🗑 *Удалено до {d}:*" if mode == "before" else "🗑 *Удалено:*")
+                    br_lbl = ("" if not bid else f" · {(get_branch(db, bid) or {}).get('name','?')}")
+                    head = (f"🗑 *Удалено до {d}{br_lbl}:*" if mode == "before" else f"🗑 *Удалено{br_lbl}:*")
                     await update.message.reply_text(head + "\n" + " · ".join(parts_msg), parse_mode="Markdown")
                     await refresh_webapp_keyboard(update, context, db, user, "🔄 История обновлена 👇")
 

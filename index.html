@@ -666,7 +666,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070101;
+var APP_BUILD=2026070102;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1821,7 +1821,6 @@ function rR(m,b){b.style.display='none';
   var rooms = owner ? [
     {id:'shifts',i:'🥤',t:'Смены и кассы',n:(REP.shifts||[]).filter(function(s){return inActiveBranch(s.bid)}).length},
     {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).filter(function(o){return inActiveBranch(o.bid)}).length},
-    {id:'analytics',i:'📊',t:'Аналитика бариста',n:((BARISTAS||[]).filter(function(x){return !x.arch}).length)},
     {id:'tips',i:'💝',t:'Чаевые',n:(REP.tips||[]).length},
     {id:'pays',i:'💵',t:'Выплачено',n:(REP.pays||[]).length},
     {id:'fines',i:'⚠️',t:'Штрафы',n:(REP.fines||[]).length},
@@ -1923,8 +1922,6 @@ function rReportRoom(m,b){
     lst=REP.loans||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
     lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div></div>';});
-  } else if(room==='analytics'){
-    h+=analyticsHTML();
   }
   h+='<div class="footer">XSYN</div>';m.innerHTML=h;
 }
@@ -3705,6 +3702,15 @@ function rMSettings(m,b){
     }
   } else if(settingsTab==='reset'){
     h+='<div class="refresh-hint" style="margin-top:0">Отметьте, ЧТО удалить. Баристы, цены и каталог НЕ удаляются. Действие нельзя отменить.</div>';
+    // Çok şube: hangi şubenin verisi silinsin?
+    if((BRANCHES||[]).length>1){
+      h+='<div class="sec" style="margin-top:6px;font-size:13px">🏢 Филиал</div>';
+      h+='<select id="clrBranch" style="width:100%;padding:10px;border:1px solid var(--border2);border-radius:10px;background:var(--card);color:var(--t1);font-size:14px;font-family:inherit">';
+      h+='<option value="0">Все филиалы</option>';
+      h+=BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+(ACTIVE_BRANCH===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('');
+      h+='</select>';
+      h+='<div class="refresh-hint" style="margin-top:6px">Чаевые/штрафы/выплаты/авансы привязаны к сотруднику филиала; смены/заказы/кассы — к филиалу.</div>';
+    }
     h+='<div class="sec" style="margin-top:6px;font-size:13px">Выберите данные</div>';
     h+='<div style="border:1px solid var(--border2);border-radius:10px;padding:10px 12px">';
     [['shifts','🥤 Смены'],['orders','📦 Заказы'],['cash','📋 Кассовые отчёты'],['fines','⚠️ Штрафы'],['tips','💝 Чаевые'],['payments','💵 Выплаты'],['loans','💸 Авансы']].forEach(function(o){
@@ -3734,19 +3740,23 @@ function _clrSend(payload){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('clr send',e)}}
 }
 function clrTypes(){var a=[];document.querySelectorAll('.clr-type:checked').forEach(function(c){a.push(c.value)});return a;}
+function clrBranchSel(){var el=document.getElementById('clrBranch');return el?(parseInt(el.value)||0):0;}
+function clrBranchLbl(bid){return bid?(' · '+branchName(bid)):' · все филиалы';}
 function clrHistAll(){
   var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
-  var msg='Удалить отмеченное ('+types.length+' видов) НАВСЕГДА? Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all',types:types})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all',types:types})}
+  var bid=clrBranchSel();
+  var msg='Удалить отмеченное ('+types.length+' видов'+clrBranchLbl(bid)+') НАВСЕГДА? Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all',types:types,branch_id:bid})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all',types:types,branch_id:bid})}
 }
 function clrHistBefore(){
   var el=document.getElementById('clrDate');var val=el?el.value:'';
   if(!val){toast('Выберите дату');return}
   var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
-  var msg='Удалить отмеченное ДО '+val+'? Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val,types:types})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val,types:types})}
+  var bid=clrBranchSel();
+  var msg='Удалить отмеченное ДО '+val+clrBranchLbl(bid)+'? Это НЕЛЬЗЯ отменить.';
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val,types:types,branch_id:bid})})}
+  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val,types:types,branch_id:bid})}
 }
 
 function savePrice(drinkId){
@@ -4240,8 +4250,10 @@ function rtMakeQ(type){
   if(type==='q2'){
     const ni=rtNotIn(r);if(!ni.length)return rtMakeQ('q1');
     const correct=rtPick(ni);
-    const wrongs=rtShuffle(r.i.map(x=>x[0])).slice(0,3);
-    if(wrongs.length<3){const extra=rtShuffle(rtPool().filter(x=>x!==correct&&!wrongs.includes(x))).slice(0,3-wrongs.length);wrongs.push(...extra);}
+    // Şıklar SADECE bu tarifte GERÇEKTEN olan malzemeler olmalı (yoksa birden çok "doğru" çıkar).
+    // 3 gerçek malzeme yoksa bu tarif "что не входит" için uygun değil → q1'e düş.
+    const wrongs=rtShuffle(r.i.map(x=>x[0]).filter(x=>x!==correct)).slice(0,3);
+    if(wrongs.length<3)return rtMakeQ('q1');
     return{type:'q2',text:'Что НЕ входит в «'+r.n+'»?',opts:rtShuffle([correct,...wrongs]),correct:correct,hint:'Внимательно подумай о составе'};
   }
   // q3 — trick
@@ -4542,20 +4554,6 @@ function rtNext(){
 /* ═══════════════════════════════════════
    РЕЗОФИЦИАЛЬНЫЙ ЗАЧЁТ — Remote Exam (FS)
    ═══════════════════════════════════════ */
-const OKK_INSPECTIONS=[
-  'корпус эспрессо-машины (чистота, без трещин)',
-  'холдеры (все на месте, чистые)',
-  'питчеры для молока (чистые, без накипи)',
-  'темпер для кофе',
-  'кофемолку и зону вокруг неё',
-  'холодильник внутри',
-  'витрину с круассанами',
-  'льдогенератор внутри',
-  'раковину и зону мойки',
-  'полотенца для рук',
-  'рабочую поверхность бара',
-  'пол под оборудованием'
-];
 let EX=null;       // active exam state
 let EX_TIMER=null;
 function examInvite(barId,name){
@@ -4572,13 +4570,12 @@ function examShouldOpen(){
   return PENDING_EXAM&&PENDING_EXAM.id&&!sessionStorage.getItem('exam_done_'+PENDING_EXAM.id);
 }
 function examBuild(){
-  // СЕРТИФИКАЦИОННЫЙ ЭКЗАМЕН — 100 вопросов, адаптивная сложность (легко → сложно).
-  // 90 bilgi sorusu: 30×лёгкий(d1) → 28×средний(d2) → 32×сложный/ловушки(d3) — SIRALI (gittikçe zorlaşır)
-  // + 10 фото-проверок, серпиştirilmiş во вторую половину.
+  // СЕРТИФИКАЦИОННЫЙ ЭКЗАМЕН — 100 вопросов знаний, адаптивная сложность (легко → сложно).
+  // 34×лёгкий(d1) → 33×средний(d2) → 33×сложный/ловушки(d3) — SIRALI (gittikçe zorlaşır)
   const plan=[];
-  for(let i=0;i<30;i++)plan.push(1);
-  for(let i=0;i<28;i++)plan.push(2);
-  for(let i=0;i<32;i++)plan.push(3);
+  for(let i=0;i<34;i++)plan.push(1);
+  for(let i=0;i<33;i++)plan.push(2);
+  for(let i=0;i<33;i++)plan.push(3);
   const recent=[];
   const know=plan.map(function(d){
     let q,tries=0;
@@ -4587,21 +4584,11 @@ function examBuild(){
     recent.push(q.text); if(recent.length>14)recent.shift();
     return q;
   });
-  // Фото-проверки (уникальные цели)
-  const photoN=Math.min(10,OKK_INSPECTIONS.length);
-  const used=new Set(),photos=[];
-  while(photos.length<photoN){const t=OKK_INSPECTIONS[Math.floor(Math.random()*OKK_INSPECTIONS.length)];if(!used.has(t)){used.add(t);photos.push({kind:'photo',target:t,diff:2});}}
-  // know уже отсортирован легко→сложно; фото равномерно с 50-го вопроса (вставляем с конца, чтобы не сбить порядок)
-  const all=know.slice();
-  for(let i=photos.length-1;i>=0;i--){
-    const pos=Math.min(all.length,50+Math.round(i*(all.length-50)/Math.max(1,photos.length)));
-    all.splice(pos,0,photos[i]);
-  }
-  return all; // ~100 вопросов
+  return know; // 100 вопросов (без фото)
 }
 function examOpen(){
   if(!PENDING_EXAM)return;
-  EX={inviteId:PENDING_EXAM.id,by:PENDING_EXAM.by,phase:'preflight',pre:{battery:false,camera:false,shift:false},certName:(MY_NAME||''),qs:[],idx:0,correct:0,answered:false,pickedIdx:-1,timeLeft:0,timePerQ:10,qStartedAt:0,timedOut:false,results:[],photos:{}};
+  EX={inviteId:PENDING_EXAM.id,by:PENDING_EXAM.by,phase:'preflight',pre:{battery:false,shift:false},certName:(MY_NAME||''),qs:[],idx:0,correct:0,answered:false,pickedIdx:-1,timeLeft:0,timePerQ:10,qStartedAt:0,timedOut:false,results:[]};
   document.getElementById('exam-fs').classList.add('on');
   document.body.style.overflow='hidden';
   if(tg&&tg.expand)try{tg.expand()}catch(e){}
@@ -4631,13 +4618,12 @@ function examRender(){
       +'<input id="exName" type="text" value="'+escH(EX.certName||'')+'" oninput="EX.certName=this.value;exUpdateGate()" placeholder="например: Хасан Каримов" autocomplete="name" style="width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:#fff;font-family:inherit;font-size:14px;outline:none"></div>';
     h+='<div class="ex-check-list">';
     h+='<label class="ex-check '+(EX.pre.battery?'ok':'')+'"><input type="checkbox" '+(EX.pre.battery?'checked':'')+' onclick="EX.pre.battery=this.checked;examRender()"><span>🔋 Заряд телефона ≥ 50%</span></label>';
-    h+='<label class="ex-check '+(EX.pre.camera?'ok':'')+'"><input type="checkbox" '+(EX.pre.camera?'checked':'')+' onclick="EX.pre.camera=this.checked;examRender()"><span>📷 Камера и интернет работают</span></label>';
     h+='<label class="ex-check '+(EX.pre.shift?'ok':'')+'"><input type="checkbox" '+(EX.pre.shift?'checked':'')+' onclick="EX.pre.shift=this.checked;examRender()"><span>🟢 Я нахожусь в смене</span></label>';
     h+='</div>';
-    const ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
+    const ready=EX.pre.battery&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
     h+='<button id="exGoBtn" class="ex-go" '+(ready?'':'disabled')+' onclick="examBegin()">Начать зачёт ▸</button>';
     h+='<div id="exNameWarn" style="font-size:11px;color:#fca5a5;margin-top:8px;text-align:center;display:'+((EX.certName||'').trim().length<2?'block':'none')+'">Введите имя — оно появится на сертификате</div>';
-    h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>100 вопросов · сложность растёт · бил. (10 сек) + фото (30 сек)<br><b style="color:#ffd257">Приз 1 000 000 — только за 100% (без единой ошибки)</b></div>';
+    h+='<div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:14px;text-align:center;line-height:1.5">После начала экран нельзя закрыть.<br>100 вопросов · сложность растёт · 10 секунд на вопрос<br><b style="color:#ffd257">Приз 1 000 000 — только за 100% (без единой ошибки)</b></div>';
     h+='</div>';
   } else if(EX.phase==='question'){
     const q=EX.qs[EX.idx],pct=(EX.idx/EX.qs.length)*100;
@@ -4645,37 +4631,18 @@ function examRender(){
     const tFillPct=(EX.timeLeft/EX.timePerQ)*100;
     h+='<div class="ex-q-bar"><span class="ex-q-idx">'+(EX.idx+1)+' / '+EX.qs.length+'</span><div class="ex-q-prog"><div class="ex-q-fill" style="width:'+pct+'%"></div></div><span class="ex-q-idx" id="exTNum"><span class="ex-timer-num '+timerCls+'" style="font-size:18px">'+EX.timeLeft+'с</span></span></div>';
     h+='<div class="ex-timer-bar"><div class="ex-timer-fill '+timerCls+'" id="exTFill" style="width:'+tFillPct+'%"></div></div>';
-    if(q.kind==='know'){
-      h+='<div class="ex-card"><div class="ex-kind">Вопрос знаний</div><div class="ex-text">'+q.text+'</div></div>';
-      h+='<div class="ex-opts">';
-      q.opts.forEach(function(opt,i){
-        let cls='ex-opt';
-        if(EX.answered){cls+=' disabled';if(opt===q.correct)cls+=EX.pickedIdx===i?' correct':' reveal';else if(EX.pickedIdx===i)cls+=' wrong';}
-        h+='<div class="'+cls+'" onclick="'+(EX.answered?'':'examAnswer('+i+')')+'">'+opt+'</div>';
-      });
-      h+='</div>';
-      if(EX.answered){
-        const ok=q.opts[EX.pickedIdx]===q.correct;
-        h+='<div class="ex-fb '+(ok?'ok':'no')+'">'+(ok?'✓ Верно':(EX.timedOut?'⏱ Время вышло. Правильно: '+q.correct:'✗ Правильно: '+q.correct))+'</div>';
-        h+='<button class="ex-next" onclick="examNext()">'+(EX.idx+1>=EX.qs.length?'Завершить':'Дальше')+' ▸</button>';
-      }
-    } else {
-      // photo question
-      h+='<div class="ex-card"><div class="ex-kind photo">📷 Фото-проверка</div><div class="ex-text">Сфотографируйте: <b>'+q.target+'</b></div><div class="ex-photo-prompt">Откройте камеру, сфотографируйте указанный объект и отправьте его в личные сообщения боту. После — нажмите кнопку ниже.</div>';
-      if(EX.photos[EX.idx]){
-        h+='<div class="ex-photo-preview"><img src="'+EX.photos[EX.idx]+'"></div>';
-      }
-      h+='</div>';
-      if(!EX.answered){
-        h+='<input class="ex-photo-input" id="exPhotoInput" type="file" accept="image/*" capture="environment" onchange="examPhotoCaptured(event)">';
-        h+='<button class="ex-photo-btn" onclick="document.getElementById(\'exPhotoInput\').click()">📷 Открыть камеру</button>';
-        if(EX.photos[EX.idx]){
-          h+='<button class="ex-next" style="margin-top:8px" onclick="examPhotoConfirm()">✓ Я сфотографировал — далее</button>';
-        }
-      } else {
-        h+='<div class="ex-fb ok">✓ Принято</div>';
-        h+='<button class="ex-next" onclick="examNext()">'+(EX.idx+1>=EX.qs.length?'Завершить':'Дальше')+' ▸</button>';
-      }
+    h+='<div class="ex-card"><div class="ex-kind">Вопрос знаний</div><div class="ex-text">'+q.text+'</div></div>';
+    h+='<div class="ex-opts">';
+    q.opts.forEach(function(opt,i){
+      let cls='ex-opt';
+      if(EX.answered){cls+=' disabled';if(opt===q.correct)cls+=EX.pickedIdx===i?' correct':' reveal';else if(EX.pickedIdx===i)cls+=' wrong';}
+      h+='<div class="'+cls+'" onclick="'+(EX.answered?'':'examAnswer('+i+')')+'">'+opt+'</div>';
+    });
+    h+='</div>';
+    if(EX.answered){
+      const ok=q.opts[EX.pickedIdx]===q.correct;
+      h+='<div class="ex-fb '+(ok?'ok':'no')+'">'+(ok?'✓ Верно':(EX.timedOut?'⏱ Время вышло. Правильно: '+q.correct:'✗ Правильно: '+q.correct))+'</div>';
+      h+='<button class="ex-next" onclick="examNext()">'+(EX.idx+1>=EX.qs.length?'Завершить':'Дальше')+' ▸</button>';
     }
   } else if(EX.phase==='done'){
     const total=EX.qs.length,score=Math.round(EX.correct/total*100),passed=score>=100;
@@ -4694,7 +4661,7 @@ function examRender(){
 }
 function exUpdateGate(){
   if(!EX)return;
-  var ready=EX.pre.battery&&EX.pre.camera&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
+  var ready=EX.pre.battery&&EX.pre.shift&&(EX.certName||'').trim().length>=2;
   var b=document.getElementById('exGoBtn');if(b)b.disabled=!ready;
   var w=document.getElementById('exNameWarn');if(w)w.style.display=((EX.certName||'').trim().length<2)?'block':'none';
 }
@@ -4705,8 +4672,7 @@ function examBegin(){
 function examStartTimer(){
   if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
   if(!EX)return;
-  const q=EX.qs[EX.idx];
-  EX.timePerQ=(q&&q.kind==='photo')?30:10;
+  EX.timePerQ=10;
   EX.timeLeft=EX.timePerQ;
   EX.qStartedAt=Date.now();
   EX_TIMER=setInterval(function(){
@@ -4746,32 +4712,6 @@ function examAnswer(i){
   else if(tg)tg.HapticFeedback?.notificationOccurred('error');
   EX.results.push({i:EX.idx,kind:'know',ok:ok,timedOut:false});
   examReportProgress(ok);
-  examRender();
-}
-function examPhotoCaptured(ev){
-  const f=ev.target.files&&ev.target.files[0];if(!f||!EX)return;
-  const reader=new FileReader();
-  reader.onload=function(e){
-    // küçük preview için sıkıştır
-    const img=new Image();img.onload=function(){
-      const c=document.createElement('canvas');
-      const maxW=800,scale=Math.min(1,maxW/img.width);
-      c.width=img.width*scale;c.height=img.height*scale;
-      c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-      EX.photos[EX.idx]=c.toDataURL('image/jpeg',0.7);
-      examRender();
-    };img.src=e.target.result;
-  };
-  reader.readAsDataURL(f);
-}
-function examPhotoConfirm(){
-  if(!EX||EX.answered)return;
-  if(EX_TIMER){clearInterval(EX_TIMER);EX_TIMER=null}
-  EX.answered=true;
-  EX.correct++; // fotoğraf teslim edildi varsayılır (Phase 2'de owner onayına bağlanacak)
-  EX.results.push({i:EX.idx,kind:'photo',ok:true});
-  if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  examReportProgress(true);
   examRender();
 }
 function examReportProgress(ok){
