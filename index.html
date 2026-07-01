@@ -599,6 +599,7 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
       <button class="icon-btn" id="eBtn" onclick="toggleEdit()" style="display:none">&#9998;</button>
     </div>
   </div>
+  <div id="branchBar" style="display:none"></div>
 </div>
 <div class="wrap" id="main"></div>
 <div class="bottom" id="bot" style="display:none"></div>
@@ -665,7 +666,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026062160;
+var APP_BUILD=2026070101;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -745,6 +746,9 @@ function refreshState(){
         PENDING=J('pending','[]');
         STD_ACK=(P.get('std_ack')==='1');
         STD_ACKS=J('std_acks','[]');
+        BRANCHES=J('branches','[]');
+        MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
+        if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
         DRINK_LIST.forEach(function(d){if(PRICES[d.id])d.r=parseInt(PRICES[d.id])});
         DESSERT_CAT=J('desserts','[]');
@@ -1220,6 +1224,21 @@ try{PENDING=JSON.parse((HP.get('pending')||'[]'))}catch(e){PENDING=[]}
 let STD_ACK=(HP.get('std_ack')==='1');
 let STD_ACKS=[];
 try{STD_ACKS=JSON.parse((HP.get('std_acks')||'[]'))}catch(e){STD_ACKS=[]}
+// ── Филиалы (şubeler) ──
+let BRANCHES=[];
+try{BRANCHES=JSON.parse((HP.get('branches')||'[]'))}catch(e){BRANCHES=[]}
+let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
+// Owner'ın uygulamada seçtiği aktif şube (localStorage). 0 = «Все филиалы».
+let ACTIVE_BRANCH=0;
+try{var _ab=localStorage.getItem('cf_active_branch');ACTIVE_BRANCH=_ab?(parseInt(_ab)||0):0;}catch(e){ACTIVE_BRANCH=0}
+// Seçili şube artık mevcut değilse (arşiv/silinme) sıfırla
+if(ACTIVE_BRANCH&&!BRANCHES.some(function(b){return b.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
+function branchName(id){var b=BRANCHES.find(function(x){return x.id===id});return b?b.name:('Филиал '+id);}
+// Barista'nın vardiya başlatırken seçtiği şube (default ev şubesi)
+let startBranch=MY_BRANCH;
+function pickStartBranch(id){startBranch=id;render();}
+// Owner filtresi: kayıt bu şubeye ait mi? (bid yoksa/ACTIVE_BRANCH=0 → hepsi geçer)
+function inActiveBranch(bid){if(!ACTIVE_BRANCH)return true;return (parseInt(bid)||1)===ACTIVE_BRANCH;}
 const CUP_SIZES=['Стакан 500','Стакан 400','Стакан 300','Стакан 200','Стакан 100','Купол 400','Купол 300'];
 let kasaExp=[];  // [{n,a}] harcama satırları
 // Bot'tan gelen bardak fiyatları — yoksa default'lar
@@ -1333,8 +1352,29 @@ dT();
 
 const DAY_MAP={0:'ВС Воскресенье',1:'ПН Понедельник',2:'ВТ Вторник',3:'СР Среда',4:'ЧТ Четверг',5:'ПТ Пятница',6:'СБ Суббота'};
 let _lastViewKey='';
+// ── Owner header şube seçici ──
+function renderBranchBar(){
+  const bar=document.getElementById('branchBar');
+  if(!bar)return;
+  // Sadece owner + birden fazla şube varsa göster
+  if(MY_ROLE!=='owner'||(BRANCHES||[]).length<2){bar.style.display='none';bar.innerHTML='';return}
+  const opts=[{id:0,name:'Все филиалы'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}));
+  bar.style.display='block';
+  bar.style.cssText='display:flex;gap:6px;align-items:center;overflow-x:auto;padding:0 20px 10px;-webkit-overflow-scrolling:touch';
+  bar.innerHTML='<span style="font-size:12px;color:var(--t2);font-weight:600;white-space:nowrap">🏢</span>'
+    +opts.map(function(o){var on=o.id===ACTIVE_BRANCH;
+      return '<button onclick="setActiveBranchUI('+o.id+')" style="white-space:nowrap;padding:6px 12px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('');
+}
+function setActiveBranchUI(id){
+  ACTIVE_BRANCH=id;
+  try{if(id)localStorage.setItem('cf_active_branch',String(id));else localStorage.removeItem('cf_active_branch')}catch(e){}
+  // Sunucuya bildir → /setgroup doğru şubeye bağlanır (0=Все için de kaydedilir, grup bağlamada ana şubeye düşer)
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_active_branch',branch_id:id}))}catch(e){}}
+  render();
+}
 function render(){
   const m=document.getElementById('main'),b=document.getElementById('bot');
+  try{renderBranchBar()}catch(e){}
   // Edit kalemini sadece owner görsün
   const eBtn=document.getElementById('eBtn');
   if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
@@ -1779,8 +1819,8 @@ function rR(m,b){b.style.display='none';
   if(reportRoom){return rReportRoom(m,b)}
   var owner=(MY_ROLE==='owner');
   var rooms = owner ? [
-    {id:'shifts',i:'🥤',t:'Смены и кассы',n:(REP.shifts||[]).length},
-    {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).length},
+    {id:'shifts',i:'🥤',t:'Смены и кассы',n:(REP.shifts||[]).filter(function(s){return inActiveBranch(s.bid)}).length},
+    {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).filter(function(o){return inActiveBranch(o.bid)}).length},
     {id:'analytics',i:'📊',t:'Аналитика бариста',n:((BARISTAS||[]).filter(function(x){return !x.arch}).length)},
     {id:'tips',i:'💝',t:'Чаевые',n:(REP.tips||[]).length},
     {id:'pays',i:'💵',t:'Выплачено',n:(REP.pays||[]).length},
@@ -1817,15 +1857,16 @@ function rReportRoom(m,b){
   var lst;
   if(room==='kasa'){
     lst=KASA_REPORTS||[];
-    if(!lst.length)h+='<div class="empty-mini">Нет записей</div>';
+    if(!lst.filter(function(r){return inActiveBranch(r.branch_id)}).length)h+='<div class="empty-mini">Нет записей</div>';
     lst.forEach(function(r,ri){
+      if(!inActiveBranch(r.branch_id))return;
       h+='<div class="hist" style="cursor:pointer" onclick="kasaDetail=KASA_REPORTS['+ri+'];render()">'
         +'<div class="hist-l"><div class="hist-d">'+escH(r.user_name||'?')+' · '+repDay(r.created_at||r.date)+'</div>'
         +'<div class="hist-m">Продано '+(r.cups_total||0)+' шт · POS '+fmt(r.itogo||0)+'</div></div>'
         +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+' ›</div></div>';
     });
   } else if(room==='orders'){
-    lst=REP.orders||[];
+    lst=(REP.orders||[]).filter(function(o){return inActiveBranch(o.bid)});
     if(!lst.length)h+='<div class="empty-mini">Нет заказов</div>';
     lst.forEach(function(o){
       var items=[];try{items=typeof o.items==='string'?JSON.parse(o.items):(o.items||[])}catch(e){items=[]}
@@ -1834,7 +1875,7 @@ function rReportRoom(m,b){
       h+='</details>';
     });
   } else if(room==='shifts'){
-    lst=REP.shifts||[];
+    lst=(REP.shifts||[]).filter(function(s){return inActiveBranch(s.bid)});
     if(!lst.length)h+='<div class="empty-mini">Нет смен</div>';
     else{
       // Vardiya → kasa raporu eşleşmesi (başlangıç saatine göre)
@@ -1936,6 +1977,15 @@ function rShift(m,b){
       el.textContent=liveDur(active.start_time);
     },1000);
   } else {
+    // Çok şube: hangi şubede çalışıyorsun? (birden fazla aktif şube varsa)
+    if((BRANCHES||[]).length>1){
+      if(!startBranch||!BRANCHES.some(function(b){return b.id===startBranch}))startBranch=(BRANCHES[0]&&BRANCHES[0].id)||1;
+      h+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:var(--r2);background:var(--card)">'
+        +'<div style="font-size:12px;color:var(--t2);margin-bottom:8px;font-weight:600">🏢 Филиал смены</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:8px">'
+        +BRANCHES.map(function(b){var on=b.id===startBranch;return '<button onclick="pickStartBranch('+b.id+')" style="padding:9px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(b.name)+'</button>'}).join('')
+        +'</div></div>';
+    }
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
     h+='<div class="refresh-hint" style="margin-top:10px">Нажмите «Начать смену» как только пришли. Время прихода фиксируется автоматически.</div>';
     // Manuel saat girişi — telefon kapanmışsa veya unuttuysa
@@ -1951,8 +2001,8 @@ function rShift(m,b){
     +'</div>';
   }
 
-  // Şu an çalışan diğer baristalar
-  const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID});
+  // Şu an çalışan diğer baristalar (owner seçili şubeyi süzer)
+  const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
   if(activeOthers.length){
     h+='<div class="sec">🟢 Сейчас в смене ('+activeOthers.length+')</div>';
     activeOthers.forEach(function(brs){
@@ -2096,6 +2146,7 @@ function rM(m,b){
   if(mView==='loanRequest')return rMLoanRequest(m,b);
   if(mView==='loanReview')return rMLoanReview(m,b);
   if(mView==='standard')return rMStandard(m,b);
+  if(mView==='branches')return rMBranches(m,b);
   return rMMain(m,b);
 }
 
@@ -2223,7 +2274,7 @@ function rMMain(m,b){
 
   // Owner paneli (Бухгалтерия)
   if(MY_ROLE==='owner'){
-    const activeCount=BARISTAS.filter(function(x){return x.active}).length;
+    const activeCount=BARISTAS.filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)}).length;
     h+='<div class="own-panel">'
       +'<div class="own-title">👑 Бухгалтерия</div>'
       +'<div class="own-grid">'
@@ -2234,6 +2285,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
+        +'<div class="own-btn" onclick="mView=\'branches\';render()"><div class="own-btn-i">🏢</div><div class="own-btn-t">Филиалы</div>'+((BARISTAS.length&&(BRANCHES||[]).length)?'<div class="own-btn-s">'+(BRANCHES||[]).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
@@ -2328,7 +2380,7 @@ function startShiftNow(){
   SUMMARY.active={start_time:nowIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
   toast('🟢 Смена началась!');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start'}))}catch(e){console.warn(e)}}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',branch:(startBranch||MY_BRANCH)}))}catch(e){console.warn(e)}}
   render();
 }
 
@@ -2356,7 +2408,7 @@ function startShiftCustomTime(){
   SUMMARY.active={start_time:customIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
   toast('🟢 Смена началась с '+dtLabel);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',start_time:customIso}))}catch(e){console.warn(e)}}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',start_time:customIso,branch:(startBranch||MY_BRANCH)}))}catch(e){console.warn(e)}}
   render();
 }
 
@@ -2774,9 +2826,9 @@ function ackStandard(){
 // ── Owner: Şu an çalışanlar (Бухгалтерия odası — kim aktif) ──
 function rMActiveBaristas(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
-  const activeList=BARISTAS.filter(function(x){return x.active});
+  const activeList=BARISTAS.filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  h+='<div class="sec">🟢 Сейчас в смене ('+activeList.length+')</div>';
+  h+='<div class="sec">🟢 Сейчас в смене ('+activeList.length+')'+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+'</div>';
   if(!activeList.length){
     h+='<div class="empty-mini">Никого нет в смене</div>';
   } else {
@@ -2784,7 +2836,7 @@ function rMActiveBaristas(m,b){
       const dur=liveDur(brs.active.start_time);
       h+='<div class="act-mini" id="amini_'+brs.id+'">'
         +'<div class="act-mini-dot"></div>'
-        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
+        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
         +'<div class="act-mini-r" id="amini_d_'+brs.id+'">'+dur+'</div>'
       +'</div>';
     });
@@ -3069,8 +3121,8 @@ function saveFine(){
 function rMBaristas(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  h+='<div class="sec">👥 Все сотрудники · '+escH(fmtMonth(curPeriod()))+'</div>';
-  const _LB=BARISTAS.filter(function(x){return !x.arch});
+  h+='<div class="sec">👥 Все сотрудники · '+escH(fmtMonth(curPeriod()))+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+'</div>';
+  const _LB=BARISTAS.filter(function(x){return !x.arch && inActiveBranch(x.bid)});
   if(!_LB.length){
     h+='<div class="no-baristas"><div class="ic">👥</div><div>Нет сотрудников</div><div style="font-size:11px;margin-top:8px">Они должны написать боту /start</div></div>';
   } else {
@@ -3108,8 +3160,15 @@ function rMBaristas(m,b){
       }
       h+='<div class="bcard-actions">'
         +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')" style="flex:1">✅ Выплатить</button>'
-      +'</div>'
       +'</div>';
+      // Çok şube: baristanın ev şubesi (owner değiştirebilir)
+      if((BRANCHES||[]).length>1 && brs.r!=='owner'){
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏢 Филиал:'
+          +'<select onchange="assignBranch('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--bd);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
+          +BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+((brs.bid||1)===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('')
+          +'</select></div>';
+      }
+      h+='</div>';
     });
   }
   h+='<div class="footer">XSYN</div>';
@@ -3126,6 +3185,57 @@ function rMBaristas(m,b){
 
 function quickFine(uid){fineDraft={target:uid,type:'clean',amount:30000,reason:'',custom:''};mView='fine';render()}
 function quickPay(uid){payTarget=uid;mView='pay';render()}
+
+// ── Owner: Baristanın ev şubesini değiştir ──
+function assignBranch(uid,bid){
+  bid=parseInt(bid)||0;if(!bid)return;
+  var b=BARISTAS.find(function(x){return x.id===uid});if(b)b.bid=bid;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'assign_branch',target:uid,branch_id:bid}))}catch(e){}}
+  toast('🏢 Филиал сотрудника изменён');
+}
+
+// ── Owner: Филиалы (şube yönetimi) ──
+function rMBranches(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🏢 Филиалы</div>';
+  h+='<div class="refresh-hint" style="margin-bottom:12px">Отчёты каждого филиала уходят в свою группу. Чтобы привязать группу — выберите филиал вверху приложения и напишите <b>/setgroup</b> в его Telegram-группе.</div>';
+  (BRANCHES||[]).forEach(function(br){
+    var cnt=(BARISTAS||[]).filter(function(x){return !x.arch&&(x.bid||1)===br.id}).length;
+    var hasGrp=!!(br.group&&String(br.group).trim());
+    var inact=(br.active===0);
+    h+='<div class="bcard" style="'+(inact?'opacity:.55':'')+'">'
+      +'<div class="bcard-top"><div class="bcard-l"><div class="bcard-name">'+escH(br.name)+(inact?' <span style="font-size:10px;color:var(--red)">(архив)</span>':'')+'</div>'
+      +'<div class="bcard-uname" style="margin-top:3px">'+(hasGrp?'✅ группа привязана':'⚠️ группа не привязана')+' · 👥 '+cnt+'</div></div>'
+      +'<div class="bcard-net" style="font-size:13px;color:var(--t3)">#'+br.id+'</div></div>'
+      +'<div class="bcard-actions" style="gap:6px">'
+        +'<button class="bcard-act" onclick="renameBranch('+br.id+')" style="flex:1">✏️ Имя</button>'
+        +'<button class="bcard-act" onclick="toggleBranchActive('+br.id+','+(inact?1:0)+')" style="flex:1">'+(inact?'♻️ Вернуть':'🗄 В архив')+'</button>'
+      +'</div></div>';
+  });
+  h+='<button class="btn-start" style="margin-top:12px" onclick="createBranch()"><span class="ic">＋</span>Добавить филиал</button>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+function createBranch(){
+  var name=(prompt('Название нового филиала:')||'').trim();
+  if(!name)return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'create_branch',name:name}))}catch(e){}}
+  toast('🏢 Филиал добавляется…');
+}
+function renameBranch(id){
+  var br=(BRANCHES||[]).find(function(x){return x.id===id});if(!br)return;
+  var name=(prompt('Новое название филиала:',br.name)||'').trim();
+  if(!name||name===br.name)return;
+  br.name=name;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'update_branch',branch_id:id,name:name}))}catch(e){}}
+  toast('✅ Обновлено');render();
+}
+function toggleBranchActive(id,makeActive){
+  if(!makeActive&&!confirm('Убрать филиал в архив? Его данные сохранятся, но он скроется из списков.'))return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'update_branch',branch_id:id,active:(makeActive?1:0)}))}catch(e){}}
+  toast(makeActive?'♻️ Филиал возвращён':'🗄 В архив');
+}
 
 // ── Owner: Maaş ödeme ──
 function rMPay(m,b){

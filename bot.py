@@ -290,8 +290,108 @@ def get_db():
         total INTEGER,
         created_at TEXT,
         finished_at TEXT)""")
+    # ─── Филиалы (şubeler) — çok şube desteği ───
+    db.execute("""CREATE TABLE IF NOT EXISTS branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        group_chat_id TEXT,
+        sort_order INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        created_at TEXT)""")
+    # Şubelenen tablolara branch_id kolonu (eski DB'lerde yoksa ekle; hepsi ana şubeye = 1).
+    # SQLite ALTER ADD COLUMN ... DEFAULT 1 mevcut satırları da 1 yapar.
+    for _bt in ("users", "shifts", "cashreports", "orders", "std_acks"):
+        try:
+            db.execute(f"ALTER TABLE {_bt} ADD COLUMN branch_id INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass
+    # İlk kurulum / migration: hiç şube yoksa ana şube "C5" (id=1). group_chat_id →
+    # daha önce /setgroup ile kaydedilmiş active_group (varsa) atanır, yoksa boş.
+    try:
+        _bc = db.execute("SELECT COUNT(*) AS c FROM branches").fetchone()
+        if (_bc["c"] or 0) == 0:
+            _ag = db.execute("SELECT val FROM meta WHERE k='active_group'").fetchone()
+            _ag_val = (_ag["val"] if _ag else None) or (GROUP_CHAT_ID or None)
+            db.execute(
+                "INSERT INTO branches (id, name, group_chat_id, sort_order, active, created_at) "
+                "VALUES (1, ?, ?, 0, 1, ?)",
+                ("C5", _ag_val, datetime.now(TZ).isoformat()))
+            # Mevcut satırlarda branch_id NULL kalmışsa (kolon zaten vardı ama boşsa) 1 yap.
+            for _bt in ("users", "shifts", "cashreports", "orders", "std_acks"):
+                try:
+                    db.execute(f"UPDATE {_bt} SET branch_id=1 WHERE branch_id IS NULL")
+                except sqlite3.OperationalError:
+                    pass
+    except sqlite3.OperationalError:
+        pass
     db.commit()
     return db
+
+
+# ═══════════════════════════════════════
+#  ФИЛИАЛЫ (ŞUBELER)
+# ═══════════════════════════════════════
+DEFAULT_BRANCH_ID = 1
+
+
+def get_branches(db, only_active=True):
+    """Şubeler listesi: [{id,name,group_chat_id,sort_order,active}]."""
+    q = "SELECT id, name, group_chat_id, sort_order, active FROM branches"
+    if only_active:
+        q += " WHERE COALESCE(active,1)=1"
+    q += " ORDER BY sort_order, id"
+    return [dict(r) for r in db.execute(q).fetchall()]
+
+
+def get_branch(db, branch_id):
+    """Tek şube (dict) veya None."""
+    if not branch_id:
+        return None
+    r = db.execute(
+        "SELECT id, name, group_chat_id, sort_order, active FROM branches WHERE id=?",
+        (int(branch_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def user_branch_id(db, user_id):
+    """Kullanıcının atandığı (ev) şube — yoksa ana şube."""
+    r = db.execute("SELECT branch_id FROM users WHERE user_id=?", (user_id,)).fetchone()
+    return int(r["branch_id"]) if (r and r["branch_id"]) else DEFAULT_BRANCH_ID
+
+
+def branch_group_id(db, branch_id):
+    """Bir şubenin rapor grubu (group_chat_id) — yoksa None."""
+    b = get_branch(db, branch_id)
+    if b and b.get("group_chat_id"):
+        return str(b["group_chat_id"])
+    return None
+
+
+def acting_branch_id(db, user_id):
+    """Bir aksiyonun ait olduğu şube: kullanıcının AÇIK vardiyasının şubesi,
+    yoksa ev şubesi. (Sipariş/kasa kayıtlarına branch_id yazmak için.)"""
+    try:
+        act = get_active_shift(db, user_id)
+        if act is not None and act["branch_id"]:
+            return int(act["branch_id"])
+    except Exception:
+        pass
+    return user_branch_id(db, user_id)
+
+
+def resolve_group_id(db, user_id, context=None, branch_id=None):
+    """Bir aksiyonun raporunun gideceği Telegram grubu. Öncelik:
+    1) verilen branch_id → 2) kullanıcının AÇIK vardiyasının şubesi →
+    3) kullanıcının ev şubesi. Şubede grup tanımsızsa eski tekil gruba düşer
+    (böylece tek şubede davranış hiç değişmez)."""
+    bid = branch_id or acting_branch_id(db, user_id)
+    g = branch_group_id(db, bid)
+    if g:
+        return g
+    # Fallback: eski tekil grup (active_group / env)
+    if context is not None:
+        return context.bot_data.get("group_id") or GROUP_CHAT_ID or None
+    return GROUP_CHAT_ID or None
 
 
 # ═══════════════════════════════════════
@@ -639,10 +739,11 @@ def _parse_user_time(s):
     return None
 
 
-def start_shift(db, user_id, custom_start=None):
+def start_shift(db, user_id, custom_start=None, branch_id=None):
     """
     Aktif vardiya yoksa yeni başlat. Varsa onu döner.
     custom_start: ISO string veya 'HH:MM' (telefon kapanmışsa geriye dönük başlatma).
+    branch_id: baristanın seçtiği şube (yoksa ev şubesi).
     """
     existing = get_active_shift(db, user_id)
     if existing:
@@ -653,12 +754,21 @@ def start_shift(db, user_id, custom_start=None):
     if start_dt > now + timedelta(minutes=2):
         start_dt = now
     period = start_dt.strftime("%Y-%m")
+    # Seçilen şube geçerli mi? Değilse ev şubesine düş.
+    bid = None
+    try:
+        if branch_id and get_branch(db, branch_id):
+            bid = int(branch_id)
+    except Exception:
+        bid = None
+    if not bid:
+        bid = user_branch_id(db, user_id)
     cur = db.execute(
-        "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note, branch_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, 0.0, json.dumps({}), 0, 0, 0,
          start_dt.strftime("%Y-%m-%d"), period, now.isoformat(),
-         start_dt.isoformat(), None, ""))
+         start_dt.isoformat(), None, "", bid))
     db.commit()
     return db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
 
@@ -816,7 +926,7 @@ def build_hash_payload(db, user_id, name):
     # Kasa raporları listesi: owner hepsini, barista kendininkini görür
     try:
         _crcols = ("SELECT id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
-                   "cashless,schitano,vyshlo,kassa,sold,expenses,daily_pay,hours,start_time,end_time,note FROM cashreports ")
+                   "cashless,schitano,vyshlo,kassa,sold,expenses,daily_pay,hours,start_time,end_time,note,branch_id FROM cashreports ")
         if role == "owner":
             crs = db.execute(_crcols + "ORDER BY id DESC LIMIT 15").fetchall()
         else:
@@ -827,6 +937,17 @@ def build_hash_payload(db, user_id, name):
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
+    # ── Филиалы (şubeler): owner hepsini (grup+aktiflik yönetim için), barista sadece aktif id+ad ──
+    try:
+        if role == "owner":
+            branches_out = [{"id": b["id"], "name": b["name"], "group": b["group_chat_id"] or "",
+                             "active": int(b["active"] or 0), "sort": b["sort_order"] or 0}
+                            for b in get_branches(db, only_active=False)]
+        else:
+            branches_out = [{"id": b["id"], "name": b["name"]} for b in get_branches(db, only_active=True)]
+    except Exception:
+        branches_out = []
+    my_branch = user_branch_id(db, user_id)
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -842,6 +963,8 @@ def build_hash_payload(db, user_id, name):
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"rep={quote(json.dumps(build_reports(db, role, user_id), ensure_ascii=False))}",
+        f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
+        f"my_branch={my_branch}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -851,10 +974,10 @@ def build_hash_payload(db, user_id, name):
         except Exception:
             return []
     if role == "owner":
-        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, COALESCE(u.display_name,u.name) AS nm "
+        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, COALESCE(u.display_name,u.name) AS nm "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
-        _or = _repq("SELECT user_name AS nm, items, created_at FROM orders ORDER BY id DESC", (), 60)
+        _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _repq("SELECT t.amount, t.note, t.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM tips t LEFT JOIN users u ON u.user_id=t.user_id ORDER BY t.id DESC", (), 60)
         _pa = _repq("SELECT p.amount, p.kind, p.note, p.paid_at, COALESCE(u.display_name,u.name) AS nm "
@@ -865,15 +988,15 @@ def build_hash_payload(db, user_id, name):
         _lo = _repq("SELECT l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
     else:
-        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, ? AS nm FROM shifts s "
+        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, ? AS nm FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
-        _or = _repq("SELECT user_name AS nm, items, created_at FROM orders WHERE user_id=? ORDER BY id DESC",
+        _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0} for r in _sh],
-        "orders": [{"nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"]} for r in _or],
+        "shifts": [{"nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "bid": r["bid"] or 1} for r in _sh],
+        "orders": [{"nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
         "pays": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
         "fines": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"]} for r in _fi],
@@ -883,7 +1006,7 @@ def build_hash_payload(db, user_id, name):
     if role == "owner":
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
-            "COALESCE(archived,0) AS archived, archived_at "
+            "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id "
             "FROM users WHERE COALESCE(approved,0)=1 "
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
@@ -921,6 +1044,7 @@ def build_hash_payload(db, user_id, name):
                 "tips": bs["tips"],
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
+                "bid": b["branch_id"] or 1,
                 "recent": [],
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
@@ -2110,9 +2234,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now(TZ)
         db = get_db()
         db.execute(
-            "INSERT INTO orders (chat_id, user_id, user_name, items, created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO orders (chat_id, user_id, user_name, items, created_at, branch_id) VALUES (?,?,?,?,?,?)",
             (update.effective_chat.id, user.id, user.first_name,
-             json.dumps(order), now.isoformat()))
+             json.dumps(order), now.isoformat(), acting_branch_id(db, user.id)))
         db.commit()
 
         text = f"✅ *ЗАКАЗ ОТПРАВЛЕН!*\n👤 {user.first_name}\n📅 {now.strftime('%d.%m.%Y %H:%M')}\n\n"
@@ -2274,7 +2398,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user = update.effective_user
         now = datetime.now(TZ)
 
-        group_id = context.bot_data.get("group_id") or GROUP_CHAT_ID
+        # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
+        # Tek şubede branch 1'in grubu = eski active_group olduğundan davranış değişmez.
+        group_id = resolve_group_id(db, user.id, context)
 
         if action == "order":
             from html import escape as esc_html
@@ -2357,9 +2483,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 _dbo = get_db()
                 _dbo.execute(
-                    "INSERT INTO orders (chat_id, user_id, user_name, items, created_at) VALUES (?,?,?,?,?)",
+                    "INSERT INTO orders (chat_id, user_id, user_name, items, created_at, branch_id) VALUES (?,?,?,?,?,?)",
                     (int(group_id) if group_id else 0, user.id, shown,
-                     json.dumps(order_items, ensure_ascii=False), now.isoformat()))
+                     json.dumps(order_items, ensure_ascii=False), now.isoformat(), acting_branch_id(_dbo, user.id)))
                 _dbo.commit()
             except Exception as e:
                 logger.warning(f"order save failed: {e}")
@@ -2409,7 +2535,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             # Opsiyonel: barista geçmiş bir saat girdiyse (telefon kapanmıştı vs.)
             custom_start = data.get("start_time") or data.get("custom_start")
-            sh = start_shift(db, user.id, custom_start=custom_start)
+            # Barista'nın seçtiği şube (çok şube). Yoksa ev şubesi.
+            sel_branch = data.get("branch") or data.get("branch_id")
+            sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch)
+            # Vardiya artık açık → duyuru bu vardiyanın şubesinin grubuna gitsin.
+            group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
             start_dt = datetime.fromisoformat(sh["start_time"])
             note_back = ""
             if custom_start:
@@ -2820,6 +2950,91 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"{drink_id}: {fmt_sum(old_amt)} → *{fmt_sum(amount)}* сум",
                 parse_mode="Markdown")
 
+        # ─── Филиалы (şube yönetimi — owner) ───
+        elif action == "set_active_branch":
+            # Owner uygulamada aktif şubeyi değiştirdi → /setgroup'un doğru şubeye
+            # bağlaması için meta'ya yaz. (0 = «Все филиалы», grup bağlama için 0 sayılmaz.)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                return
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
+                       (f"owner_branch_{user.id}", str(bid)))
+            db.commit()
+
+        elif action == "create_branch":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            bname = (data.get("name") or "").strip()[:40]
+            if not bname:
+                await update.message.reply_text("❌ Укажите название филиала.")
+                return
+            mx = db.execute("SELECT COALESCE(MAX(sort_order),0) AS m FROM branches").fetchone()["m"]
+            cur = db.execute(
+                "INSERT INTO branches (name, group_chat_id, sort_order, active, created_at) "
+                "VALUES (?,?,?,1,?)", (bname, None, (mx or 0) + 1, now.isoformat()))
+            db.commit()
+            log_action(db, "create_branch", user.id, user.first_name, None, None,
+                       {"id": cur.lastrowid, "name": bname})
+            await update.message.reply_text(
+                f"🏢 Филиал добавлен: *{md_safe(bname)}*\n\n"
+                f"Чтобы отчёты уходили в нужную группу — выберите этот филиал в приложении "
+                f"и напишите /setgroup в его Telegram-группе.",
+                parse_mode="Markdown")
+
+        elif action == "update_branch":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            b = get_branch(db, bid)
+            if not b:
+                await update.message.reply_text("❌ Филиал не найден.")
+                return
+            sets, params = [], []
+            if data.get("name") is not None:
+                nm = (data.get("name") or "").strip()[:40]
+                if nm:
+                    sets.append("name=?"); params.append(nm)
+            if data.get("active") is not None:
+                sets.append("active=?"); params.append(1 if int(data.get("active") or 0) else 0)
+            if not sets:
+                return
+            params.append(bid)
+            db.execute(f"UPDATE branches SET {', '.join(sets)} WHERE id=?", params)
+            db.commit()
+            log_action(db, "update_branch", user.id, user.first_name, None, None,
+                       {"id": bid, "fields": {k: data.get(k) for k in ("name", "active") if data.get(k) is not None}})
+            await update.message.reply_text("✅ Филиал обновлён.")
+
+        elif action == "assign_branch":
+            # Bir baristanın ev şubesini değiştir (owner)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                tid = int(data.get("target") or 0)
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                tid = bid = 0
+            if not tid or not get_branch(db, bid):
+                await update.message.reply_text("❌ Неверные данные.")
+                return
+            db.execute("UPDATE users SET branch_id=? WHERE user_id=?", (bid, tid))
+            db.commit()
+            log_action(db, "assign_branch", user.id, user.first_name, tid,
+                       display_name_for(db, tid), {"branch_id": bid})
+
         # ─── Tatlı kataloğu yönetimi (owner) ───
         elif action == "dessert_save":
             db = get_db()
@@ -3203,16 +3418,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             shift_start = (data.get("start_time") or "")
             shift_end = (data.get("end_time") or "")
             coffee_kg = float(data.get("coffee_kg", 0) or 0)  # kalan kahve çekirdeği (kg) — stok uyarısı için
+            _cr_branch = acting_branch_id(db, user.id)
             db.execute(
-                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time,coffee_kg) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time,coffee_kg,branch_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (user.id, user.first_name, now.strftime("%Y-%m-%d"), now.strftime("%Y-%m"), now.isoformat(),
                  json.dumps({str(c.get("n","")): int(c.get("b",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("r",0) or 0) for c in cups}, ensure_ascii=False),
                  json.dumps(ostalos, ensure_ascii=False),
                  json.dumps({str(c.get("n","")): int(c.get("s",0) or 0) for c in cups}, ensure_ascii=False),
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
-                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg))
+                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg, _cr_branch))
             db.commit()
             if group_id:
                 try:
@@ -3743,16 +3959,30 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if get_role(db, user.id) != "owner":
         return  # sadece owner bağlayabilir
-    context.bot_data["group_id"] = str(chat.id)
+    # Çok şube: owner uygulamada hangi şubeyi seçtiyse (meta owner_branch_<uid>) o şubeye bağla.
+    # Seçim yoksa / «Все филиалы» (0) ise ana şubeye (DEFAULT_BRANCH_ID) bağla.
     try:
-        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('active_group', ?)", (str(chat.id),))
+        _ob = db.execute("SELECT val FROM meta WHERE k=?", (f"owner_branch_{user.id}",)).fetchone()
+        target_branch = int(_ob["val"]) if (_ob and _ob["val"]) else 0
+    except Exception:
+        target_branch = 0
+    if not target_branch or not get_branch(db, target_branch):
+        target_branch = DEFAULT_BRANCH_ID
+    try:
+        db.execute("UPDATE branches SET group_chat_id=? WHERE id=?", (str(chat.id), target_branch))
+        # Ana şube ise eski tekil grup mekanizmasını da güncelle (geriye dönük fallback).
+        if target_branch == DEFAULT_BRANCH_ID:
+            context.bot_data["group_id"] = str(chat.id)
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('active_group', ?)", (str(chat.id),))
         db.commit()
     except Exception as e:
         logger.warning(f"setgroup meta save failed: {e}")
+    bname = (get_branch(db, target_branch) or {}).get("name") or "?"
     await update.message.reply_text(
-        f"✅ Группа привязана! Отчёты, заказы, задачи и кассы теперь приходят сюда.\n"
+        f"✅ Группа привязана к филиалу *{md_safe(bname)}*!\n"
+        f"Отчёты, заказы, задачи и кассы этого филиала теперь приходят сюда.\n"
         f"ID: `{chat.id}`\n\n"
-        f"_(Переключить обратно — напишите /setgroup в нужной группе.)_",
+        f"_(Другой филиал — выберите его в приложении и напишите /setgroup в его группе.)_",
         parse_mode="Markdown")
 
 
