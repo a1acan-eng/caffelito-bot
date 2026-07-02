@@ -671,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070107;
+var APP_BUILD=2026070108;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -823,7 +823,7 @@ function refreshState(){
     var esc=(typeof escH==='function')?escH:function(x){return x;};
     list.innerHTML=pBranches.map(function(b){
       var def=(b.id===pMyBranch);
-      return '<button class="pass-branch-btn" data-bid="'+b.id+'" style="width:100%;padding:16px;border-radius:14px;border:1px solid '+(def?'var(--gold-border)':'var(--border)')+';background:var(--card);color:var(--t1);font-size:16px;font-weight:700;cursor:pointer;text-align:center">🏢 '+esc(b.name)+(def?' <span style="font-size:11px;color:var(--t3);font-weight:500">· ваш филиал</span>':'')+'</button>';
+      return '<button class="pass-branch-btn" data-bid="'+b.id+'" style="width:100%;padding:16px;border-radius:14px;border:1px solid '+(def?'var(--gold-border)':'var(--border)')+';background:var(--card);color:var(--t1);font-size:16px;font-weight:700;cursor:pointer;text-align:center">🏢 '+esc(b.name)+'</button>';
     }).join('');
     list.querySelectorAll('.pass-branch-btn').forEach(function(btn){
       btn.addEventListener('click',function(){
@@ -1281,6 +1281,24 @@ function pickStartBranch(id){
   // Oturum şubesini güncelle → grup yönlendirmesi de bu şubeye geçsin
   try{sessionStorage.setItem('cf_cur_branch',String(id))}catch(e){}
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_my_branch',branch_id:id}))}catch(e){}}
+}
+// Aktif vardiyayı başka şubeye taşı (onaylı) — süre korunur, sonraki raporlar yeni gruba
+function switchShiftBranch(id){
+  var act=(SUMMARY&&SUMMARY.active)?SUMMARY.active:null;
+  if(!act){brSwitchOpen=false;render();return;}
+  var cur=parseInt(act.branch_id)||1;
+  if(id===cur){brSwitchOpen=false;render();return;}
+  var msg='Перенести текущую смену в филиал «'+branchName(id)+'»?\n\nОтработанное время сохранится, дальнейшие отчёты (заказы, касса) уйдут в «'+branchName(id)+'».';
+  var doMove=function(){
+    if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'move_shift_branch',branch_id:id}))}catch(e){}}
+    act.branch_id=id;startBranch=id;
+    try{sessionStorage.setItem('cf_cur_branch',String(id))}catch(e){}
+    brSwitchOpen=false;
+    toast('🏢 Смена перенесена в «'+branchName(id)+'»');
+    render();
+  };
+  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)doMove();else{brSwitchOpen=false;render();}})}
+  else if(confirm(msg)){doMove();}else{brSwitchOpen=false;render();}
 }
 // Owner filtresi: kayıt bu şubeye ait mi? (bid yoksa/ACTIVE_BRANCH=0 → hepsi geçer)
 function inActiveBranch(bid){if(!ACTIVE_BRANCH)return true;return (parseInt(bid)||1)===ACTIVE_BRANCH;}
@@ -2002,12 +2020,20 @@ function rShift(m,b){
   if(active){
     const startStr=fmtTime(active.start_time);
     const dur=liveDur(active.start_time);
+    var curSB=parseInt(active.branch_id)||startBranch||1;
     h+='<div class="act-card" id="actCard">'
       +'<div class="act-pulse"><span class="act-dot"></span>В смене</div>'
       +'<div class="act-time" id="actDur">'+dur+'</div>'
       +'<div class="act-sub">прошло с начала смены</div>'
       +'<div class="act-row"><span>Пришли в</span><b>'+startStr+'</b></div>'
+      +((BRANCHES||[]).length>1?'<div class="act-row"><span>🏢 Филиал</span><b>'+escH(branchName(curSB))+'</b></div>':'')
       +'<button class="btn-end" onclick="openShiftEnd()">🔴 Завершить смену</button>'
+      +((BRANCHES||[]).length>1?(
+          '<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="width:100%;margin-top:8px;padding:10px;border-radius:var(--rp);border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;font-size:13px;font-weight:600;cursor:pointer">🔁 Сменить филиал</button>'
+          +(brSwitchOpen?('<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;justify-content:center">'
+            +BRANCHES.filter(function(b){return b.id!==curSB}).map(function(b){return '<button onclick="switchShiftBranch('+b.id+')" style="padding:9px 14px;border-radius:var(--rp);border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.12);color:#fff;font-weight:700;font-size:13px;cursor:pointer">🏢 '+escH(b.name)+'</button>'}).join('')
+            +'</div>'):'')
+        ):'')
     +'</div>';
     if(window._actTimer)clearInterval(window._actTimer);
     window._actTimer=setInterval(function(){
@@ -2260,20 +2286,19 @@ function rMMain(m,b){
 
   // ── Owner: şube seçici + "kim çalışıyor" (Управление'nin en üstü) ──
   if(MY_ROLE==='owner' && (BRANCHES||[]).length){
-    var _bopts=[{id:0,name:'Все филиалы'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}));
+    var _bopts=[{id:0,name:'Все'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}));
     var _activeHere=(BARISTAS||[]).filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
-    h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;margin-bottom:12px;box-shadow:var(--shadow)">'
-      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">'
-        +'<div style="font-size:12px;font-weight:800;color:var(--t2);letter-spacing:.3px">🏢 ФИЛИАЛ</div>'
-        +'<button onclick="mView=\'branches\';render()" title="Добавить / изменить филиалы" style="padding:6px 12px;border-radius:var(--rp);border:1px solid var(--gold-border);background:transparent;color:var(--gold2,var(--t1));font-size:12px;font-weight:700;cursor:pointer">✏️ Изменить</button>'
+    var _names=_activeHere.map(function(x){return escH(x.n)+(!ACTIVE_BRANCH&&(BRANCHES||[]).length>1?'<span style="color:var(--t3);font-size:11px"> ·'+escH(branchName((x.active&&x.active.branch_id)||x.bid))+'</span>':'')}).join(', ');
+    h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:9px 11px;margin-bottom:10px">'
+      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+        +'<span style="font-size:12px;font-weight:800;color:var(--t2)">🏢</span>'
+        +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:5px 11px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
+        +'<button onclick="mView=\'branches\';render()" title="Изменить филиалы" style="margin-left:auto;padding:5px 8px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t2);font-size:13px;cursor:pointer">✏️</button>'
       +'</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
-      +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:8px 14px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:13px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
-      +'</div>'
-      +'<div style="margin-top:11px;padding-top:10px;border-top:1px solid var(--border);font-size:13px;line-height:1.5">'
+      +'<div style="margin-top:8px;font-size:12.5px;line-height:1.45">'
       +(_activeHere.length
-          ? '🟢 <b>Сейчас в смене'+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+':</b><br>'+_activeHere.map(function(x){return '• '+escH(x.n)+' <span style="color:var(--t3);font-size:11px">('+fmtTime(x.active.start_time)+(!ACTIVE_BRANCH&&(BRANCHES||[]).length>1?' · '+escH(branchName((x.active&&x.active.branch_id)||x.bid)):'')+')</span>'}).join('<br>')
-          : '<span style="color:var(--t3)">Сейчас никто не в смене'+(ACTIVE_BRANCH?' в «'+escH(branchName(ACTIVE_BRANCH))+'»':'')+'</span>')
+          ? '<span style="color:#10b981;font-weight:700">🟢 В смене'+(ACTIVE_BRANCH?' ('+escH(branchName(ACTIVE_BRANCH))+')':'')+':</span> '+_names
+          : '<span style="color:var(--t3)">Никого нет в смене'+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+'</span>')
       +'</div>'
     +'</div>';
   }
