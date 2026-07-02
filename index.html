@@ -751,7 +751,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070110;
+var APP_BUILD=2026070111;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -845,6 +845,15 @@ function refreshState(){
 }
 // ─── Passcode auth (Wallet style, client-side SHA-256) ───
 (function(){
+  // 🔓 Yerel önizleme (localhost / 127.0.0.1 / dosya) → parola kilidini ATLA.
+  // Sadece geliştirme içindir; Telegram/Railway'de (gerçek host) kilit aynen durur.
+  try{
+    var _lh=(location.hostname||'').toLowerCase();
+    if(_lh==='localhost'||_lh==='127.0.0.1'||_lh==='0.0.0.0'||_lh===''||_lh.endsWith('.local')){
+      var _ov=document.getElementById('pass-overlay');if(_ov)_ov.style.display='none';
+      return;
+    }
+  }catch(e){}
   const HP2=new URLSearchParams(window.__cf||((window.location.hash||'').replace(/^#/,'')));
   const role=HP2.get('role')||'barista';
   const pwh=(HP2.get('pwh')||'').trim();
