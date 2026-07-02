@@ -592,8 +592,9 @@ body{letter-spacing:-.01em}
 .brand-name{font-family:'Unbounded','Golos Text',sans-serif;font-weight:700;font-size:15px;letter-spacing:0}
 .brand-name .caffe{color:var(--gold)}
 .brand-logo{border-radius:12px;box-shadow:0 2px 10px rgba(76,57,26,.22),0 0 0 1px var(--gold-border)}
-.clock{font-family:'Unbounded','Golos Text',sans-serif;font-size:12.5px;font-weight:600;letter-spacing:.5px}
-.clock-day{font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;font-weight:600}
+.clock-wrap{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:5px 12px 6px;box-shadow:var(--shadow);text-align:center}
+.clock{font-family:'Unbounded','Golos Text',sans-serif;font-size:13px;font-weight:600;letter-spacing:1px;font-variant-numeric:tabular-nums;line-height:1.2}
+.clock-day{font-size:8.5px;color:var(--gold2);font-weight:700;letter-spacing:.7px;text-transform:uppercase;margin-top:1px}
 /* tab dock */
 .tabs{background:rgba(255,252,244,.68);border:1px solid rgba(255,255,255,.8);box-shadow:0 14px 40px rgba(60,42,10,.18),0 2px 8px rgba(60,42,10,.08)}
 .tab{color:#6f604a;font-weight:600;font-size:9px;letter-spacing:.1px}
@@ -654,6 +655,10 @@ body{letter-spacing:-.01em}
 #pass-overlay .pad-key{background:var(--card);border:1px solid var(--border);box-shadow:var(--shadow);font-family:'Unbounded','Golos Text',sans-serif;font-size:22px;font-weight:500}
 #pass-overlay .pad-key.empty{background:transparent;border:none;box-shadow:none}
 #pass-overlay .pass-msg.err{color:var(--red)}
+/* login: geniş ekranda app kolonuyla aynı hizada kalsın, yayılmasın */
+@media (min-width:600px){
+  #pass-overlay{left:0;right:0;margin:0 auto;max-width:480px;box-shadow:0 0 60px rgba(0,0,0,.18)}
+}
 /* inputs */
 .add-inp:focus,.sf-hours:focus,.sf-note:focus,.set-input:focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-bg)}
 .alert{box-shadow:var(--shadow)}
@@ -751,7 +756,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070111;
+var APP_BUILD=2026070112;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
