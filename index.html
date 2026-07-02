@@ -671,7 +671,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070108;
+var APP_BUILD=2026070109;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2048,10 +2048,10 @@ function rShift(m,b){
       h+='<div style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--gold-border);border-radius:var(--r2);background:var(--card)">'
         +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
         +'<div style="font-size:14px;font-weight:800">🏢 Смена в филиале: '+escH(branchName(startBranch))+'</div>'
-        +'<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="padding:6px 10px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">сменить</button>'
+        +'<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="padding:6px 10px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">сменить</button>'
         +'</div>'
         +(brSwitchOpen?('<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">'
-          +BRANCHES.filter(function(b){return b.id!==startBranch}).map(function(b){return '<button onclick="pickStartBranch('+b.id+');brSwitchOpen=false;render()" style="padding:9px 14px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t1);font-weight:700;font-size:13px;cursor:pointer">🏢 '+escH(b.name)+'</button>'}).join('')
+          +BRANCHES.filter(function(b){return b.id!==startBranch}).map(function(b){return '<button onclick="pickStartBranch('+b.id+');brSwitchOpen=false;render()" style="padding:9px 14px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t1);font-weight:700;font-size:13px;cursor:pointer">🏢 '+escH(b.name)+'</button>'}).join('')
           +'</div>'):'')
         +'</div>';
     }
@@ -2292,8 +2292,8 @@ function rMMain(m,b){
     h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:9px 11px;margin-bottom:10px">'
       +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
         +'<span style="font-size:12px;font-weight:800;color:var(--t2)">🏢</span>'
-        +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:5px 11px;border-radius:var(--rp);border:1px solid '+(on?'var(--acc)':'var(--bd)')+';background:'+(on?'var(--acc)':'transparent')+';color:'+(on?'#fff':'var(--t1)')+';font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
-        +'<button onclick="mView=\'branches\';render()" title="Изменить филиалы" style="margin-left:auto;padding:5px 8px;border-radius:var(--rp);border:1px solid var(--bd);background:transparent;color:var(--t2);font-size:13px;cursor:pointer">✏️</button>'
+        +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:5px 11px;border-radius:var(--rp);border:1px solid '+(on?'var(--gold)':'var(--border2)')+';background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#1a1a1a':'var(--t1)')+';font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
+        +'<button onclick="mView=\'branches\';render()" title="Изменить филиалы" style="margin-left:auto;padding:5px 8px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:13px;cursor:pointer">✏️</button>'
       +'</div>'
       +'<div style="margin-top:8px;font-size:12.5px;line-height:1.45">'
       +(_activeHere.length
@@ -3251,7 +3251,7 @@ function rMBaristas(m,b){
       // Çok şube: baristanın ev şubesi (owner değiştirebilir)
       if((BRANCHES||[]).length>1 && brs.r!=='owner'){
         h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏢 Филиал:'
-          +'<select onchange="assignBranch('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--bd);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
+          +'<select onchange="assignBranch('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
           +BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+((brs.bid||1)===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('')
           +'</select></div>';
       }
