@@ -225,7 +225,18 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .hist-r{font-size:14px;font-weight:800;color:var(--gold2);font-variant-numeric:tabular-nums;flex-shrink:0}
 .hist-r.red{color:var(--red)}
 .hist-r.grey{color:var(--t3)}
-.empty-mini{text-align:center;padding:18px 12px;color:var(--t3);font-size:12px;font-weight:500;background:var(--card);border:1px dashed var(--border2);border-radius:10px;margin-bottom:8px}
+.empty-mini{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;padding:28px 16px;color:var(--t3);font-size:12.5px;font-weight:600;background:var(--card);border:1px dashed var(--border2);border-radius:14px;margin-bottom:8px;line-height:1.5}
+.empty-mini::before{content:'☕';font-size:30px;line-height:1;opacity:.45;display:block}
+/* Mini bar grafik (Отчёт · ciro trendi) */
+.mchart-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:12px 14px 10px;margin-bottom:14px;box-shadow:var(--shadow)}
+.mchart-h{font-size:10px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.mchart-sum{color:var(--gold2);font-size:12px}
+.mchart{display:flex;align-items:flex-end;gap:7px;height:86px}
+.mbar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end;min-width:0}
+.mbar{width:100%;max-width:28px;height:0;border-radius:6px 6px 2px 2px;background:linear-gradient(180deg,#f8d765,#e2ac16);transition:height .6s cubic-bezier(.25,.8,.3,1)}
+.mbar.hi{background:linear-gradient(180deg,#34d399,#059669)}
+.mbar-l{font-size:9px;color:var(--t3);font-weight:700;white-space:nowrap}
+[data-theme="dark"] .mbar{background:linear-gradient(180deg,#f6d060,#dfa816)}
 .sf-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px}
 .sf-label{font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
 .sf-hours{width:100%;padding:14px;border:1.5px solid var(--border2);border-radius:10px;font-family:inherit;font-size:24px;font-weight:800;text-align:center;outline:none;color:var(--t1);background:#fff;-moz-appearance:textfield}
@@ -920,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070113;
+var APP_BUILD=2026070114;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2292,6 +2303,22 @@ function rReportRoom(m,b){
       var byDay={};
       lst.forEach(function(s){if(!s.start_time)return;var d=new Date(s.start_time);if(isNaN(d))return;var k=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();(byDay[k]=byDay[k]||[]).push(s);});
       var keys=Object.keys(byDay).sort(function(a,b){return new Date(byDay[b][0].start_time)-new Date(byDay[a][0].start_time)});
+      // ── Mini ciro grafiği: son 7 gün (kasa raporlarından) ──
+      try{
+        var revByDay={};
+        lst.forEach(function(s){if(!s.start_time)return;var d=new Date(s.start_time);if(isNaN(d))return;var k=d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate();var kri=(kByStart[s.start_time]!=null)?kByStart[s.start_time]:null;var rv=(kri!=null&&KASA_REPORTS[kri])?(KASA_REPORTS[kri].kassa||0):0;revByDay[k]=(revByDay[k]||0)+rv;});
+        var ck=keys.slice(0,7).reverse();
+        var vals=ck.map(function(k){return revByDay[k]||0;});
+        var mx=Math.max.apply(null,vals.concat([1]));
+        var haveRev=vals.filter(function(v){return v>0}).length;
+        if(ck.length>=2&&haveRev>=2){
+          var sum=vals.reduce(function(a,v){return a+v},0);
+          var ch='<div class="mchart-card"><div class="mchart-h"><span>📈 Выручка · '+ck.length+' дн.</span><span class="mchart-sum">'+fmt(sum)+' сум</span></div><div class="mchart">';
+          ck.forEach(function(k,i){var v=vals[i];var pc=Math.round(v/mx*100);var dd=k.split('-');var lbl=String(dd[2]).padStart(2,'0')+'.'+String(dd[1]).padStart(2,'0');var hi=(v===mx&&v>0);ch+='<div class="mbar-col"><div class="mbar'+(hi?' hi':'')+'" data-h="'+pc+'"></div><div class="mbar-l">'+lbl+'</div></div>';});
+          ch+='</div></div>';
+          h+=ch;
+        }
+      }catch(_e){}
       keys.forEach(function(k){
         var ds=byDay[k].slice().sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time)});
         var d0=new Date(ds[0].start_time);
@@ -2333,6 +2360,7 @@ function rReportRoom(m,b){
     lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div></div>';});
   }
   h+='<div class="footer">XSYN</div>';m.innerHTML=h;
+  try{var _mb=m.querySelectorAll('.mbar[data-h]');if(_mb.length)setTimeout(function(){_mb.forEach(function(el){el.style.height=el.getAttribute('data-h')+'%';});},60);}catch(_e){}
 }
 
 function esc(s){return String(s||'').replace(/'/g,"\\'")}
