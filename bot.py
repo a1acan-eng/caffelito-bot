@@ -418,6 +418,55 @@ def resolve_group_id(db, user_id, context=None, branch_id=None):
 # ═══════════════════════════════════════
 HOURLY_RATE = 12000  # сум за час
 
+# ─── Çalışma saati / ödeme yapılandırması (owner ayarlar, meta'da tutulur) ───
+PAY_DEFAULTS = {"open": 7, "close": 3, "max": 20, "unpaid": 1}
+
+
+def get_pay_cfg(db):
+    """{open, close, max, unpaid} — açılış/kapanış saati, max vardiya (saat), kapalı
+    pencere düşümü açık mı. Owner Настройки'den değiştirir."""
+    cfg = dict(PAY_DEFAULTS)
+    try:
+        rows = db.execute(
+            "SELECT k,val FROM meta WHERE k IN ('pay_open','pay_close','pay_max','pay_unpaid')").fetchall()
+        for r in rows:
+            key = r["k"].split("_", 1)[1]
+            try:
+                cfg[key] = int(r["val"])
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return cfg
+
+
+def paid_hours(start_dt, end_dt, cfg):
+    """Ödenecek saat: ham süreden KAPALI pencereye (kapanış→açılış, ör. 03:00–07:00)
+    denk gelen kısım düşülür; sonuç max vardiya saatiyle sınırlanır (unutulan vardiya
+    koruması). start_dt/end_dt naive datetime."""
+    if not end_dt or not start_dt or end_dt <= start_dt:
+        return 0.0
+    raw = (end_dt - start_dt).total_seconds() / 3600.0
+    unpaid = 0.0
+    if cfg.get("unpaid", 1):
+        oh = int(cfg.get("open", 7)); ch = int(cfg.get("close", 3))
+        if 0 <= ch < oh <= 24:
+            day = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_day = end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            guard = 0
+            while day <= end_day and guard < 400:
+                w0 = day.replace(hour=ch); w1 = day.replace(hour=oh)
+                ov = (min(end_dt, w1) - max(start_dt, w0)).total_seconds()
+                if ov > 0:
+                    unpaid += ov / 3600.0
+                day = day + timedelta(days=1); guard += 1
+    paid = max(0.0, raw - unpaid)
+    mx = int(cfg.get("max", 20) or 0)
+    if mx and paid > mx:
+        paid = float(mx)
+    return round(paid, 2)
+
+
 BONUS_RATES = {
     "ml100": 500,
     "ml200": 700,
@@ -810,8 +859,8 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Bitiş başlangıçtan önce olamaz
     if end_dt < start:
         end_dt = now
-    delta_h = (end_dt - start).total_seconds() / 3600.0
-    hours = round(max(0.0, delta_h), 2)
+    # Ödenecek saat: kapalı pencere (03:00–07:00) düşülür + max ile sınırlı.
+    hours = paid_hours(start, end_dt, get_pay_cfg(db))
     drinks_bonus = calc_bonus(drinks, get_prices(db))
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
     bonus = drinks_bonus + dessert_bonus
@@ -1000,6 +1049,7 @@ def build_hash_payload(db, user_id, name):
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
+        f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -3092,6 +3142,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if row and (row["user_id"] == user.id or get_role(db, user.id) == "owner"):
                     db.execute("UPDATE scheduled_orders SET canceled=1 WHERE id=? AND COALESCE(sent,0)=0", (sid,))
                     db.commit()
+
+        elif action == "pay_settings":
+            # Owner: çalışma saatleri / ödeme kuralı
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            def _clampi(v, lo, hi, dflt):
+                try:
+                    return max(lo, min(hi, int(v)))
+                except Exception:
+                    return dflt
+            op = _clampi(data.get("open"), 0, 23, 7)
+            cl = _clampi(data.get("close"), 0, 23, 3)
+            mx = _clampi(data.get("max"), 1, 48, 20)
+            un = 1 if int(data.get("unpaid", 1) or 0) else 0
+            for k, v in (("pay_open", op), ("pay_close", cl), ("pay_max", mx), ("pay_unpaid", un)):
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
+            db.commit()
+            await update.message.reply_text(
+                f"✅ *Часы работы обновлены*\n"
+                f"Открытие: {op:02d}:00 · Закрытие: {cl:02d}:00\n"
+                f"Макс. смена: {mx} ч\n"
+                f"Закрытое окно ({cl:02d}:00–{op:02d}:00) не оплачивается: {'да' if un else 'нет'}",
+                parse_mode="Markdown")
 
         elif action == "create_branch":
             db = get_db()
