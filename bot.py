@@ -290,6 +290,14 @@ def get_db():
         total INTEGER,
         created_at TEXT,
         finished_at TEXT)""")
+    # ─── Zamanlı siparişler (gelecekte gruba gönderilecek) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS scheduled_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, user_name TEXT,
+        group_id TEXT, branch_id INTEGER,
+        body TEXT, total INTEGER, items TEXT,
+        send_at TEXT, created_at TEXT,
+        sent INTEGER DEFAULT 0, canceled INTEGER DEFAULT 0)""")
     # ─── Филиалы (şubeler) — çok şube desteği ───
     db.execute("""CREATE TABLE IF NOT EXISTS branches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -959,6 +967,21 @@ def build_hash_payload(db, user_id, name):
     except Exception:
         branches_out = []
     my_branch = user_branch_id(db, user_id)
+    # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
+    try:
+        if role == "owner":
+            _srows = db.execute(
+                "SELECT id,user_name,total,send_at,branch_id FROM scheduled_orders "
+                "WHERE COALESCE(sent,0)=0 AND COALESCE(canceled,0)=0 ORDER BY send_at LIMIT 40").fetchall()
+        else:
+            _srows = db.execute(
+                "SELECT id,user_name,total,send_at,branch_id FROM scheduled_orders "
+                "WHERE user_id=? AND COALESCE(sent,0)=0 AND COALESCE(canceled,0)=0 ORDER BY send_at LIMIT 20",
+                (user_id,)).fetchall()
+        scheduled_out = [{"id": r["id"], "nm": r["user_name"] or "?", "total": r["total"] or 0,
+                          "at": r["send_at"], "bid": r["branch_id"] or 1} for r in _srows]
+    except Exception:
+        scheduled_out = []
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -976,6 +999,7 @@ def build_hash_payload(db, user_id, name):
         f"rep={quote(json.dumps(build_reports(db, role, user_id), ensure_ascii=False))}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
+        f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -2379,6 +2403,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  WEBAPP DATA
 # ═══════════════════════════════════════
 
+async def deliver_order(bot, group_id, header, esc_lines, footer):
+    """Sipariş mesajını gruba gönder (uzunsa <pre> parçalara bölerek). Hem anlık
+    hem zamanlı sipariş bunu kullanır. esc_lines zaten HTML-escape'lidir."""
+    full = header + "<pre>" + "\n".join(esc_lines) + "</pre>" + footer
+    if len(full.encode('utf-8')) <= 4096:
+        await bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
+        return
+    batches, cur, clen = [], [], 0
+    for ln in esc_lines:
+        if cur and clen + len(ln) + 1 > 3500:
+            batches.append(cur); cur, clen = [], 0
+        cur.append(ln); clen += len(ln) + 1
+    if cur:
+        batches.append(cur)
+    n = len(batches)
+    for i, b in enumerate(batches):
+        msg = (header if i == 0 else "") + "<pre>" + "\n".join(b) + "</pre>" + (footer if i == n - 1 else "")
+        await bot.send_message(chat_id=int(group_id), text=msg, parse_mode="HTML")
+
+
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mini App'ten gelen veriyi işle ve gruba ilet"""
     logger.info("=== WEBAPP DATA RECEIVED ===")
@@ -2492,29 +2536,32 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     body_lines.append(nm + " " * (maxn - len(nm) + 2) + q)
                 else:
                     body_lines.append(nm + "  " + q)
-            header = "<b>ЗАКАЗ — CAFFELITO</b>\n" + f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
-            footer = f"<b>Итого: {total} позиций</b>"
             esc_lines = [esc_html(x) for x in body_lines]
 
+            # ── Zamanlı sipariş mı? (send_at gelecekteyse gruba ŞİMDİ gönderme, sakla) ──
+            _sa_raw = (data.get("send_at") or "").strip()
+            _sched = _parse_user_time(_sa_raw) if _sa_raw else None
+            if _sched and _sched > datetime.now(TZ).replace(tzinfo=None) + timedelta(minutes=1):
+                _bid = acting_branch_id(db, user.id)
+                db.execute(
+                    "INSERT INTO scheduled_orders (user_id,user_name,group_id,branch_id,body,total,items,send_at,created_at,sent,canceled) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,0,0)",
+                    (user.id, shown, str(group_id) if group_id else "", _bid,
+                     "\n".join(esc_lines), total, json.dumps(order_items, ensure_ascii=False),
+                     _sched.isoformat(), now.isoformat()))
+                db.commit()
+                await update.message.reply_text(
+                    f"⏰ Заказ запланирован на *{_sched.strftime('%d.%m.%Y %H:%M')}*.\n"
+                    f"Он автоматически уйдёт в группу в это время.\n"
+                    f"_(Отменить — в приложении: Заказ → Запланированные.)_",
+                    parse_mode="Markdown")
+                return
+
+            header = "<b>ЗАКАЗ — CAFFELITO</b>\n" + f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
+            footer = f"<b>Итого: {total} позиций</b>"
             if group_id:
                 try:
-                    full = header + "<pre>" + "\n".join(esc_lines) + "</pre>" + footer
-                    if len(full.encode('utf-8')) <= 4096:
-                        await context.bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
-                    else:
-                        # Uzun sipariş → satırları gruplara böl, HER parça KENDİ <pre> ile tam mesaj
-                        # (önceki hata: <pre> bloğu bölününce etiket kırılıyordu → Telegram reddediyordu)
-                        batches, cur, clen = [], [], 0
-                        for ln in esc_lines:
-                            if cur and clen + len(ln) + 1 > 3500:
-                                batches.append(cur); cur, clen = [], 0
-                            cur.append(ln); clen += len(ln) + 1
-                        if cur:
-                            batches.append(cur)
-                        n = len(batches)
-                        for i, b in enumerate(batches):
-                            msg = (header if i == 0 else "") + "<pre>" + "\n".join(b) + "</pre>" + (footer if i == n - 1 else "")
-                            await context.bot.send_message(chat_id=int(group_id), text=msg, parse_mode="HTML")
+                    await deliver_order(context.bot, group_id, header, esc_lines, footer)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
                     logger.error(f"GROUP FORWARD FAILED: {e}")
@@ -3032,6 +3079,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
                            (f"cur_branch_{user.id}", str(bid)))
                 db.commit()
+
+        elif action == "cancel_scheduled":
+            # Bekleyen zamanlı siparişi iptal et (kendi siparişin ya da owner)
+            db = get_db()
+            try:
+                sid = int(data.get("id") or 0)
+            except Exception:
+                sid = 0
+            if sid:
+                row = db.execute("SELECT user_id FROM scheduled_orders WHERE id=?", (sid,)).fetchone()
+                if row and (row["user_id"] == user.id or get_role(db, user.id) == "owner"):
+                    db.execute("UPDATE scheduled_orders SET canceled=1 WHERE id=? AND COALESCE(sent,0)=0", (sid,))
+                    db.commit()
 
         elif action == "create_branch":
             db = get_db()
@@ -4319,6 +4379,47 @@ async def payment_reminder_loop(app):
         await asyncio.sleep(3600)  # her saat kontrol
 
 
+async def scheduled_orders_loop(app):
+    """Zamanı gelen zamanlı siparişleri gruba gönderir (her 60 sn kontrol)."""
+    import html as _html
+    await asyncio.sleep(25)
+    while True:
+        try:
+            db = get_db()
+            now_iso = datetime.now(TZ).replace(tzinfo=None).isoformat()
+            due = db.execute(
+                "SELECT * FROM scheduled_orders WHERE COALESCE(sent,0)=0 AND COALESCE(canceled,0)=0 "
+                "AND send_at<=? ORDER BY id", (now_iso,)).fetchall()
+            for so in due:
+                gid = so["group_id"] or branch_group_id(db, so["branch_id"]) or ""
+                esc_lines = (so["body"] or "").split("\n")
+                total = so["total"] or 0
+                shown = so["user_name"] or "?"
+                sent_now = datetime.now(TZ)
+                header = ("<b>ЗАКАЗ — CAFFELITO</b>\n"
+                          f"<b>{_html.escape(str(shown))}</b> · {sent_now.strftime('%d.%m.%Y %H:%M')} ⏰\n")
+                footer = f"<b>Итого: {total} позиций</b>"
+                try:
+                    if gid:
+                        await deliver_order(app.bot, gid, header, esc_lines, footer)
+                    db.execute(
+                        "INSERT INTO orders (chat_id,user_id,user_name,items,created_at,branch_id) VALUES (?,?,?,?,?,?)",
+                        (int(gid) if gid else 0, so["user_id"], shown, so["items"] or "[]",
+                         sent_now.isoformat(), so["branch_id"] or 1))
+                    db.execute("UPDATE scheduled_orders SET sent=1 WHERE id=?", (so["id"],))
+                    db.commit()
+                    try:
+                        await app.bot.send_message(so["user_id"], "⏰ Ваш запланированный заказ отправлен в группу.")
+                    except Exception:
+                        pass
+                    logger.info(f"scheduled order {so['id']} sent")
+                except Exception as e:
+                    logger.warning(f"scheduled order {so['id']} send failed: {e}")
+        except Exception as e:
+            logger.warning(f"scheduled_orders_loop: {e}")
+        await asyncio.sleep(60)
+
+
 async def setup_commands(app):
     """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
     await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
@@ -4335,6 +4436,7 @@ async def setup_commands(app):
     await start_web_server(app)
     # Ödeme hatırlatma arka plan görevi
     asyncio.create_task(payment_reminder_loop(app))
+    asyncio.create_task(scheduled_orders_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════

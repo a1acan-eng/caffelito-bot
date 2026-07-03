@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070115;
+var APP_BUILD=2026070116;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1012,6 +1012,7 @@ function refreshState(){
         STD_ACK=(P.get('std_ack')==='1');
         STD_ACKS=J('std_acks','[]');
         BRANCHES=J('branches','[]');
+        SCHEDULED=J('scheduled','[]');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1444,7 +1445,22 @@ if(localStorage.getItem('cf5pv')!==DP_VER){localStorage.removeItem('cf5p');local
 if(localStorage.getItem('cf5tv')!==DT_VER){localStorage.removeItem('cf5t');localStorage.setItem('cf5tv',DT_VER);}
 let P=JSON.parse(localStorage.getItem('cf5p'))||JSON.parse(JSON.stringify(DP));
 let T=JSON.parse(localStorage.getItem('cf5t'))||JSON.parse(JSON.stringify(DT));
-let tab='shift',cat=null,sub=null,edit=false,ord={},ts={},orderSearch='';
+let tab='shift',cat=null,sub=null,edit=false,ord={},ts={},orderSearch='',orderSched=false;
+// Sipariş gönder çubuğu: "Отправить" + ⏰ zamanlı gönderim (orderSched ile açılır)
+function orderSendBar(tot){
+  var h='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ · '+tot+' шт</button>';
+  if(!tot)return h;
+  h+='<button onclick="orderSched=!orderSched;render()" style="width:100%;margin-top:7px;padding:9px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:12.5px;font-weight:600;cursor:pointer">⏰ '+(orderSched?'Скрыть':'Отправить позже')+'</button>';
+  if(orderSched){
+    var d=new Date(Date.now()+3600000);var pad=function(n){return String(n).padStart(2,'0')};
+    var def=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+    h+='<div style="margin-top:7px;display:flex;gap:7px;align-items:center">'
+      +'<input type="datetime-local" id="ordSendAt" value="'+def+'" style="flex:1;min-width:0;padding:9px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-family:inherit;font-size:13px">'
+      +'<button onclick="sOAt()" style="padding:9px 14px;border-radius:var(--r3);border:none;background:linear-gradient(150deg,#f8d765,#e2ac16);color:#3d2c00;font-weight:800;font-size:13px;cursor:pointer;white-space:nowrap">⏰ Запланировать</button>'
+      +'</div>';
+  }
+  return h;
+}
 let hist=JSON.parse(localStorage.getItem('cf5h')||'[]');
 function iTS(){Object.keys(T).forEach(c=>{Object.keys(T[c]).forEach(k=>{const x=c+'_'+k;if(!ts[x]||ts[x].length!==T[c][k].length)ts[x]=new Array(T[c][k].length).fill(false)})})}
 iTS();
@@ -1534,6 +1550,8 @@ try{STD_ACKS=JSON.parse((HP.get('std_acks')||'[]'))}catch(e){STD_ACKS=[]}
 // ── Филиалы (şubeler) ──
 let BRANCHES=[];
 try{BRANCHES=JSON.parse((HP.get('branches')||'[]'))}catch(e){BRANCHES=[]}
+let SCHEDULED=[];
+try{SCHEDULED=JSON.parse((HP.get('scheduled')||'[]'))}catch(e){SCHEDULED=[]}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -1802,13 +1820,25 @@ function buildPreview(){
 function rOCs(m,b){let h='';
 if(edit)h+='<div class="add-row"><input class="add-inp" id="nc" placeholder="Новая категория"><button class="add-btn" onclick="aC()">+</button></div>';
 if(!edit){var _q=orderSearch||'';h+='<div class="ord-search"><span class="ord-search-ic">🔎</span><input id="ordSearchInp" class="ord-search-inp" placeholder="Поиск товара по всем категориям…" value="'+escH(_q)+'" oninput="orderSearchInput(this.value)"><button id="ordSearchX" class="ord-search-x" style="display:'+(_q?'flex':'none')+'" onclick="orderSearchInput(\'\')">&#10005;</button></div>';}
+if(!edit&&(SCHEDULED||[]).length){
+  h+='<div style="background:var(--gold-bg);border:1px solid var(--gold-border);border-radius:var(--r2);padding:10px 12px;margin-bottom:12px">'
+    +'<div style="font-size:12px;font-weight:800;color:var(--gold2);margin-bottom:8px">⏰ Запланированные заказы</div>';
+  SCHEDULED.forEach(function(s){
+    var t=new Date(s.at);var when=isNaN(t)?s.at:(String(t.getDate()).padStart(2,'0')+'.'+String(t.getMonth()+1).padStart(2,'0')+' '+String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0'));
+    h+='<div style="display:flex;align-items:center;gap:8px;padding:5px 0">'
+      +'<div style="flex:1;min-width:0;font-size:13px"><b>'+when+'</b> · '+(s.total||0)+' шт'+((BRANCHES||[]).length>1?' <span style="color:var(--t3);font-size:11px">'+escH(branchName(s.bid))+'</span>':'')+(MY_ROLE==='owner'?' <span style="color:var(--t3);font-size:11px">'+escH(s.nm||'')+'</span>':'')+'</div>'
+      +'<button onclick="cancelScheduled('+s.id+')" style="flex-shrink:0;padding:5px 10px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--red);font-size:12px;font-weight:700;cursor:pointer">Отменить</button>'
+    +'</div>';
+  });
+  h+='</div>';
+}
 h+='<div id="ordList">'+orderListHTML()+'</div>';
 h+='<div class="footer">XSYN</div>';
 m.innerHTML=h;
 const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
-bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+bh+=orderSendBar(tot);
 b.innerHTML=bh}
 // Sipariş listesi HTML — arama boşsa kategoriler, doluysa tüm kategorilerdeki eşleşen ürünler
 function orderListHTML(){
@@ -1848,7 +1878,7 @@ m.innerHTML=h;
 const tot=Object.values(ord).reduce((a,v)=>a+v,0);
 b.style.display='block';
 let bh='';if(tot>0)bh+=buildPreview();
-bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ \xb7 '+tot+' шт</button>';
+bh+=orderSendBar(tot);
 b.innerHTML=bh}
 
 function cq(id,d){
@@ -1868,7 +1898,7 @@ function ocUpdateBar(){
   var b=document.getElementById('bot');if(!b)return;
   var tot=Object.values(ord).reduce(function(a,v){return a+v},0);
   var bh='';if(tot>0)bh+=buildPreview();
-  bh+='<button class="mbtn" '+(tot?'':'disabled')+' onclick="sO()">Отправить заказ · '+tot+' шт</button>';
+  bh+=orderSendBar(tot);
   b.innerHTML=bh;
 }
 function aC(){const v=document.getElementById('nc')?.value?.trim();if(!v)return;P[v]={icon:'&#128230;',items:[]};sP();render()}
@@ -1878,7 +1908,7 @@ function dI(i){if(!cat)return;P[cat].items.splice(i,1);sP();render()}
 function mv(i,dir){if(!cat)return;const arr=P[cat].items,j=i+dir;if(j<0||j>=arr.length)return;[arr[i],arr[j]]=[arr[j],arr[i]];sP();render()}
 
 // ── Sipariş gönder — her zaman toast gösterir ──
-function sO(){
+function sO(sendAt){
   var tot=Object.values(ord).reduce(function(a,v){return a+v},0);
   if(!tot)return;
   // Payload — tam ürün isimleriyle gönder. Artık HTTP (/api/action) kullanıyoruz,
@@ -1898,7 +1928,8 @@ function sO(){
       });
       if(it.length)g.push(ck+'|'+it.join('|'));
     });
-    ps=JSON.stringify({a:'o',g:g,c:tot});
+    var _po={a:'o',g:g,c:tot};if(sendAt)_po.send_at=sendAt;
+    ps=JSON.stringify(_po);
     var bl=0;for(var i=0;i<ps.length;i++){bl+=ps.charCodeAt(i)>127?2:1}
     if(bl<=900000)break; // HTTP büyük gövde kaldırır — pratikte hiç kısaltma olmaz
     maxL-=10;
@@ -1908,10 +1939,24 @@ function sO(){
   Object.keys(ord).forEach(function(id){var p=all.find(function(x){return x.id===id});if(p)allNames[id]=p.n});
   hist.push({type:'order',items:JSON.parse(JSON.stringify(ord)),names:allNames,date:new Date().toISOString(),user:tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user?tg.initDataUnsafe.user.first_name:'Бариста'});
   localStorage.setItem('cf5h',JSON.stringify(hist));
-  toast('Заказ отправлен!');
+  toast(sendAt?'⏰ Заказ запланирован':'Заказ отправлен!');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  ord={};cat=null;render();
+  ord={};cat=null;orderSched=false;render();
   if(tg&&tg.sendData){try{tg.sendData(ps);}catch(e){console.warn('sendData:',e)}}
+}
+// ⏰ Zamanlı gönderim: seçilen zamanı doğrula, sO'ya ilet
+function sOAt(){
+  var el=document.getElementById('ordSendAt');var v=el?el.value:'';
+  if(!v){toast('Выберите дату и время');return}
+  var t=new Date(v);
+  if(isNaN(t.getTime())||t.getTime()<Date.now()+60000){toast('Выберите время в будущем');return}
+  sO(t.toISOString());
+}
+function cancelScheduled(id){
+  if(!confirm('Отменить запланированный заказ?'))return;
+  SCHEDULED=(SCHEDULED||[]).filter(function(x){return x.id!==id});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'cancel_scheduled',id:id}))}catch(e){}}
+  toast('Отменено');render();
 }
 
 // ── Уборка — bugünü öne çıkar ──
