@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070114;
+var APP_BUILD=2026070115;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1831,6 +1831,8 @@ function orderListHTML(){
 }
 function orderSearchInput(v){
   orderSearch=v;
+  // Input'un kendi değerini de senkronla — "✕" ile temizleyince (v='') kutu da boşalsın.
+  var inp=document.getElementById('ordSearchInp');if(inp&&inp.value!==v)inp.value=v;
   var el=document.getElementById('ordList');
   var x=document.getElementById('ordSearchX');if(x)x.style.display=v?'flex':'none';
   if(el){el.innerHTML=orderListHTML();}else{render();}
