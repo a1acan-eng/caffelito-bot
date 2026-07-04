@@ -1030,6 +1030,21 @@ def build_hash_payload(db, user_id, name):
                 pass
     except Exception:
         _sched_all = {}
+    # График personel listesi (elle yönetilir); boşsa app baristalarından tohumla
+    _roster = []
+    try:
+        _rr = db.execute("SELECT val FROM meta WHERE k='sched_roster'").fetchone()
+        if _rr and _rr["val"]:
+            _roster = json.loads(_rr["val"]) or []
+    except Exception:
+        _roster = []
+    if not _roster:
+        try:
+            _roster = [(b["display_name"] or b["name"] or "?").strip() for b in db.execute(
+                "SELECT name,display_name FROM users WHERE COALESCE(approved,0)=1 AND COALESCE(archived,0)=0 "
+                "ORDER BY COALESCE(display_name,name)").fetchall()]
+        except Exception:
+            _roster = []
     # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
     try:
         if role == "owner":
@@ -1066,6 +1081,7 @@ def build_hash_payload(db, user_id, name):
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"sched_week={_monday}",
         f"sched_all={quote(json.dumps(_sched_all, ensure_ascii=False))}",
+        f"sched_roster={quote(json.dumps(_roster, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -2470,9 +2486,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════
 
 async def deliver_order(bot, group_id, header, esc_lines, footer):
-    """Sipariş mesajını gruba gönder (uzunsa <pre> parçalara bölerek). Hem anlık
-    hem zamanlı sipariş bunu kullanır. esc_lines zaten HTML-escape'lidir."""
-    full = header + "<pre>" + "\n".join(esc_lines) + "</pre>" + footer
+    """Sipariş mesajını gruba gönder (uzunsa parçalara bölerek). Hizalama için
+    <code> (monospace) — <pre>'nin gri kutu + 'copy' düğmesi yok. esc_lines escape'li."""
+    full = header + "<code>" + "\n".join(esc_lines) + "</code>" + footer
     if len(full.encode('utf-8')) <= 4096:
         await bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
         return
@@ -2485,7 +2501,7 @@ async def deliver_order(bot, group_id, header, esc_lines, footer):
         batches.append(cur)
     n = len(batches)
     for i, b in enumerate(batches):
-        msg = (header if i == 0 else "") + "<pre>" + "\n".join(b) + "</pre>" + (footer if i == n - 1 else "")
+        msg = (header if i == 0 else "") + "<code>" + "\n".join(b) + "</code>" + (footer if i == n - 1 else "")
         await bot.send_message(chat_id=int(group_id), text=msg, parse_mode="HTML")
 
 
@@ -3195,6 +3211,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if wk and sdata is not None:
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
                            (f"sched_{wk}", json.dumps(sdata, ensure_ascii=False)))
+                db.commit()
+
+        elif action == "sched_roster_save":
+            # Owner: график personel listesini (elle) kaydet
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            names = data.get("names")
+            if isinstance(names, list):
+                clean = [str(n).strip()[:40] for n in names if str(n).strip()][:60]
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('sched_roster', ?)",
+                           (json.dumps(clean, ensure_ascii=False),))
                 db.commit()
 
         elif action == "schedule_image":

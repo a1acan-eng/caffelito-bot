@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070119;
+var APP_BUILD=2026070120;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1014,7 +1014,7 @@ function refreshState(){
         BRANCHES=J('branches','[]');
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
-        SCHED_ALL=J('sched_all','{}');if(!SCHED_WEEK)SCHED_WEEK=P.get('sched_week')||'';SCHED=SCHED_ALL[SCHED_WEEK]||{};
+        SCHED_ALL=J('sched_all','{}');if(!SCHED_WEEK)SCHED_WEEK=P.get('sched_week')||'';SCHED=SCHED_ALL[SCHED_WEEK]||{};SCHED_ROSTER=J('sched_roster','[]');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1560,6 +1560,8 @@ let SCHED_ALL={};
 try{SCHED_ALL=JSON.parse((HP.get('sched_all')||'{}'))||{}}catch(e){SCHED_ALL={}}
 let SCHED_WEEK=HP.get('sched_week')||'';
 let SCHED=SCHED_ALL[SCHED_WEEK]||{};
+let SCHED_ROSTER=[];
+try{SCHED_ROSTER=JSON.parse((HP.get('sched_roster')||'[]'))||[]}catch(e){SCHED_ROSTER=[]}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -3924,12 +3926,28 @@ function schedDates(){
   var out=[];for(var i=0;i<7;i++){out.push(new Date(base.getFullYear(),base.getMonth(),base.getDate()+i));}
   return out;
 }
-function schedRoster(){return (BARISTAS||[]).filter(function(x){return !x.arch});}
-function schedVal(uid,day){var r=SCHED[String(uid)];return (r&&r[day])||'';}
-function schedCell(uid,day,val){
-  var k=String(uid);SCHED[k]=SCHED[k]||['','','','','','',''];SCHED[k][day]=val;
+function schedRoster(){return SCHED_ROSTER||[];}          // elle yönetilen isim listesi
+function schedVal(name,day){var r=SCHED[name];return (r&&r[day])||'';}
+function schedCell(idx,day,val){
+  var name=SCHED_ROSTER[idx];if(name==null)return;
+  SCHED[name]=SCHED[name]||['','','','','','',''];SCHED[name][day]=val;
   SCHED_ALL[SCHED_WEEK]=SCHED;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}
+}
+function schedSaveRoster(){
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'sched_roster_save',names:SCHED_ROSTER}))}catch(e){}}
+}
+async function schedAddEmp(){
+  var nm=((await cfPrompt('Имя сотрудника:','',{placeholder:'напр. Хасан',okText:'Добавить',icon:'👤'}))||'').trim();
+  if(!nm)return;
+  SCHED_ROSTER=SCHED_ROSTER||[];if(SCHED_ROSTER.indexOf(nm)<0)SCHED_ROSTER.push(nm);
+  schedSaveRoster();render();
+}
+function schedRemoveEmp(idx){
+  var nm=SCHED_ROSTER[idx];if(nm==null)return;
+  if(!confirm('Убрать «'+nm+'» из графика?'))return;
+  SCHED_ROSTER.splice(idx,1);
+  schedSaveRoster();render();
 }
 // Hafta seç: girilen tarihi PAZARTESİ'ye çevir, o haftanın verisini yükle
 function schedSetWeek(v){
@@ -3967,24 +3985,23 @@ function rMSchedule(m,b){
     +'</div>';
   h+='<div class="refresh-hint" style="margin-bottom:10px">Неделя: <b>'+wl+'</b>. Заполните смены — сохраняется автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
   var roster=schedRoster();
-  if(!roster.length){h+='<div class="empty-mini">Нет сотрудников</div>';}
-  else{
-    // Yatay kaydırmalı tablo
-    h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px">';
-    h+='<table style="border-collapse:collapse;min-width:640px;font-size:12px">';
-    h+='<tr><th style="position:sticky;left:0;background:var(--card2);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border2);min-width:96px">Бариста</th>';
-    ds.forEach(function(d,i){h+='<th style="padding:6px 4px;border-bottom:1px solid var(--border2);border-left:1px solid var(--border);min-width:78px;color:var(--t2)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;color:var(--t3)">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
+  // Yatay kaydırmalı tablo
+  h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px">';
+  h+='<table style="border-collapse:collapse;min-width:660px;font-size:12px">';
+  h+='<tr><th style="position:sticky;left:0;background:var(--card2);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border2);min-width:110px">Сотрудник</th>';
+  ds.forEach(function(d,i){h+='<th style="padding:6px 4px;border-bottom:1px solid var(--border2);border-left:1px solid var(--border);min-width:78px;color:var(--t2)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;color:var(--t3)">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
+  h+='</tr>';
+  if(!roster.length){h+='<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--t3)">Нет сотрудников — добавьте ниже</td></tr>';}
+  roster.forEach(function(nm,ri){
+    h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap"><div style="display:flex;align-items:center;gap:6px"><button onclick="schedRemoveEmp('+ri+')" title="Убрать" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;background:var(--card3);color:var(--red);font-size:12px;cursor:pointer;line-height:1">✕</button><span style="font-weight:700">'+escH(nm)+'</span></div></td>';
+    for(var d=0;d<7;d++){
+      h+='<td style="padding:3px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+ri+','+d+',this.value)" style="width:74px;padding:5px 3px;border:1px solid var(--border2);border-radius:8px;background:var(--card);color:var(--t1);font-size:10.5px;font-family:inherit">'+schedOptsHTML(schedVal(nm,d))+'</select></td>';
+    }
     h+='</tr>';
-    roster.forEach(function(bar){
-      h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 10px;font-weight:700;border-bottom:1px solid var(--border);white-space:nowrap">'+escH(bar.n)+'</td>';
-      for(var d=0;d<7;d++){
-        h+='<td style="padding:3px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+bar.id+','+d+',this.value)" style="width:74px;padding:5px 3px;border:1px solid var(--border2);border-radius:8px;background:var(--card);color:var(--t1);font-size:10.5px;font-family:inherit">'+schedOptsHTML(schedVal(bar.id,d))+'</select></td>';
-      }
-      h+='</tr>';
-    });
-    h+='</table></div>';
-    h+='<button class="btn-start" style="margin-top:14px" onclick="sendScheduleImage()"><span class="ic">📤</span>Отправить в группу (картинкой)</button>';
-  }
+  });
+  h+='</table></div>';
+  h+='<button onclick="schedAddEmp()" style="width:100%;margin-top:10px;padding:11px;border-radius:var(--r3);border:1px dashed var(--gold-border);background:var(--gold-bg);color:var(--gold2);font-size:13px;font-weight:700;cursor:pointer">＋ Добавить сотрудника</button>';
+  if(roster.length)h+='<button class="btn-start" style="margin-top:10px" onclick="sendScheduleImage()"><span class="ic">📤</span>Отправить в группу (картинкой)</button>';
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
 }
@@ -4019,13 +4036,13 @@ function sendScheduleImage(){
     }
     // satırlar
     cx.textAlign='left';
-    roster.forEach(function(bar,ri){
+    roster.forEach(function(nm,ri){
       var y=y0+headH+rowH*ri;
       cx.fillStyle=t1;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
-      cx.fillText(_fit(cx,bar.n,nameW-16),10,y+rowH/2);
+      cx.fillText(_fit(cx,nm,nameW-16),10,y+rowH/2);
       cx.textAlign='center';
       for(var d=0;d<7;d++){
-        var xc=nameW+dayW*d;var v=schedVal(bar.id,d);
+        var xc=nameW+dayW*d;var v=schedVal(nm,d);
         if(v&&v!=='OFF'){cx.fillStyle=(dark?'rgba(238,190,77,.10)':'rgba(194,142,14,.08)');cx.fillRect(xc,y,dayW,rowH);}
         else if(v==='OFF'){cx.fillStyle=off;cx.fillRect(xc,y,dayW,rowH);}
         cx.fillStyle=v?(v==='OFF'?t2:t1):t2;
