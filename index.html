@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070117;
+var APP_BUILD=2026070118;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1014,6 +1014,7 @@ function refreshState(){
         BRANCHES=J('branches','[]');
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
+        SCHED=J('sched','{}');SCHED_WEEK=P.get('sched_week')||SCHED_WEEK;
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1555,6 +1556,9 @@ let SCHEDULED=[];
 try{SCHEDULED=JSON.parse((HP.get('scheduled')||'[]'))}catch(e){SCHEDULED=[]}
 let PAY_CFG={};
 try{PAY_CFG=JSON.parse((HP.get('pay_cfg')||'{}'))||{}}catch(e){PAY_CFG={}}
+let SCHED={};
+try{SCHED=JSON.parse((HP.get('sched')||'{}'))||{}}catch(e){SCHED={}}
+let SCHED_WEEK=HP.get('sched_week')||'';
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -2661,6 +2665,7 @@ function rM(m,b){
   if(mView==='loanReview')return rMLoanReview(m,b);
   if(mView==='standard')return rMStandard(m,b);
   if(mView==='branches')return rMBranches(m,b);
+  if(mView==='schedule')return rMSchedule(m,b);
   return rMMain(m,b);
 }
 
@@ -2824,6 +2829,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
+        +'<div class="own-btn" onclick="mView=\'schedule\';render()"><div class="own-btn-i">📅</div><div class="own-btn-t">График</div></div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
@@ -3903,6 +3909,122 @@ function rMBranches(m,b){
   h+='<button class="btn-start" style="margin-top:12px" onclick="createBranch()"><span class="ic">＋</span>Добавить филиал</button>';
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
+}
+
+// ── График смен (haftalık vardiya çizelgesi) ──
+var SCHED_DOW=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+var SCHED_TIMES=['07:00–17:00','07:00–19:00','07:00–00:00','17:00–03:00','19:00–07:00','07:00–03:00','19:00–03:00'];
+var SCHED_SPECIAL=['OFF','Больничный','Отпуск','Обучение'];
+function schedDates(){
+  var base;
+  if(SCHED_WEEK){base=new Date(SCHED_WEEK+'T00:00:00');}
+  else{var d=new Date();var wd=(d.getDay()+6)%7;base=new Date(d.getFullYear(),d.getMonth(),d.getDate()-wd);}
+  if(isNaN(base.getTime())){var d2=new Date();var wd2=(d2.getDay()+6)%7;base=new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()-wd2);}
+  var out=[];for(var i=0;i<7;i++){out.push(new Date(base.getFullYear(),base.getMonth(),base.getDate()+i));}
+  return out;
+}
+function schedRoster(){return (BARISTAS||[]).filter(function(x){return !x.arch});}
+function schedVal(uid,day){var r=SCHED[String(uid)];return (r&&r[day])||'';}
+function schedCell(uid,day,val){
+  var k=String(uid);SCHED[k]=SCHED[k]||['','','','','','',''];SCHED[k][day]=val;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}
+}
+function schedOptsHTML(cur){
+  var h='<option value=""'+(cur===''?' selected':'')+'>—</option>';
+  SCHED_SPECIAL.forEach(function(s){h+='<option value="'+s+'"'+(cur===s?' selected':'')+'>'+s+'</option>';});
+  (BRANCHES||[]).forEach(function(b){
+    SCHED_TIMES.forEach(function(t){var v=b.name+' '+t;h+='<option value="'+escH(v)+'"'+(cur===v?' selected':'')+'>'+escH(v)+'</option>';});
+  });
+  return h;
+}
+function rMSchedule(m,b){
+  if(MY_ROLE!=='owner'){mView='main';render();return}
+  var ds=schedDates();
+  var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
+  var h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">📅 График смен · '+wl+'</div>';
+  h+='<div class="refresh-hint" style="margin-bottom:10px">Заполните смены на неделю. Изменения сохраняются автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
+  var roster=schedRoster();
+  if(!roster.length){h+='<div class="empty-mini">Нет сотрудников</div>';}
+  else{
+    // Yatay kaydırmalı tablo
+    h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px">';
+    h+='<table style="border-collapse:collapse;min-width:640px;font-size:12px">';
+    h+='<tr><th style="position:sticky;left:0;background:var(--card2);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border2);min-width:96px">Бариста</th>';
+    ds.forEach(function(d,i){h+='<th style="padding:6px 4px;border-bottom:1px solid var(--border2);border-left:1px solid var(--border);min-width:78px;color:var(--t2)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;color:var(--t3)">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
+    h+='</tr>';
+    roster.forEach(function(bar){
+      h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 10px;font-weight:700;border-bottom:1px solid var(--border);white-space:nowrap">'+escH(bar.n)+'</td>';
+      for(var d=0;d<7;d++){
+        h+='<td style="padding:3px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+bar.id+','+d+',this.value)" style="width:74px;padding:5px 3px;border:1px solid var(--border2);border-radius:8px;background:var(--card);color:var(--t1);font-size:10.5px;font-family:inherit">'+schedOptsHTML(schedVal(bar.id,d))+'</select></td>';
+      }
+      h+='</tr>';
+    });
+    h+='</table></div>';
+    h+='<button class="btn-start" style="margin-top:14px" onclick="sendScheduleImage()"><span class="ic">📤</span>Отправить в группу (картинкой)</button>';
+  }
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
+// Çizelgeyi canvas'a çiz → PNG → bota gönder
+function sendScheduleImage(){
+  try{
+    var ds=schedDates();var roster=schedRoster();
+    if(!roster.length){toast('Нет сотрудников');return;}
+    var scale=2;
+    var nameW=150,dayW=150,rowH=46,headH=60,titleH=54,pad=0;
+    var cols=7;var W=nameW+dayW*cols;var H=titleH+headH+rowH*roster.length+14;
+    var cv=document.createElement('canvas');cv.width=W*scale;cv.height=H*scale;
+    var cx=cv.getContext('2d');cx.scale(scale,scale);
+    var dark=document.documentElement.getAttribute('data-theme')==='dark';
+    var bg=dark?'#1f1910':'#fffdf8',line=dark?'rgba(255,225,170,.16)':'rgba(76,57,26,.15)',
+        t1=dark?'#f6efe1':'#2a2012',t2=dark?'#bdac8e':'#6f604a',gold=dark?'#eebe4d':'#c28e0e',
+        head=dark?'#2a2215':'#f0e9da',off=dark?'#332a1a':'#efe7d6';
+    cx.fillStyle=bg;cx.fillRect(0,0,W,H);
+    // başlık
+    var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
+    cx.fillStyle=gold;cx.font='700 20px Arial, sans-serif';cx.textBaseline='middle';
+    cx.fillText('☕ CAFFELITO · График смен  '+wl,14,titleH/2);
+    // header satırı
+    var y0=titleH;
+    cx.fillStyle=head;cx.fillRect(0,y0,W,headH);
+    cx.fillStyle=t2;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
+    cx.fillText('Бариста',12,y0+headH/2);
+    cx.textAlign='center';
+    for(var i=0;i<7;i++){var xc=nameW+dayW*i+dayW/2;
+      cx.fillStyle=t1;cx.font='700 14px Arial, sans-serif';cx.fillText(SCHED_DOW[i],xc,y0+headH/2-8);
+      cx.fillStyle=t2;cx.font='500 11px Arial, sans-serif';cx.fillText(ds[i].getDate()+'.'+String(ds[i].getMonth()+1).padStart(2,'0'),xc,y0+headH/2+11);
+    }
+    // satırlar
+    cx.textAlign='left';
+    roster.forEach(function(bar,ri){
+      var y=y0+headH+rowH*ri;
+      cx.fillStyle=t1;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
+      cx.fillText(_fit(cx,bar.n,nameW-16),10,y+rowH/2);
+      cx.textAlign='center';
+      for(var d=0;d<7;d++){
+        var xc=nameW+dayW*d;var v=schedVal(bar.id,d);
+        if(v&&v!=='OFF'){cx.fillStyle=(dark?'rgba(238,190,77,.10)':'rgba(194,142,14,.08)');cx.fillRect(xc,y,dayW,rowH);}
+        else if(v==='OFF'){cx.fillStyle=off;cx.fillRect(xc,y,dayW,rowH);}
+        cx.fillStyle=v?(v==='OFF'?t2:t1):t2;
+        cx.font=(v&&v!=='OFF'?'600 ':'500 ')+'12px Arial, sans-serif';
+        cx.fillText(_fit(cx,v||'—',dayW-10),xc+dayW/2,y+rowH/2);
+      }
+    });
+    // grid çizgileri
+    cx.strokeStyle=line;cx.lineWidth=1;
+    for(var c=0;c<=7;c++){var x=nameW+dayW*c;cx.beginPath();cx.moveTo(x,y0);cx.lineTo(x,H-14);cx.stroke();}
+    for(var r=0;r<=roster.length;r++){var yy=y0+headH+rowH*r;cx.beginPath();cx.moveTo(0,yy);cx.lineTo(W,yy);cx.stroke();}
+    cx.beginPath();cx.moveTo(0,y0);cx.lineTo(W,y0);cx.stroke();
+    var png=cv.toDataURL('image/png');
+    if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_image',png:png,caption:'📅 График смен · '+wl}))}catch(e){}}
+    toast('📤 Отправляю в группу…');
+  }catch(e){console.warn('sched img',e);toast('Ошибка изображения');}
+}
+function _fit(cx,txt,maxw){
+  txt=String(txt||'');if(cx.measureText(txt).width<=maxw)return txt;
+  while(txt.length>1&&cx.measureText(txt+'…').width>maxw)txt=txt.slice(0,-1);
+  return txt+'…';
 }
 async function createBranch(){
   var name=((await cfPrompt('Название нового филиала:','',{placeholder:'напр. Чиланзар',okText:'Создать',icon:'🏢'}))||'').trim();
