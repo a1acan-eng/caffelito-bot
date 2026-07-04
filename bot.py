@@ -1019,13 +1019,17 @@ def build_hash_payload(db, user_id, name):
     # ── Haftalık график (bu haftanın Pazartesi'si) ──
     _today_dt = datetime.now(TZ)
     _monday = (_today_dt - timedelta(days=_today_dt.weekday())).strftime("%Y-%m-%d")
-    _sched = {}
+    # Kayıtlı tüm haftaların çizelgesi (hafta navigasyonu için) — son 16 hafta
+    _sched_all = {}
     try:
-        _sr = db.execute("SELECT val FROM meta WHERE k=?", (f"sched_{_monday}",)).fetchone()
-        if _sr and _sr["val"]:
-            _sched = json.loads(_sr["val"])
+        for _r in db.execute("SELECT k,val FROM meta WHERE k LIKE 'sched_%' ORDER BY k DESC LIMIT 16").fetchall():
+            _wk = _r["k"][6:]
+            try:
+                _sched_all[_wk] = json.loads(_r["val"]) if _r["val"] else {}
+            except Exception:
+                pass
     except Exception:
-        _sched = {}
+        _sched_all = {}
     # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
     try:
         if role == "owner":
@@ -1061,7 +1065,7 @@ def build_hash_payload(db, user_id, name):
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"sched_week={_monday}",
-        f"sched={quote(json.dumps(_sched, ensure_ascii=False))}",
+        f"sched_all={quote(json.dumps(_sched_all, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──

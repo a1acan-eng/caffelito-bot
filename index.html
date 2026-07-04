@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070118;
+var APP_BUILD=2026070119;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1014,7 +1014,7 @@ function refreshState(){
         BRANCHES=J('branches','[]');
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
-        SCHED=J('sched','{}');SCHED_WEEK=P.get('sched_week')||SCHED_WEEK;
+        SCHED_ALL=J('sched_all','{}');if(!SCHED_WEEK)SCHED_WEEK=P.get('sched_week')||'';SCHED=SCHED_ALL[SCHED_WEEK]||{};
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1556,9 +1556,10 @@ let SCHEDULED=[];
 try{SCHEDULED=JSON.parse((HP.get('scheduled')||'[]'))}catch(e){SCHEDULED=[]}
 let PAY_CFG={};
 try{PAY_CFG=JSON.parse((HP.get('pay_cfg')||'{}'))||{}}catch(e){PAY_CFG={}}
-let SCHED={};
-try{SCHED=JSON.parse((HP.get('sched')||'{}'))||{}}catch(e){SCHED={}}
+let SCHED_ALL={};
+try{SCHED_ALL=JSON.parse((HP.get('sched_all')||'{}'))||{}}catch(e){SCHED_ALL={}}
 let SCHED_WEEK=HP.get('sched_week')||'';
+let SCHED=SCHED_ALL[SCHED_WEEK]||{};
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -3927,7 +3928,22 @@ function schedRoster(){return (BARISTAS||[]).filter(function(x){return !x.arch})
 function schedVal(uid,day){var r=SCHED[String(uid)];return (r&&r[day])||'';}
 function schedCell(uid,day,val){
   var k=String(uid);SCHED[k]=SCHED[k]||['','','','','','',''];SCHED[k][day]=val;
+  SCHED_ALL[SCHED_WEEK]=SCHED;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}
+}
+// Hafta seç: girilen tarihi PAZARTESİ'ye çevir, o haftanın verisini yükle
+function schedSetWeek(v){
+  if(!v)return;var d=new Date(v+'T00:00:00');if(isNaN(d.getTime()))return;
+  var wd=(d.getDay()+6)%7;var mon=new Date(d.getFullYear(),d.getMonth(),d.getDate()-wd);
+  var pad=function(n){return String(n).padStart(2,'0')};
+  SCHED_WEEK=mon.getFullYear()+'-'+pad(mon.getMonth()+1)+'-'+pad(mon.getDate());
+  SCHED=SCHED_ALL[SCHED_WEEK]||{};
+  render();
+}
+function schedShiftWeek(delta){
+  var ds=schedDates();var mon=new Date(ds[0].getFullYear(),ds[0].getMonth(),ds[0].getDate()+delta*7);
+  var pad=function(n){return String(n).padStart(2,'0')};
+  schedSetWeek(mon.getFullYear()+'-'+pad(mon.getMonth()+1)+'-'+pad(mon.getDate()));
 }
 function schedOptsHTML(cur){
   var h='<option value=""'+(cur===''?' selected':'')+'>—</option>';
@@ -3942,8 +3958,14 @@ function rMSchedule(m,b){
   var ds=schedDates();
   var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
   var h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  h+='<div class="sec">📅 График смен · '+wl+'</div>';
-  h+='<div class="refresh-hint" style="margin-bottom:10px">Заполните смены на неделю. Изменения сохраняются автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
+  h+='<div class="sec">📅 График смен</div>';
+  // Hafta seçici: sadece PAZARTESİ tarihi girilir, diğer günler otomatik.
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +'<button onclick="schedShiftWeek(-1)" style="padding:8px 12px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t1);font-size:15px;font-weight:700;cursor:pointer">‹</button>'
+    +'<label style="flex:1;min-width:150px;font-size:12px;color:var(--t2);font-weight:600">Неделя с понедельника:<input type="date" value="'+ds[0].getFullYear()+'-'+String(ds[0].getMonth()+1).padStart(2,"0")+'-'+String(ds[0].getDate()).padStart(2,"0")+'" onchange="schedSetWeek(this.value)" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-family:inherit;font-size:13px"></label>'
+    +'<button onclick="schedShiftWeek(1)" style="padding:8px 12px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t1);font-size:15px;font-weight:700;cursor:pointer">›</button>'
+    +'</div>';
+  h+='<div class="refresh-hint" style="margin-bottom:10px">Неделя: <b>'+wl+'</b>. Заполните смены — сохраняется автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
   var roster=schedRoster();
   if(!roster.length){h+='<div class="empty-mini">Нет сотрудников</div>';}
   else{
