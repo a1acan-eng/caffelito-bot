@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070120;
+var APP_BUILD=2026070121;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3934,8 +3934,34 @@ function schedCell(idx,day,val){
   SCHED_ALL[SCHED_WEEK]=SCHED;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}
 }
+var schedEdit=false; // personel düzenleme modu (✕ / rename / ekle sadece bu modda)
+// Hücre rengi (Excel gibi): şube=mavi, Magic=yeşil, OFF=turuncu, özel=sarı/mor/kırmızı
+function schedColor(v){
+  if(!v)return {bg:'',fg:'',cbg:'#ffffff'};
+  if(v==='OFF')return {bg:'#f9c990',fg:'#7a3e00',cbg:'#f9c990'};
+  if(v==='Больничный')return {bg:'#f4a8a8',fg:'#7a1a1a',cbg:'#f4a8a8'};
+  if(v==='Отпуск')return {bg:'#cdb8f2',fg:'#3a1a6a',cbg:'#cdb8f2'};
+  if(v==='Обучение')return {bg:'#f0e08a',fg:'#5a4600',cbg:'#f0e08a'};
+  if(/^Magic\b/i.test(v))return {bg:'#bfe6bf',fg:'#12481a',cbg:'#bfe6bf'};
+  return {bg:'#aacef2',fg:'#0a3560',cbg:'#aacef2'}; // şube (C5) = mavi
+}
 function schedSaveRoster(){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'sched_roster_save',names:SCHED_ROSTER}))}catch(e){}}
+}
+async function schedRenameEmp(idx){
+  var old=SCHED_ROSTER[idx];if(old==null)return;
+  var nm=((await cfPrompt('Изменить имя:',old,{okText:'Сохранить',icon:'✏️'}))||'').trim();
+  if(!nm||nm===old)return;
+  SCHED_ROSTER[idx]=nm;
+  if(SCHED[old]){SCHED[nm]=SCHED[old];delete SCHED[old];SCHED_ALL[SCHED_WEEK]=SCHED;
+    if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}}
+  schedSaveRoster();render();
+}
+function schedClearWeek(){
+  if(!confirm('Очистить график этой недели? Все смены будут удалены.'))return;
+  SCHED={};SCHED_ALL[SCHED_WEEK]={};
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:{}}))}catch(e){}}
+  toast('График очищен');render();
 }
 async function schedAddEmp(){
   var nm=((await cfPrompt('Имя сотрудника:','',{placeholder:'напр. Хасан',okText:'Добавить',icon:'👤'}))||'').trim();
@@ -3985,22 +4011,32 @@ function rMSchedule(m,b){
     +'</div>';
   h+='<div class="refresh-hint" style="margin-bottom:10px">Неделя: <b>'+wl+'</b>. Заполните смены — сохраняется автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
   var roster=schedRoster();
-  // Yatay kaydırmalı tablo
+  // Düzenleme modu toggle (✕/rename/ekle sadece bu modda → yanlışlıkla silme yok)
+  h+='<div style="display:flex;gap:8px;margin-bottom:10px">'
+    +'<button onclick="schedEdit=!schedEdit;render()" style="flex:1;padding:9px;border-radius:var(--r3);border:1px solid '+(schedEdit?'var(--gold)':'var(--border2)')+';background:'+(schedEdit?'var(--gold-bg)':'transparent')+';color:'+(schedEdit?'var(--gold2)':'var(--t2)')+';font-size:12.5px;font-weight:700;cursor:pointer">✏️ '+(schedEdit?'Готово':'Изменить сотрудников')+'</button>'
+    +(schedEdit?'<button onclick="schedClearWeek()" style="flex:1;padding:9px;border-radius:var(--r3);border:1px solid var(--red-bg);background:transparent;color:var(--red);font-size:12.5px;font-weight:700;cursor:pointer">🗑 Очистить неделю</button>':'')
+    +'</div>';
+  // Renkli tablo (Excel gibi): günler sarı, tarih yeşil, isim başlığı mavi
   h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px">';
   h+='<table style="border-collapse:collapse;min-width:660px;font-size:12px">';
-  h+='<tr><th style="position:sticky;left:0;background:var(--card2);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border2);min-width:110px">Сотрудник</th>';
-  ds.forEach(function(d,i){h+='<th style="padding:6px 4px;border-bottom:1px solid var(--border2);border-left:1px solid var(--border);min-width:78px;color:var(--t2)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;color:var(--t3)">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
+  h+='<tr><th style="position:sticky;left:0;background:#5b8fc9;color:#fff;padding:8px 10px;text-align:left;min-width:112px">Сотрудник</th>';
+  ds.forEach(function(d,i){h+='<th style="padding:5px 4px;min-width:80px;background:#f5d76e;color:#5a4600;border-left:1px solid rgba(0,0,0,.08)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;background:#b6e0a8;color:#1f5a1f;padding:1px 5px;border-radius:6px;display:inline-block;margin-top:2px">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
   h+='</tr>';
-  if(!roster.length){h+='<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--t3)">Нет сотрудников — добавьте ниже</td></tr>';}
+  if(!roster.length){h+='<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--t3)">Нет сотрудников — включите «Изменить» и добавьте</td></tr>';}
   roster.forEach(function(nm,ri){
-    h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap"><div style="display:flex;align-items:center;gap:6px"><button onclick="schedRemoveEmp('+ri+')" title="Убрать" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;background:var(--card3);color:var(--red);font-size:12px;cursor:pointer;line-height:1">✕</button><span style="font-weight:700">'+escH(nm)+'</span></div></td>';
+    var nameCell=schedEdit
+      ? '<div style="display:flex;align-items:center;gap:6px"><button onclick="schedRemoveEmp('+ri+')" title="Убрать" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:12px;cursor:pointer;line-height:1">✕</button><span onclick="schedRenameEmp('+ri+')" style="font-weight:700;cursor:pointer;text-decoration:underline dotted">'+escH(nm)+'</span></div>'
+      : '<span style="font-weight:700">'+escH(nm)+'</span>';
+    h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+nameCell+'</td>';
     for(var d=0;d<7;d++){
-      h+='<td style="padding:3px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+ri+','+d+',this.value)" style="width:74px;padding:5px 3px;border:1px solid var(--border2);border-radius:8px;background:var(--card);color:var(--t1);font-size:10.5px;font-family:inherit">'+schedOptsHTML(schedVal(nm,d))+'</select></td>';
+      var cv=schedVal(nm,d);var col=schedColor(cv);
+      var selStyle='width:78px;padding:6px 3px;border:1px solid rgba(0,0,0,.08);border-radius:6px;font-size:10.5px;font-weight:600;font-family:inherit;'+(cv?('background:'+col.bg+';color:'+col.fg):'background:var(--card);color:var(--t3)');
+      h+='<td style="padding:2px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+ri+','+d+',this.value)" style="'+selStyle+'">'+schedOptsHTML(cv)+'</select></td>';
     }
     h+='</tr>';
   });
   h+='</table></div>';
-  h+='<button onclick="schedAddEmp()" style="width:100%;margin-top:10px;padding:11px;border-radius:var(--r3);border:1px dashed var(--gold-border);background:var(--gold-bg);color:var(--gold2);font-size:13px;font-weight:700;cursor:pointer">＋ Добавить сотрудника</button>';
+  if(schedEdit)h+='<button onclick="schedAddEmp()" style="width:100%;margin-top:10px;padding:11px;border-radius:var(--r3);border:1px dashed var(--gold-border);background:var(--gold-bg);color:var(--gold2);font-size:13px;font-weight:700;cursor:pointer">＋ Добавить сотрудника</button>';
   if(roster.length)h+='<button class="btn-start" style="margin-top:10px" onclick="sendScheduleImage()"><span class="ic">📤</span>Отправить в группу (картинкой)</button>';
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
@@ -4024,30 +4060,33 @@ function sendScheduleImage(){
     var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
     cx.fillStyle=gold;cx.font='700 20px Arial, sans-serif';cx.textBaseline='middle';
     cx.fillText('☕ CAFFELITO · График смен  '+wl,14,titleH/2);
-    // header satırı
+    // header satırı — Excel gibi: isim başlığı mavi, günler sarı, tarih yeşil pill
     var y0=titleH;
-    cx.fillStyle=head;cx.fillRect(0,y0,W,headH);
-    cx.fillStyle=t2;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
-    cx.fillText('Бариста',12,y0+headH/2);
+    cx.fillStyle='#5b8fc9';cx.fillRect(0,y0,nameW,headH);
+    cx.fillStyle='#f5d76e';cx.fillRect(nameW,y0,dayW*7,headH);
+    cx.fillStyle='#fff';cx.font='700 14px Arial, sans-serif';cx.textAlign='left';cx.fillText('Сотрудник',12,y0+headH/2);
     cx.textAlign='center';
     for(var i=0;i<7;i++){var xc=nameW+dayW*i+dayW/2;
-      cx.fillStyle=t1;cx.font='700 14px Arial, sans-serif';cx.fillText(SCHED_DOW[i],xc,y0+headH/2-8);
-      cx.fillStyle=t2;cx.font='500 11px Arial, sans-serif';cx.fillText(ds[i].getDate()+'.'+String(ds[i].getMonth()+1).padStart(2,'0'),xc,y0+headH/2+11);
+      cx.fillStyle='#5a4600';cx.font='700 15px Arial, sans-serif';cx.fillText(SCHED_DOW[i],xc,y0+headH/2-9);
+      // tarih yeşil pill
+      var dt=ds[i].getDate()+'.'+String(ds[i].getMonth()+1).padStart(2,'0');
+      cx.font='700 11px Arial, sans-serif';var tw=cx.measureText(dt).width+14;
+      cx.fillStyle='#b6e0a8';_rr(cx,xc-tw/2,y0+headH/2+2,tw,17,7);cx.fill();
+      cx.fillStyle='#1f5a1f';cx.fillText(dt,xc,y0+headH/2+11);
     }
-    // satırlar
-    cx.textAlign='left';
+    // satırlar — renkli hücreler (schedColor)
     roster.forEach(function(nm,ri){
       var y=y0+headH+rowH*ri;
+      cx.fillStyle=(ri%2?(dark?'#241d12':'#faf6ee'):bg);cx.fillRect(0,y,nameW,rowH);
       cx.fillStyle=t1;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
       cx.fillText(_fit(cx,nm,nameW-16),10,y+rowH/2);
       cx.textAlign='center';
       for(var d=0;d<7;d++){
-        var xc=nameW+dayW*d;var v=schedVal(nm,d);
-        if(v&&v!=='OFF'){cx.fillStyle=(dark?'rgba(238,190,77,.10)':'rgba(194,142,14,.08)');cx.fillRect(xc,y,dayW,rowH);}
-        else if(v==='OFF'){cx.fillStyle=off;cx.fillRect(xc,y,dayW,rowH);}
-        cx.fillStyle=v?(v==='OFF'?t2:t1):t2;
-        cx.font=(v&&v!=='OFF'?'600 ':'500 ')+'12px Arial, sans-serif';
-        cx.fillText(_fit(cx,v||'—',dayW-10),xc+dayW/2,y+rowH/2);
+        var xc=nameW+dayW*d;var v=schedVal(nm,d);var col=schedColor(v);
+        cx.fillStyle=col.cbg;cx.fillRect(xc,y,dayW,rowH);
+        cx.fillStyle=v?col.fg:'#c9bfa8';
+        cx.font=(v?'700 ':'500 ')+'12px Arial, sans-serif';
+        cx.fillText(_fit(cx,v||'—',dayW-12),xc+dayW/2,y+rowH/2);
       }
     });
     // grid çizgileri
@@ -4065,6 +4104,7 @@ function _fit(cx,txt,maxw){
   while(txt.length>1&&cx.measureText(txt+'…').width>maxw)txt=txt.slice(0,-1);
   return txt+'…';
 }
+function _rr(cx,x,y,w,h,r){cx.beginPath();cx.moveTo(x+r,y);cx.arcTo(x+w,y,x+w,y+h,r);cx.arcTo(x+w,y+h,x,y+h,r);cx.arcTo(x,y+h,x,y,r);cx.arcTo(x,y,x+w,y,r);cx.closePath();}
 async function createBranch(){
   var name=((await cfPrompt('Название нового филиала:','',{placeholder:'напр. Чиланзар',okText:'Создать',icon:'🏢'}))||'').trim();
   if(!name)return;
