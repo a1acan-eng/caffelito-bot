@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070123;
+var APP_BUILD=2026070124;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4431,19 +4431,14 @@ function rMSettings(m,b){
   +'</div>';
 
   if(settingsTab==='prices'){
-    // ── Çalışma saatleri / ödeme kuralı ──
-    var _pc=PAY_CFG||{};var _po=(_pc.open!=null?_pc.open:7),_pcl=(_pc.close!=null?_pc.close:3),_pm=(_pc.max!=null?_pc.max:20),_pu=(_pc.unpaid!=null?_pc.unpaid:1),_prate=(_pc.rate!=null?_pc.rate:HOURLY_RATE);
-    h+='<div class="sec" style="margin-top:4px">⏰ Часы работы и оплата</div>';
-    h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:12px 14px;margin-bottom:16px">'
-      +'<label style="display:block;font-size:11px;color:var(--t2);font-weight:600;margin-bottom:10px">Ставка за час (сум)<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="payRate" value="'+_prate+'" style="width:100%;margin-top:4px;font-size:16px;font-weight:700"></label>'
-      +'<div class="refresh-hint" style="margin-top:0">Часы в закрытое время (закрытие→открытие) НЕ оплачиваются. Слишком долгая смена ограничивается максимумом — защита от забытой смены.</div>'
-      +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">'
-        +'<label style="flex:1;min-width:88px;font-size:11px;color:var(--t2);font-weight:600">Открытие<input class="set-input" type="number" inputmode="numeric" min="0" max="23" id="payOpen" value="'+_po+'" style="width:100%;margin-top:4px"></label>'
-        +'<label style="flex:1;min-width:88px;font-size:11px;color:var(--t2);font-weight:600">Закрытие<input class="set-input" type="number" inputmode="numeric" min="0" max="23" id="payClose" value="'+_pcl+'" style="width:100%;margin-top:4px"></label>'
-        +'<label style="flex:1;min-width:88px;font-size:11px;color:var(--t2);font-weight:600">Макс. смена, ч<input class="set-input" type="number" inputmode="numeric" min="1" max="48" id="payMax" value="'+_pm+'" style="width:100%;margin-top:4px"></label>'
-      +'</div>'
-      +'<label style="display:flex;align-items:center;gap:8px;margin-top:11px;font-size:13px;cursor:pointer"><input type="checkbox" id="payUnpaid" '+(_pu?'checked':'')+' style="width:18px;height:18px;accent-color:var(--gold)"> Не оплачивать закрытое окно ('+String(_pcl).padStart(2,"0")+':00–'+String(_po).padStart(2,"0")+':00)</label>'
-      +'<button class="mbtn" style="margin-top:11px" onclick="savePaySettings()">💾 Сохранить часы</button>'
+    // ── Saatlik ücret (sadeleştirildi — açılış/kapanış/max arkada sabit) ──
+    var _pc=PAY_CFG||{};var _prate=(_pc.rate!=null?_pc.rate:HOURLY_RATE);
+    h+='<div class="sec" style="margin-top:4px">💵 Оплата труда</div>';
+    h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:16px">'
+      +'<label style="display:block;font-size:12px;color:var(--t2);font-weight:600;margin-bottom:6px">Ставка за час (сум)</label>'
+      +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="payRate" value="'+_prate+'" style="width:100%;font-size:20px;font-weight:800;text-align:center">'
+      +'<button class="mbtn" style="margin-top:12px" onclick="savePaySettings()">💾 Сохранить ставку</button>'
+      +'<div class="refresh-hint" style="margin-top:10px">Применяется к сменам, закрытым после сохранения. Ночные нерабочие часы (03:00–07:00) не оплачиваются автоматически.</div>'
     +'</div>';
     h+='<div class="refresh-hint" style="margin-top:0">Цены за один напиток — изменения сохраняются и применяются ко всем баристам.</div>';
     DRINK_LIST.forEach(function(d){
@@ -4679,14 +4674,11 @@ function clrHistBefore(){
 }
 
 function savePaySettings(){
-  var o=parseInt((document.getElementById('payOpen')||{}).value);if(isNaN(o))o=7;
-  var c=parseInt((document.getElementById('payClose')||{}).value);if(isNaN(c))c=3;
-  var mx=parseInt((document.getElementById('payMax')||{}).value);if(isNaN(mx))mx=20;
-  var un=(document.getElementById('payUnpaid')||{}).checked?1:0;
   var rate=parseInt((document.getElementById('payRate')||{}).value);if(isNaN(rate)||rate<0)rate=HOURLY_RATE;
-  PAY_CFG={open:o,close:c,max:mx,unpaid:un,rate:rate};HOURLY_RATE=rate;
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'pay_settings',open:o,close:c,max:mx,unpaid:un,rate:rate}))}catch(e){}}
-  toast('⏰ Ставка и часы сохранены');
+  // Açılış/kapanış/max sabit (7/3/20), kapalı-pencere hep açık — kullanıcı sadeleştirme istedi
+  PAY_CFG={open:7,close:3,max:20,unpaid:1,rate:rate};HOURLY_RATE=rate;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'pay_settings',open:7,close:3,max:20,unpaid:1,rate:rate}))}catch(e){}}
+  toast('💵 Ставка сохранена');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
 }
 function savePrice(drinkId){
