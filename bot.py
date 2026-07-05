@@ -419,16 +419,16 @@ def resolve_group_id(db, user_id, context=None, branch_id=None):
 HOURLY_RATE = 12000  # сум за час
 
 # ─── Çalışma saati / ödeme yapılandırması (owner ayarlar, meta'da tutulur) ───
-PAY_DEFAULTS = {"open": 7, "close": 3, "max": 20, "unpaid": 1}
+PAY_DEFAULTS = {"open": 7, "close": 3, "max": 20, "unpaid": 1, "rate": HOURLY_RATE}
 
 
 def get_pay_cfg(db):
-    """{open, close, max, unpaid} — açılış/kapanış saati, max vardiya (saat), kapalı
-    pencere düşümü açık mı. Owner Настройки'den değiştirir."""
+    """{open, close, max, unpaid, rate} — açılış/kapanış saati, max vardiya (saat),
+    kapalı pencere düşümü, saatlik ücret. Owner Настройки'den değiştirir."""
     cfg = dict(PAY_DEFAULTS)
     try:
         rows = db.execute(
-            "SELECT k,val FROM meta WHERE k IN ('pay_open','pay_close','pay_max','pay_unpaid')").fetchall()
+            "SELECT k,val FROM meta WHERE k IN ('pay_open','pay_close','pay_max','pay_unpaid','pay_rate')").fetchall()
         for r in rows:
             key = r["k"].split("_", 1)[1]
             try:
@@ -860,11 +860,12 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     if end_dt < start:
         end_dt = now
     # Ödenecek saat: kapalı pencere (03:00–07:00) düşülür + max ile sınırlı.
-    hours = paid_hours(start, end_dt, get_pay_cfg(db))
+    _pc = get_pay_cfg(db)
+    hours = paid_hours(start, end_dt, _pc)
     drinks_bonus = calc_bonus(drinks, get_prices(db))
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
     bonus = drinks_bonus + dessert_bonus
-    hourly_pay = int(hours * HOURLY_RATE)
+    hourly_pay = int(hours * int(_pc.get("rate", HOURLY_RATE)))
     total = hourly_pay + bonus
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
@@ -1079,6 +1080,7 @@ def build_hash_payload(db, user_id, name):
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
+        f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
         f"sched_week={_monday}",
         f"sched_all={quote(json.dumps(_sched_all, ensure_ascii=False))}",
         f"sched_roster={quote(json.dumps(_roster, ensure_ascii=False))}",
@@ -2840,7 +2842,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             drinks = data.get("drinks", {}) or {}
             note = data.get("note", "")
             bonus = calc_bonus(drinks)
-            hourly_pay = int(hours * HOURLY_RATE)
+            hourly_pay = int(hours * int(get_pay_cfg(db).get("rate", HOURLY_RATE)))
             total = hourly_pay + bonus
             period = current_period()
             db.execute(
@@ -3188,11 +3190,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             cl = _clampi(data.get("close"), 0, 23, 3)
             mx = _clampi(data.get("max"), 1, 48, 20)
             un = 1 if int(data.get("unpaid", 1) or 0) else 0
-            for k, v in (("pay_open", op), ("pay_close", cl), ("pay_max", mx), ("pay_unpaid", un)):
+            rate = _clampi(data.get("rate"), 0, 5000000, HOURLY_RATE)
+            for k, v in (("pay_open", op), ("pay_close", cl), ("pay_max", mx), ("pay_unpaid", un), ("pay_rate", rate)):
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
             db.commit()
             await update.message.reply_text(
                 f"✅ *Часы работы обновлены*\n"
+                f"Ставка: {fmt_sum(rate)} сум/час\n"
                 f"Открытие: {op:02d}:00 · Закрытие: {cl:02d}:00\n"
                 f"Макс. смена: {mx} ч\n"
                 f"Закрытое окно ({cl:02d}:00–{op:02d}:00) не оплачивается: {'да' if un else 'нет'}",

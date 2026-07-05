@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070122;
+var APP_BUILD=2026070123;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1015,6 +1015,7 @@ function refreshState(){
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
         SCHED_ALL=J('sched_all','{}');if(!SCHED_WEEK)SCHED_WEEK=P.get('sched_week')||'';SCHED=SCHED_ALL[SCHED_WEEK]||{};SCHED_ROSTER=J('sched_roster','[]');
+        HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1481,7 +1482,7 @@ function sT(){localStorage.setItem('cf5t',JSON.stringify(T))}
 // ═══════════════════════════════════════
 //  МАОШ (Maaş Sistemi) — state
 // ═══════════════════════════════════════
-const HOURLY_RATE=12000;
+let HOURLY_RATE=12000; // gerçek değer HP parse edilince (aşağıda) atanır
 const BONUS_RATES={ml100:500,ml200:700,ml300:1000,ml400:1200,ml500:1400,dome300:1000,dome400:1300};
 const DRINK_LIST=[
   {id:'ml500',l:'500 мл',r:1400,c:'☕'},
@@ -1571,6 +1572,7 @@ let SCHED_WEEK=HP.get('sched_week')||'';
 let SCHED=SCHED_ALL[SCHED_WEEK]||{};
 let SCHED_ROSTER=[];
 try{SCHED_ROSTER=JSON.parse((HP.get('sched_roster')||'[]'))||[]}catch(e){SCHED_ROSTER=[]}
+HOURLY_RATE=parseInt(HP.get('pay_rate'))||HOURLY_RATE;
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -3188,7 +3190,7 @@ function rMShiftEnd(m,b){
     +'<textarea class="sf-note" rows="2" placeholder="например: вечерняя смена, замена" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
   // Maaş özeti (saf maaş)
   h+='<div class="sf-total">'
-    +'<div class="sf-tot-row"><span>Часы × 12.000 <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
+    +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+' <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
     +'<div class="sf-tot-row"><span>Бонус — напитки</span><span id="seBonus">0</span></div>'
     +'<div class="sf-tot-row"><span>Бонус — десерты</span><span id="seDesBonus">0</span></div>'
     +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span id="seTotal">'+fmt(Math.round(liveH*HOURLY_RATE))+' сум</span></div>'
@@ -3431,7 +3433,7 @@ function rMShiftDetail(m,b){
   // Hesap
   h+='<div class="det-card">'
     +'<div class="det-h">💰 Расчёт</div>'
-    +'<div class="det-row"><span>Часы '+fmtH(sh.hours||0)+' × 12.000</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
+    +'<div class="det-row"><span>Часы '+fmtH(sh.hours||0)+' × '+fmt(HOURLY_RATE)+'</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
     +'<div class="det-row"><span>Бонус — напитки</span><span>+'+fmt(drinkBonus)+'</span></div>';
   if(desBonus>0)h+='<div class="det-row"><span>Бонус — десерты</span><span>+'+fmt(desBonus)+'</span></div>';
   h+='<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
@@ -3615,7 +3617,7 @@ function rMShift(m,b){
     +'<textarea class="sf-note" rows="2" placeholder="например: смена 9:00 — 17:00" oninput="shiftDraft.note=this.value">'+escH(shiftDraft.note||'')+'</textarea>';
   // Toplam
   h+='<div class="sf-total">'
-    +'<div class="sf-tot-row"><span>Часы × 12.000</span><span id="sfHourly">0</span></div>'
+    +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+'</span><span id="sfHourly">0</span></div>'
     +'<div class="sf-tot-row"><span>Бонус (напитки)</span><span id="sfBonus">0</span></div>'
     +'<div class="sf-tot-big"><span>ИТОГО</span><span id="sfTotal">0 сум</span></div>'
   +'</div>';
@@ -3650,7 +3652,7 @@ function recalcShift(){
   const eHr=document.getElementById('sfHourly');if(eHr)eHr.textContent=fmt(hourly);
   const eBn=document.getElementById('sfBonus');if(eBn)eBn.textContent=fmt(bonus);
   const eTt=document.getElementById('sfTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
-  const eHt=document.getElementById('sfHourHint');if(eHt)eHt.textContent=hours>0?(hours+'h × 12.000 = '+fmt(hourly)+' сум'):'Введите количество часов';
+  const eHt=document.getElementById('sfHourHint');if(eHt)eHt.textContent=hours>0?(hours+'h × '+fmt(HOURLY_RATE)+' = '+fmt(hourly)+' сум'):'Введите количество часов';
   const eBt=document.getElementById('sfBtn');if(eBt){const ok=hours>0;eBt.disabled=!ok;eBt.classList.toggle('grn',ok);eBt.textContent=ok?('💾 Записать смену · '+fmt(total)+' сум'):'Введите часы';}
 }
 
@@ -4430,9 +4432,10 @@ function rMSettings(m,b){
 
   if(settingsTab==='prices'){
     // ── Çalışma saatleri / ödeme kuralı ──
-    var _pc=PAY_CFG||{};var _po=(_pc.open!=null?_pc.open:7),_pcl=(_pc.close!=null?_pc.close:3),_pm=(_pc.max!=null?_pc.max:20),_pu=(_pc.unpaid!=null?_pc.unpaid:1);
+    var _pc=PAY_CFG||{};var _po=(_pc.open!=null?_pc.open:7),_pcl=(_pc.close!=null?_pc.close:3),_pm=(_pc.max!=null?_pc.max:20),_pu=(_pc.unpaid!=null?_pc.unpaid:1),_prate=(_pc.rate!=null?_pc.rate:HOURLY_RATE);
     h+='<div class="sec" style="margin-top:4px">⏰ Часы работы и оплата</div>';
     h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:12px 14px;margin-bottom:16px">'
+      +'<label style="display:block;font-size:11px;color:var(--t2);font-weight:600;margin-bottom:10px">Ставка за час (сум)<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="payRate" value="'+_prate+'" style="width:100%;margin-top:4px;font-size:16px;font-weight:700"></label>'
       +'<div class="refresh-hint" style="margin-top:0">Часы в закрытое время (закрытие→открытие) НЕ оплачиваются. Слишком долгая смена ограничивается максимумом — защита от забытой смены.</div>'
       +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">'
         +'<label style="flex:1;min-width:88px;font-size:11px;color:var(--t2);font-weight:600">Открытие<input class="set-input" type="number" inputmode="numeric" min="0" max="23" id="payOpen" value="'+_po+'" style="width:100%;margin-top:4px"></label>'
@@ -4680,9 +4683,10 @@ function savePaySettings(){
   var c=parseInt((document.getElementById('payClose')||{}).value);if(isNaN(c))c=3;
   var mx=parseInt((document.getElementById('payMax')||{}).value);if(isNaN(mx))mx=20;
   var un=(document.getElementById('payUnpaid')||{}).checked?1:0;
-  PAY_CFG={open:o,close:c,max:mx,unpaid:un};
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'pay_settings',open:o,close:c,max:mx,unpaid:un}))}catch(e){}}
-  toast('⏰ Часы работы сохранены');
+  var rate=parseInt((document.getElementById('payRate')||{}).value);if(isNaN(rate)||rate<0)rate=HOURLY_RATE;
+  PAY_CFG={open:o,close:c,max:mx,unpaid:un,rate:rate};HOURLY_RATE=rate;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'pay_settings',open:o,close:c,max:mx,unpaid:un,rate:rate}))}catch(e){}}
+  toast('⏰ Ставка и часы сохранены');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
 }
 function savePrice(drinkId){
