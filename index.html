@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070124;
+var APP_BUILD=2026070125;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1976,6 +1976,12 @@ function sOAt(){
   if(isNaN(t.getTime())||t.getTime()<Date.now()+60000){toast('Выберите время в будущем');return}
   sO(t.toISOString());
 }
+function deleteShift(id){
+  if(!confirm('Удалить эту смену? Действие нельзя отменить.'))return;
+  if(REP&&REP.shifts)REP.shifts=REP.shifts.filter(function(s){return s.sid!==id});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_shift',id:id}))}catch(e){}}
+  toast('🗑 Смена удалена');render();
+}
 function cancelScheduled(id){
   if(!confirm('Отменить запланированный заказ?'))return;
   SCHEDULED=(SCHEDULED||[]).filter(function(x){return x.id!==id});
@@ -2408,6 +2414,7 @@ function rReportRoom(m,b){
             +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
             +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':'')+'</div></div>'
             +(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
+            +((MY_ROLE==='owner'&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
         });
         h+='</div></div>';
@@ -3921,6 +3928,16 @@ function rMBranches(m,b){
       +'<div class="bcard-actions" style="gap:6px">'
         +'<button class="bcard-act" onclick="renameBranch('+br.id+')" style="flex:1">✏️ Имя</button>'
         +'<button class="bcard-act" onclick="toggleBranchActive('+br.id+','+(inact?1:0)+')" style="flex:1">'+(inact?'♻️ Вернуть':'🗄 В архив')+'</button>'
+      +'</div>'
+      // Şube çalışma saatleri (kapalı pencere ödenmez)
+      +'<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border2)">'
+        +'<div style="font-size:11px;color:var(--t2);font-weight:600;margin-bottom:6px">🕐 Рабочие часы (вне них не оплачивается)</div>'
+        +'<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">'
+          +'<label style="flex:1;min-width:70px;font-size:10.5px;color:var(--t3)">Открытие<input class="set-input" type="number" min="0" max="23" id="bo_'+br.id+'" value="'+(br.open!=null?br.open:7)+'" style="width:100%;margin-top:3px"></label>'
+          +'<label style="flex:1;min-width:70px;font-size:10.5px;color:var(--t3)">Закрытие<input class="set-input" type="number" min="0" max="23" id="bc_'+br.id+'" value="'+(br.close!=null?br.close:3)+'" style="width:100%;margin-top:3px"></label>'
+          +'<button class="add-btn" style="padding:9px 12px" onclick="saveBranchHours('+br.id+')">💾</button>'
+        +'</div>'
+        +'<label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12px;cursor:pointer"><input type="checkbox" id="bu_'+br.id+'" '+((br.unpaid==null||br.unpaid)?'checked':'')+' style="width:16px;height:16px;accent-color:var(--gold)"> Не оплачивать закрытые часы</label>'
       +'</div></div>';
   });
   h+='<button class="btn-start" style="margin-top:12px" onclick="createBranch()"><span class="ic">＋</span>Добавить филиал</button>';
@@ -4119,6 +4136,15 @@ function _fit(cx,txt,maxw){
   return txt+'…';
 }
 function _rr(cx,x,y,w,h,r){cx.beginPath();cx.moveTo(x+r,y);cx.arcTo(x+w,y,x+w,y+h,r);cx.arcTo(x+w,y+h,x,y+h,r);cx.arcTo(x,y+h,x,y,r);cx.arcTo(x,y,x+w,y,r);cx.closePath();}
+function saveBranchHours(id){
+  var o=parseInt((document.getElementById('bo_'+id)||{}).value);if(isNaN(o))o=7;
+  var c=parseInt((document.getElementById('bc_'+id)||{}).value);if(isNaN(c))c=3;
+  var u=(document.getElementById('bu_'+id)||{}).checked?1:0;
+  var br=(BRANCHES||[]).find(function(x){return x.id===id});if(br){br.open=o;br.close=c;br.unpaid=u;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'branch_hours',branch_id:id,open:o,close:c,unpaid:u}))}catch(e){}}
+  toast('🕐 Часы филиала сохранены');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+}
 async function createBranch(){
   var name=((await cfPrompt('Название нового филиала:','',{placeholder:'напр. Чиланзар',okText:'Создать',icon:'🏢'}))||'').trim();
   if(!name)return;

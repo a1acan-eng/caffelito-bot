@@ -306,6 +306,12 @@ def get_db():
         sort_order INTEGER DEFAULT 0,
         active INTEGER DEFAULT 1,
         created_at TEXT)""")
+    # Şube-bazlı çalışma saatleri (kapalı pencere): open_hour, close_hour, unpaid_win
+    for _bc2, _bd2 in (("open_hour", "INTEGER"), ("close_hour", "INTEGER"), ("unpaid_win", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE branches ADD COLUMN {_bc2} {_bd2}")
+        except sqlite3.OperationalError:
+            pass
     # Şubelenen tablolara branch_id kolonu (eski DB'lerde yoksa ekle; hepsi ana şubeye = 1).
     # SQLite ALTER ADD COLUMN ... DEFAULT 1 mevcut satırları da 1 yapar.
     for _bt in ("users", "shifts", "cashreports", "orders", "std_acks"):
@@ -345,8 +351,8 @@ ANON_ADMIN_ID = 1087968824
 
 
 def get_branches(db, only_active=True):
-    """Şubeler listesi: [{id,name,group_chat_id,sort_order,active}]."""
-    q = "SELECT id, name, group_chat_id, sort_order, active FROM branches"
+    """Şubeler listesi (saatlerle)."""
+    q = "SELECT id, name, group_chat_id, sort_order, active, open_hour, close_hour, unpaid_win FROM branches"
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
     q += " ORDER BY sort_order, id"
@@ -465,6 +471,27 @@ def paid_hours(start_dt, end_dt, cfg):
     if mx and paid > mx:
         paid = float(mx)
     return round(paid, 2)
+
+
+def branch_pay_window(db, branch_id):
+    """Bir şubenin ödeme penceresi: {open,close,unpaid,max,rate}. open/close/unpaid
+    şubeye özel (branches tablosu); tanımsızsa global (get_pay_cfg). max+rate global."""
+    g = get_pay_cfg(db)
+    win = {"open": g["open"], "close": g["close"], "unpaid": g["unpaid"],
+           "max": g["max"], "rate": g["rate"]}
+    try:
+        b = db.execute("SELECT open_hour,close_hour,unpaid_win FROM branches WHERE id=?",
+                       (int(branch_id or 0),)).fetchone()
+        if b:
+            if b["open_hour"] is not None:
+                win["open"] = int(b["open_hour"])
+            if b["close_hour"] is not None:
+                win["close"] = int(b["close_hour"])
+            if b["unpaid_win"] is not None:
+                win["unpaid"] = int(b["unpaid_win"])
+    except Exception:
+        pass
+    return win
 
 
 BONUS_RATES = {
@@ -859,8 +886,9 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Bitiş başlangıçtan önce olamaz
     if end_dt < start:
         end_dt = now
-    # Ödenecek saat: kapalı pencere (03:00–07:00) düşülür + max ile sınırlı.
-    _pc = get_pay_cfg(db)
+    # Ödenecek saat: ŞUBEYE ÖZEL kapalı pencere düşülür + max ile sınırlı.
+    _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
+    _pc = branch_pay_window(db, _bid)
     hours = paid_hours(start, end_dt, _pc)
     drinks_bonus = calc_bonus(drinks, get_prices(db))
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
@@ -1010,7 +1038,10 @@ def build_hash_payload(db, user_id, name):
     try:
         if role == "owner":
             branches_out = [{"id": b["id"], "name": b["name"], "group": b["group_chat_id"] or "",
-                             "active": int(b["active"] or 0), "sort": b["sort_order"] or 0}
+                             "active": int(b["active"] or 0), "sort": b["sort_order"] or 0,
+                             "open": (b["open_hour"] if b["open_hour"] is not None else 7),
+                             "close": (b["close_hour"] if b["close_hour"] is not None else 3),
+                             "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1)}
                             for b in get_branches(db, only_active=False)]
         else:
             branches_out = [{"id": b["id"], "name": b["name"]} for b in get_branches(db, only_active=True)]
@@ -1093,7 +1124,7 @@ def build_hash_payload(db, user_id, name):
         except Exception:
             return []
     if role == "owner":
-        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, COALESCE(u.display_name,u.name) AS nm "
+        _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, COALESCE(u.display_name,u.name) AS nm "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
         _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
@@ -1107,14 +1138,14 @@ def build_hash_payload(db, user_id, name):
         _lo = _repq("SELECT l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
     else:
-        _sh = _repq("SELECT s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, ? AS nm FROM shifts s "
+        _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, ? AS nm FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
         _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "bid": r["bid"] or 1} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "bid": r["bid"] or 1} for r in _sh],
         "orders": [{"nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
         "pays": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
@@ -3334,6 +3365,49 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "assign_branch", user.id, user.first_name, tid,
                        display_name_for(db, tid), {"branch_id": bid})
+
+        elif action == "branch_hours":
+            # Şube-bazlı çalışma saatleri (kapalı pencere) — owner
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            if not get_branch(db, bid):
+                await update.message.reply_text("❌ Филиал не найден.")
+                return
+            def _ci(v, lo, hi, d):
+                try:
+                    return max(lo, min(hi, int(v)))
+                except Exception:
+                    return d
+            oh = _ci(data.get("open"), 0, 23, 7)
+            ch = _ci(data.get("close"), 0, 23, 3)
+            uw = 1 if int(data.get("unpaid", 1) or 0) else 0
+            db.execute("UPDATE branches SET open_hour=?, close_hour=?, unpaid_win=? WHERE id=?",
+                       (oh, ch, uw, bid))
+            db.commit()
+
+        elif action == "delete_shift":
+            # Owner: yanlış/kazara vardiyayı sil (barista hatalarını düzeltme)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                sid = int(data.get("id") or 0)
+            except Exception:
+                sid = 0
+            if sid:
+                row = db.execute("SELECT user_id FROM shifts WHERE id=?", (sid,)).fetchone()
+                db.execute("DELETE FROM shifts WHERE id=?", (sid,))
+                db.commit()
+                if row:
+                    log_action(db, "delete_shift", user.id, user.first_name, row["user_id"],
+                               display_name_for(db, row["user_id"]), {"shift_id": sid})
 
         # ─── Tatlı kataloğu yönetimi (owner) ───
         elif action == "dessert_save":
