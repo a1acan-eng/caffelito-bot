@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070125;
+var APP_BUILD=2026070126;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1976,6 +1976,20 @@ function sOAt(){
   if(isNaN(t.getTime())||t.getTime()<Date.now()+60000){toast('Выберите время в будущем');return}
   sO(t.toISOString());
 }
+// Owner sil butonu (Отчёт odaları) — kaydın üstünde 🗑
+function delBtn(kind,id){
+  if(MY_ROLE!=='owner'||id==null)return '';
+  return '<button onclick="event.stopPropagation();delRec(\''+kind+'\','+id+')" title="Удалить" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>';
+}
+function delRec(kind,id){
+  var names={tip:'чаевые',pay:'выплату',fine:'штраф',loan:'аванс',order:'заказ',cash:'кассовый отчёт'};
+  if(!confirm('Удалить «'+(names[kind]||'запись')+'»? Это повлияет на расчёты и нельзя отменить.'))return;
+  var map={tip:'tips',pay:'pays',fine:'fines',loan:'loans',order:'orders'};
+  if(map[kind]&&REP&&REP[map[kind]])REP[map[kind]]=REP[map[kind]].filter(function(x){return x.id!==id});
+  if(kind==='cash'&&typeof KASA_REPORTS!=='undefined')KASA_REPORTS=KASA_REPORTS.filter(function(x){return x.id!==id});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:kind,id:id}))}catch(e){}}
+  toast('🗑 Удалено');render();
+}
 function deleteShift(id){
   if(!confirm('Удалить эту смену? Действие нельзя отменить.'))return;
   if(REP&&REP.shifts)REP.shifts=REP.shifts.filter(function(s){return s.sid!==id});
@@ -2359,14 +2373,14 @@ function rReportRoom(m,b){
       h+='<div class="hist" style="cursor:pointer" onclick="kasaDetail=KASA_REPORTS['+ri+'];render()">'
         +'<div class="hist-l"><div class="hist-d">'+escH(r.user_name||'?')+' · '+repDay(r.created_at||r.date)+'</div>'
         +'<div class="hist-m">Продано '+(r.cups_total||0)+' шт · POS '+fmt(r.itogo||0)+'</div></div>'
-        +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+' ›</div></div>';
+        +'<div class="hist-r" style="color:var(--green);font-weight:800">'+fmt(r.kassa||0)+' ›</div>'+delBtn('cash',r.id)+'</div>';
     });
   } else if(room==='orders'){
     lst=(REP.orders||[]).filter(function(o){return inActiveBranch(o.bid)});
     if(!lst.length)h+='<div class="empty-mini">Нет заказов</div>';
     lst.forEach(function(o){
       var items=[];try{items=typeof o.items==='string'?JSON.parse(o.items):(o.items||[])}catch(e){items=[]}
-      h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px">📦 '+escH(o.nm||'')+' · '+repDay(o.at)+' <span style="color:var(--t3);font-weight:500">('+items.length+' поз.)</span></summary>';
+      h+='<details class="rcard" style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px"><span style="flex:1">📦 '+escH(o.nm||'')+' · '+repDay(o.at)+' <span style="color:var(--t3);font-weight:500">('+items.length+' поз.)</span></span>'+delBtn('order',o.id)+'</summary>';
       items.forEach(function(it){h+='<div class="rline"><span>'+escH(it.n||'')+'</span><span>'+escH(String(it.q||''))+'x</span></div>'});
       h+='</details>';
     });
@@ -2423,19 +2437,19 @@ function rReportRoom(m,b){
   } else if(room==='tips'){
     lst=REP.tips||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
-    lst.forEach(function(t){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(t.nm||'?')+' · '+repDay(t.at)+'</div>'+(t.note?'<div class="hist-m">'+escH(t.note)+'</div>':'')+'</div><div class="hist-r" style="color:#10b981;font-weight:800">+'+fmt(t.amount||0)+'</div></div>';});
+    lst.forEach(function(t){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(t.nm||'?')+' · '+repDay(t.at)+'</div>'+(t.note?'<div class="hist-m">'+escH(t.note)+'</div>':'')+'</div><div class="hist-r" style="color:#10b981;font-weight:800">+'+fmt(t.amount||0)+'</div>'+delBtn('tip',t.id)+'</div>';});
   } else if(room==='pays'){
     lst=REP.pays||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
-    lst.forEach(function(p){var sub=p.note||p.kind||'';h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div></div>';});
+    lst.forEach(function(p){var sub=p.note||p.kind||'';h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div>'+delBtn('pay',p.id)+'</div>';});
   } else if(room==='fines'){
     lst=REP.fines||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
-    lst.forEach(function(f){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(f.nm||'?')+' · '+repDay(f.at)+'</div>'+(f.reason?'<div class="hist-m">'+escH(f.reason)+'</div>':'')+'</div><div class="hist-r" style="color:#ef4444;font-weight:800">-'+fmt(f.amount||0)+'</div></div>';});
+    lst.forEach(function(f){h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(f.nm||'?')+' · '+repDay(f.at)+'</div>'+(f.reason?'<div class="hist-m">'+escH(f.reason)+'</div>':'')+'</div><div class="hist-r" style="color:#ef4444;font-weight:800">-'+fmt(f.amount||0)+'</div>'+delBtn('fine',f.id)+'</div>';});
   } else if(room==='loans'){
     lst=REP.loans||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
-    lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div></div>';});
+    lst.forEach(function(l){var st=l.status==='approved'?'✓':(l.status==='rejected'?'✗':'⏳');h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(l.nm||'?')+' · '+repDay(l.at)+'</div>'+(l.reason?'<div class="hist-m">'+escH(l.reason)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+st+' '+fmt(l.amount||0)+'</div>'+delBtn('loan',l.id)+'</div>';});
   }
   h+='<div class="footer">XSYN</div>';m.innerHTML=h;
   try{var _mb=m.querySelectorAll('.mbar[data-h]');if(_mb.length)setTimeout(function(){_mb.forEach(function(el){el.style.height=el.getAttribute('data-h')+'%';});},60);}catch(_e){}

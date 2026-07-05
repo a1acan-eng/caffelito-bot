@@ -1127,30 +1127,30 @@ def build_hash_payload(db, user_id, name):
         _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, COALESCE(u.display_name,u.name) AS nm "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
-        _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
-        _ti = _repq("SELECT t.amount, t.note, t.created_at, COALESCE(u.display_name,u.name) AS nm "
+        _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
+        _ti = _repq("SELECT t.id, t.amount, t.note, t.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM tips t LEFT JOIN users u ON u.user_id=t.user_id ORDER BY t.id DESC", (), 60)
-        _pa = _repq("SELECT p.amount, p.kind, p.note, p.paid_at, COALESCE(u.display_name,u.name) AS nm "
+        _pa = _repq("SELECT p.id, p.amount, p.kind, p.note, p.paid_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM payments p LEFT JOIN users u ON u.user_id=p.user_id "
                     "WHERE p.paid_by!=p.user_id ORDER BY p.id DESC", (), 60)
-        _fi = _repq("SELECT f.amount, f.reason, f.created_at, COALESCE(u.display_name,u.name) AS nm "
+        _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
-        _lo = _repq("SELECT l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
+        _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
     else:
         _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, s.branch_id AS bid, ? AS nm FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
-        _or = _repq("SELECT user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
+        _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
         "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "bid": r["bid"] or 1} for r in _sh],
-        "orders": [{"nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
-        "tips": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
-        "pays": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
-        "fines": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"]} for r in _fi],
-        "loans": [{"nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
+        "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
+        "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
+        "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
+        "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"]} for r in _fi],
+        "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
     if role == "owner":
@@ -3408,6 +3408,28 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if row:
                     log_action(db, "delete_shift", user.id, user.first_name, row["user_id"],
                                display_name_for(db, row["user_id"]), {"shift_id": sid})
+
+        elif action == "delete_record":
+            # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            kind = (data.get("kind") or "").strip()
+            try:
+                rid = int(data.get("id") or 0)
+            except Exception:
+                rid = 0
+            _TBL = {"tip": "tips", "pay": "payments", "fine": "fines", "loan": "loans",
+                    "order": "orders", "cash": "cashreports", "shift": "shifts"}
+            tbl = _TBL.get(kind)
+            if tbl and rid:
+                try:
+                    db.execute(f"DELETE FROM {tbl} WHERE id=?", (rid,))
+                    db.commit()
+                    log_action(db, "delete_record", user.id, user.first_name, None, None, {"kind": kind, "id": rid})
+                except Exception as ex:
+                    logger.warning(f"delete_record {kind}/{rid}: {ex}")
 
         # ─── Tatlı kataloğu yönetimi (owner) ───
         elif action == "dessert_save":
