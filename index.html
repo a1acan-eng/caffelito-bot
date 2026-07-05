@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070126;
+var APP_BUILD=2026070127;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2771,6 +2771,7 @@ function rMMain(m,b){
     ? '<div class="role-pill owner">👑 Владелец · Бухгалтерия · '+escH(MY_NAME)+'</div>'
     : '<div class="role-pill barista">👤 '+escH(MY_NAME)+'</div>';
   h+=rolePill;
+  if(MY_ROLE==='owner')h+='<div style="text-align:center;font-size:10px;color:var(--t3);margin:-2px 0 8px;letter-spacing:.5px">версия '+(typeof APP_BUILD!=='undefined'?APP_BUILD:'?')+'</div>';
 
   // ── Owner: şube seçici + "kim çalışıyor" (Управление'nin en üstü) ──
   if(MY_ROLE==='owner' && (BRANCHES||[]).length){
