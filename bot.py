@@ -2486,9 +2486,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════
 
 async def deliver_order(bot, group_id, header, esc_lines, footer):
-    """Sipariş mesajını gruba gönder (uzunsa parçalara bölerek). Hizalama için
-    <code> (monospace) — <pre>'nin gri kutu + 'copy' düğmesi yok. esc_lines escape'li."""
-    full = header + "<code>" + "\n".join(esc_lines) + "</code>" + footer
+    """Sipariş mesajını gruba gönder (uzunsa parçalara bölerek). Задачи gibi DÜZ
+    biçimli liste (kod-bloğu yok). esc_lines zaten HTML (bullet + <b> içerir)."""
+    full = header + "\n".join(esc_lines) + footer
     if len(full.encode('utf-8')) <= 4096:
         await bot.send_message(chat_id=int(group_id), text=full, parse_mode="HTML")
         return
@@ -2501,7 +2501,7 @@ async def deliver_order(bot, group_id, header, esc_lines, footer):
         batches.append(cur)
     n = len(batches)
     for i, b in enumerate(batches):
-        msg = (header if i == 0 else "") + "<code>" + "\n".join(b) + "</code>" + (footer if i == n - 1 else "")
+        msg = (header if i == 0 else "") + "\n".join(b) + (footer if i == n - 1 else "")
         await bot.send_message(chat_id=int(group_id), text=msg, parse_mode="HTML")
 
 
@@ -2603,22 +2603,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     rows.append((nm, str(qty) + "x"))
                     order_items.append({"n": nm, "q": str(qty)})
 
-            # Sağa hizalı monospace tablo: isim solda, adет sağ kolonda hizalı
-            named = [r for r in rows if r]
-            maxn = max((len(r[0]) for r in named), default=0)  # gerçek en uzun isim → hepsi aynı kolona hizalı (cap yok)
-            body_lines = []
+            # Задачи gibi temiz liste: her kalem "• Ad — <b>N</b>", kategori arası boşluk
+            esc_lines = []
             for r in rows:
                 if r is None:
-                    body_lines.append("")
+                    esc_lines.append("")  # kategori arası boşluk
                     continue
                 nm, q = r
                 if q is None:
-                    body_lines.append(nm)
-                elif len(nm) <= maxn:
-                    body_lines.append(nm + " " * (maxn - len(nm) + 2) + q)
+                    esc_lines.append(f"<b>{esc_html(nm)}</b>")  # miktarsız satır (başlık gibi)
                 else:
-                    body_lines.append(nm + "  " + q)
-            esc_lines = [esc_html(x) for x in body_lines]
+                    qn = q[:-1] if str(q).endswith("x") else q  # "3x" → "3"
+                    esc_lines.append(f"• {esc_html(nm)} — <b>{esc_html(str(qn))}</b>")
 
             # ── Zamanlı sipariş mı? (send_at gelecekteyse gruba ŞİMDİ gönderme, sakla) ──
             _sa_raw = (data.get("send_at") or "").strip()
@@ -2639,8 +2635,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     parse_mode="Markdown")
                 return
 
-            header = "<b>ЗАКАЗ — CAFFELITO</b>\n" + f"<b>{esc_html(shown)}</b> · {now.strftime('%d.%m.%Y %H:%M')}\n"
-            footer = f"<b>Итого: {total} позиций</b>"
+            _DIV = "━━━━━━━━━━━━━━━━━━━━"
+            header = (f"<b>📦 ЗАКАЗ — CAFFELITO</b>\n{_DIV}\n"
+                      f"👤 <b>{esc_html(shown)}</b>   ·   {now.strftime('%d.%m.%Y  %H:%M')}\n{_DIV}\n")
+            footer = f"\n{_DIV}\n<b>Итого: {total} позиций</b>"
             if group_id:
                 try:
                     await deliver_order(context.bot, group_id, header, esc_lines, footer)
@@ -4566,9 +4564,10 @@ async def scheduled_orders_loop(app):
                 total = so["total"] or 0
                 shown = so["user_name"] or "?"
                 sent_now = datetime.now(TZ)
-                header = ("<b>ЗАКАЗ — CAFFELITO</b>\n"
-                          f"<b>{_html.escape(str(shown))}</b> · {sent_now.strftime('%d.%m.%Y %H:%M')} ⏰\n")
-                footer = f"<b>Итого: {total} позиций</b>"
+                _dv = "━━━━━━━━━━━━━━━━━━━━"
+                header = (f"<b>📦 ЗАКАЗ — CAFFELITO</b> ⏰\n{_dv}\n"
+                          f"👤 <b>{_html.escape(str(shown))}</b>   ·   {sent_now.strftime('%d.%m.%Y  %H:%M')}\n{_dv}\n")
+                footer = f"\n{_dv}\n<b>Итого: {total} позиций</b>"
                 try:
                     if gid:
                         await deliver_order(app.bot, gid, header, esc_lines, footer)
