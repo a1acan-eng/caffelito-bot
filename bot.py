@@ -1106,7 +1106,6 @@ def build_hash_payload(db, user_id, name):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
-        f"rep={quote(json.dumps(build_reports(db, role, user_id), ensure_ascii=False))}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
