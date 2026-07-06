@@ -1014,9 +1014,15 @@ def build_hash_payload(db, user_id, name):
     pwd_row = db.execute("SELECT password FROM users WHERE user_id=?", (user_id,)).fetchone()
     pwd_raw = ((pwd_row["password"] if pwd_row else "") or "").strip()
     pwh = hashlib.sha256(pwd_raw.encode('utf-8')).hexdigest() if pwd_raw else ""
-    # Kasa: son raporun "Осталось"u → yeni "Было" ön-doldurma için (en son hangi vardiya kapatıldıysa)
+    # Kasa: son raporun "Осталось"u → yeni "Было" ön-doldurma için.
+    # ŞUBE-BAZLI: her filial kendi bardak stoğunu taşır (C5'in "Было"su C5'in son
+    # vardiyasından, Magic'inki Magic'ten). Kullanıcının o anki şubesi (açık vardiya
+    # → oturum şubesi → ev şubesi) baz alınır. Eski kayıtlarda branch_id NULL → 1 (C5).
     try:
-        cr = db.execute("SELECT ostalos FROM cashreports ORDER BY id DESC LIMIT 1").fetchone()
+        _kb = acting_branch_id(db, user_id)
+        cr = db.execute(
+            "SELECT ostalos FROM cashreports WHERE COALESCE(branch_id,1)=? ORDER BY id DESC LIMIT 1",
+            (_kb,)).fetchone()
         kasa_last = json.loads(cr["ostalos"]) if (cr and cr["ostalos"]) else {}
     except Exception:
         kasa_last = {}
