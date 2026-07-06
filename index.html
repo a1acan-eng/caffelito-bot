@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070127;
+var APP_BUILD=2026070128;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1976,9 +1976,10 @@ function sOAt(){
   if(isNaN(t.getTime())||t.getTime()<Date.now()+60000){toast('Выберите время в будущем');return}
   sO(t.toISOString());
 }
-// Owner sil butonu (Отчёт odaları) — kaydın üstünde 🗑
+var repEdit=false; // Отчёт düzenleme (silme) modu — ✏️ ile açılır
+// Owner sil butonu (Отчёт odaları) — düzenleme modunda kaydın sağında 🗑
 function delBtn(kind,id){
-  if(MY_ROLE!=='owner'||id==null)return '';
+  if(MY_ROLE!=='owner'||!repEdit||id==null)return '';
   return '<button onclick="event.stopPropagation();delRec(\''+kind+'\','+id+')" title="Удалить" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>';
 }
 function delRec(kind,id){
@@ -2363,7 +2364,11 @@ function rReportRoom(m,b){
   var room=reportRoom;
   var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
   var h='<button class="back" onclick="reportRoom=null;render()">‹ Назад</button>';
-  h+='<div class="sec">'+(titles[room]||'Отчёт')+'</div>';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+    +'<div class="sec" style="margin-bottom:0">'+(titles[room]||'Отчёт')+'</div>'
+    +(MY_ROLE==='owner'?'<button onclick="repEdit=!repEdit;render()" style="padding:7px 12px;border-radius:var(--rp);border:1px solid '+(repEdit?'var(--red-bg)':'var(--border2)')+';background:'+(repEdit?'var(--red-bg)':'transparent')+';color:'+(repEdit?'var(--red)':'var(--t2)')+';font-size:12px;font-weight:700;cursor:pointer">'+(repEdit?'✓ Готово':'✏️ Изменить')+'</button>':'')
+    +'</div>';
+  if(MY_ROLE==='owner'&&repEdit)h+='<div class="refresh-hint" style="margin:6px 0 4px">Режим удаления: нажмите 🗑 у записи, чтобы удалить её из системы.</div>';
   var lst;
   if(room==='kasa'){
     lst=KASA_REPORTS||[];
@@ -2428,7 +2433,7 @@ function rReportRoom(m,b){
             +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
             +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':'')+'</div></div>'
             +(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
-            +((MY_ROLE==='owner'&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
+            +((MY_ROLE==='owner'&&repEdit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
         });
         h+='</div></div>';
