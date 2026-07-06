@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070129;
+var APP_BUILD=2026070130;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1591,7 +1591,7 @@ function pickStartBranch(id){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'set_my_branch',branch_id:id}))}catch(e){}}
 }
 // Aktif vardiyayı başka şubeye taşı (onaylı) — süre korunur, sonraki raporlar yeni gruba
-function switchShiftBranch(id){
+async function switchShiftBranch(id){
   var act=(SUMMARY&&SUMMARY.active)?SUMMARY.active:null;
   if(!act){brSwitchOpen=false;render();return;}
   var cur=parseInt(act.branch_id)||1;
@@ -1605,8 +1605,7 @@ function switchShiftBranch(id){
     toast('🏢 Смена перенесена в «'+branchName(id)+'»');
     render();
   };
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)doMove();else{brSwitchOpen=false;render();}})}
-  else if(confirm(msg)){doMove();}else{brSwitchOpen=false;render();}
+  if(await cfAsk(msg,{okText:'Перенести',icon:'🏢'})){doMove();}else{brSwitchOpen=false;render();}
 }
 // Owner filtresi: kayıt bu şubeye ait mi? (bid yoksa/ACTIVE_BRANCH=0 → hepsi geçer)
 function inActiveBranch(bid){if(!ACTIVE_BRANCH)return true;return (parseInt(bid)||1)===ACTIVE_BRANCH;}
@@ -1981,23 +1980,23 @@ function delBtn(kind,id){
   if(MY_ROLE!=='owner'||!edit||id==null)return '';
   return '<button onclick="event.stopPropagation();delRec(\''+kind+'\','+id+')" title="Удалить" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>';
 }
-function delRec(kind,id){
+async function delRec(kind,id){
   var names={tip:'чаевые',pay:'выплату',fine:'штраф',loan:'аванс',order:'заказ',cash:'кассовый отчёт'};
-  if(!confirm('Удалить «'+(names[kind]||'запись')+'»? Это повлияет на расчёты и нельзя отменить.'))return;
+  if(!(await cfAsk('Удалить «'+(names[kind]||'запись')+'»?\nЭто повлияет на расчёты и нельзя отменить.',{danger:true,okText:'Удалить'})))return;
   var map={tip:'tips',pay:'pays',fine:'fines',loan:'loans',order:'orders'};
   if(map[kind]&&REP&&REP[map[kind]])REP[map[kind]]=REP[map[kind]].filter(function(x){return x.id!==id});
   if(kind==='cash'&&typeof KASA_REPORTS!=='undefined')KASA_REPORTS=KASA_REPORTS.filter(function(x){return x.id!==id});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:kind,id:id}))}catch(e){}}
   toast('🗑 Удалено');render();
 }
-function deleteShift(id){
-  if(!confirm('Удалить эту смену? Действие нельзя отменить.'))return;
+async function deleteShift(id){
+  if(!(await cfAsk('Удалить эту смену?\nДействие нельзя отменить.',{danger:true,okText:'Удалить'})))return;
   if(REP&&REP.shifts)REP.shifts=REP.shifts.filter(function(s){return s.sid!==id});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_shift',id:id}))}catch(e){}}
   toast('🗑 Смена удалена');render();
 }
-function cancelScheduled(id){
-  if(!confirm('Отменить запланированный заказ?'))return;
+async function cancelScheduled(id){
+  if(!(await cfAsk('Отменить запланированный заказ?',{danger:true,okText:'Отменить заказ',cancelText:'Нет'})))return;
   SCHEDULED=(SCHEDULED||[]).filter(function(x){return x.id!==id});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'cancel_scheduled',id:id}))}catch(e){}}
   toast('Отменено');render();
@@ -4004,8 +4003,8 @@ async function schedRenameEmp(idx){
     if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}}
   schedSaveRoster();render();
 }
-function schedClearWeek(){
-  if(!confirm('Очистить график этой недели? Все смены будут удалены.'))return;
+async function schedClearWeek(){
+  if(!(await cfAsk('Очистить график этой недели?\nВсе смены будут удалены.',{danger:true,okText:'Очистить'})))return;
   SCHED={};SCHED_ALL[SCHED_WEEK]={};
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:{}}))}catch(e){}}
   toast('График очищен');render();
@@ -4016,9 +4015,9 @@ async function schedAddEmp(){
   SCHED_ROSTER=SCHED_ROSTER||[];if(SCHED_ROSTER.indexOf(nm)<0)SCHED_ROSTER.push(nm);
   schedSaveRoster();render();
 }
-function schedRemoveEmp(idx){
+async function schedRemoveEmp(idx){
   var nm=SCHED_ROSTER[idx];if(nm==null)return;
-  if(!confirm('Убрать «'+nm+'» из графика?'))return;
+  if(!(await cfAsk('Убрать «'+nm+'» из графика?',{danger:true,okText:'Убрать'})))return;
   SCHED_ROSTER.splice(idx,1);
   schedSaveRoster();render();
 }
@@ -4698,21 +4697,19 @@ function _clrSend(payload){
 function clrTypes(){var a=[];document.querySelectorAll('.clr-type:checked').forEach(function(c){a.push(c.value)});return a;}
 function clrBranchSel(){var el=document.getElementById('clrBranch');return el?(parseInt(el.value)||0):0;}
 function clrBranchLbl(bid){return bid?(' · '+branchName(bid)):' · все филиалы';}
-function clrHistAll(){
+async function clrHistAll(){
   var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
   var bid=clrBranchSel();
-  var msg='Удалить отмеченное ('+types.length+' видов'+clrBranchLbl(bid)+') НАВСЕГДА? Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'all',types:types,branch_id:bid})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'all',types:types,branch_id:bid})}
+  var msg='Удалить отмеченное ('+types.length+' видов'+clrBranchLbl(bid)+') НАВСЕГДА?\nЭто НЕЛЬЗЯ отменить.';
+  if(await cfAsk(msg,{danger:true,okText:'Удалить'})){_clrSend({action:'clear_history',mode:'all',types:types,branch_id:bid})}
 }
-function clrHistBefore(){
+async function clrHistBefore(){
   var el=document.getElementById('clrDate');var val=el?el.value:'';
   if(!val){toast('Выберите дату');return}
   var types=clrTypes();if(!types.length){toast('Отметьте хотя бы одно');return}
   var bid=clrBranchSel();
-  var msg='Удалить отмеченное ДО '+val+clrBranchLbl(bid)+'? Это НЕЛЬЗЯ отменить.';
-  if(tg&&tg.showConfirm){tg.showConfirm(msg,function(ok){if(ok)_clrSend({action:'clear_history',mode:'before',date:val,types:types,branch_id:bid})})}
-  else if(confirm(msg)){_clrSend({action:'clear_history',mode:'before',date:val,types:types,branch_id:bid})}
+  var msg='Удалить отмеченное ДО '+val+clrBranchLbl(bid)+'?\nЭто НЕЛЬЗЯ отменить.';
+  if(await cfAsk(msg,{danger:true,okText:'Удалить'})){_clrSend({action:'clear_history',mode:'before',date:val,types:types,branch_id:bid})}
 }
 
 function savePaySettings(){
