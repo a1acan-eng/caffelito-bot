@@ -2609,7 +2609,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     rows.append((nm, str(qty) + "x"))
                     order_items.append({"n": nm, "q": str(qty)})
 
-            # Задачи gibi temiz liste: her kalem "• Ad — <b>N</b>", kategori arası boşluk
+            # Задачи gibi temiz liste: her satır TAMAMEN bold, miktar "Nx" formatında
             esc_lines = []
             for r in rows:
                 if r is None:
@@ -2620,7 +2620,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     esc_lines.append(f"<b>{esc_html(nm)}</b>")  # miktarsız satır (başlık gibi)
                 else:
                     qn = q[:-1] if str(q).endswith("x") else q  # "3x" → "3"
-                    esc_lines.append(f"• {esc_html(nm)} — <b>{esc_html(str(qn))}</b>")
+                    esc_lines.append(f"• <b>{esc_html(nm)} — {esc_html(str(qn))}x</b>")
 
             # ── Zamanlı sipariş mı? (send_at gelecekteyse gruba ŞİMDİ gönderme, sakla) ──
             _sa_raw = (data.get("send_at") or "").strip()
