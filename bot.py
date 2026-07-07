@@ -1054,35 +1054,6 @@ def build_hash_payload(db, user_id, name):
     except Exception:
         branches_out = []
     my_branch = user_branch_id(db, user_id)
-    # ── Haftalık график (bu haftanın Pazartesi'si) ──
-    _today_dt = datetime.now(TZ)
-    _monday = (_today_dt - timedelta(days=_today_dt.weekday())).strftime("%Y-%m-%d")
-    # Kayıtlı tüm haftaların çizelgesi (hafta navigasyonu için) — son 16 hafta
-    _sched_all = {}
-    try:
-        for _r in db.execute("SELECT k,val FROM meta WHERE k LIKE 'sched_%' ORDER BY k DESC LIMIT 16").fetchall():
-            _wk = _r["k"][6:]
-            try:
-                _sched_all[_wk] = json.loads(_r["val"]) if _r["val"] else {}
-            except Exception:
-                pass
-    except Exception:
-        _sched_all = {}
-    # График personel listesi (elle yönetilir); boşsa app baristalarından tohumla
-    _roster = []
-    try:
-        _rr = db.execute("SELECT val FROM meta WHERE k='sched_roster'").fetchone()
-        if _rr and _rr["val"]:
-            _roster = json.loads(_rr["val"]) or []
-    except Exception:
-        _roster = []
-    if not _roster:
-        try:
-            _roster = [(b["display_name"] or b["name"] or "?").strip() for b in db.execute(
-                "SELECT name,display_name FROM users WHERE COALESCE(approved,0)=1 AND COALESCE(archived,0)=0 "
-                "ORDER BY COALESCE(display_name,name)").fetchall()]
-        except Exception:
-            _roster = []
     # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
     try:
         if role == "owner":
@@ -1117,9 +1088,6 @@ def build_hash_payload(db, user_id, name):
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
-        f"sched_week={_monday}",
-        f"sched_all={quote(json.dumps(_sched_all, ensure_ascii=False))}",
-        f"sched_roster={quote(json.dumps(_roster, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -3237,69 +3205,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"Макс. смена: {mx} ч\n"
                 f"Закрытое окно ({cl:02d}:00–{op:02d}:00) не оплачивается: {'да' if un else 'нет'}",
                 parse_mode="Markdown")
-
-        elif action == "schedule_save":
-            # Owner: haftalık график'i kaydet (meta blob, hafta=Pazartesi tarihi)
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец.")
-                return
-            wk = (data.get("week") or "").strip()[:10]
-            sdata = data.get("data")
-            if wk and sdata is not None:
-                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
-                           (f"sched_{wk}", json.dumps(sdata, ensure_ascii=False)))
-                db.commit()
-
-        elif action == "sched_roster_save":
-            # Owner: график personel listesini (elle) kaydet
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец.")
-                return
-            names = data.get("names")
-            if isinstance(names, list):
-                clean = [str(n).strip()[:40] for n in names if str(n).strip()][:60]
-                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('sched_roster', ?)",
-                           (json.dumps(clean, ensure_ascii=False),))
-                db.commit()
-
-        elif action == "schedule_image":
-            # Owner: uygulamada çizilen график resmini (base64 PNG) şube gruplarına gönder
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец.")
-                return
-            b64 = data.get("png") or ""
-            if "," in b64:
-                b64 = b64.split(",", 1)[1]
-            try:
-                raw = base64.b64decode(b64)
-            except Exception:
-                raw = b""
-            if not raw:
-                await update.message.reply_text("❌ Не удалось создать изображение.")
-                return
-            cap = (data.get("caption") or "📅 График смен").strip()[:900]
-            sent_to = set()
-            for b in get_branches(db, only_active=True):
-                g = b.get("group_chat_id")
-                if g and str(g) not in sent_to:
-                    sent_to.add(str(g))
-                    try:
-                        bio = io.BytesIO(raw); bio.name = "grafik.png"
-                        await context.bot.send_photo(chat_id=int(g), photo=bio, caption=cap)
-                    except Exception as e:
-                        logger.warning(f"schedule_image send {g}: {e}")
-            if not sent_to:
-                try:
-                    bio = io.BytesIO(raw); bio.name = "grafik.png"
-                    await context.bot.send_photo(chat_id=user.id, photo=bio, caption=cap + "\n(нет привязанных групп)")
-                except Exception:
-                    pass
-            await update.message.reply_text(
-                f"✅ График отправлен: {len(sent_to)} груп(пы)." if sent_to
-                else "⚠️ Нет привязанных групп — отправил вам в личку.")
 
         elif action == "create_branch":
             db = get_db()

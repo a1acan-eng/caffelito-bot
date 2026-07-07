@@ -931,7 +931,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070130;
+var APP_BUILD=2026070131;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1014,7 +1014,6 @@ function refreshState(){
         BRANCHES=J('branches','[]');
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
-        SCHED_ALL=J('sched_all','{}');if(!SCHED_WEEK)SCHED_WEEK=P.get('sched_week')||'';SCHED=SCHED_ALL[SCHED_WEEK]||{};SCHED_ROSTER=J('sched_roster','[]');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
@@ -1566,12 +1565,6 @@ let SCHEDULED=[];
 try{SCHEDULED=JSON.parse((HP.get('scheduled')||'[]'))}catch(e){SCHEDULED=[]}
 let PAY_CFG={};
 try{PAY_CFG=JSON.parse((HP.get('pay_cfg')||'{}'))||{}}catch(e){PAY_CFG={}}
-let SCHED_ALL={};
-try{SCHED_ALL=JSON.parse((HP.get('sched_all')||'{}'))||{}}catch(e){SCHED_ALL={}}
-let SCHED_WEEK=HP.get('sched_week')||'';
-let SCHED=SCHED_ALL[SCHED_WEEK]||{};
-let SCHED_ROSTER=[];
-try{SCHED_ROSTER=JSON.parse((HP.get('sched_roster')||'[]'))||[]}catch(e){SCHED_ROSTER=[]}
 HOURLY_RATE=parseInt(HP.get('pay_rate'))||HOURLY_RATE;
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
@@ -2703,7 +2696,6 @@ function rM(m,b){
   if(mView==='loanReview')return rMLoanReview(m,b);
   if(mView==='standard')return rMStandard(m,b);
   if(mView==='branches')return rMBranches(m,b);
-  if(mView==='schedule')return rMSchedule(m,b);
   return rMMain(m,b);
 }
 
@@ -2868,7 +2860,6 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
-        +'<div class="own-btn" onclick="mView=\'schedule\';render()"><div class="own-btn-i">📅</div><div class="own-btn-t">График</div></div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
@@ -3960,197 +3951,6 @@ function rMBranches(m,b){
   m.innerHTML=h;b.style.display='none';
 }
 
-// ── График смен (haftalık vardiya çizelgesi) ──
-var SCHED_DOW=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
-var SCHED_TIMES=['07:00–17:00','07:00–19:00','07:00–00:00','17:00–03:00','19:00–07:00','07:00–03:00','19:00–03:00'];
-var SCHED_SPECIAL=['OFF','Больничный','Отпуск','Обучение'];
-function schedDates(){
-  var base;
-  if(SCHED_WEEK){base=new Date(SCHED_WEEK+'T00:00:00');}
-  else{var d=new Date();var wd=(d.getDay()+6)%7;base=new Date(d.getFullYear(),d.getMonth(),d.getDate()-wd);}
-  if(isNaN(base.getTime())){var d2=new Date();var wd2=(d2.getDay()+6)%7;base=new Date(d2.getFullYear(),d2.getMonth(),d2.getDate()-wd2);}
-  var out=[];for(var i=0;i<7;i++){out.push(new Date(base.getFullYear(),base.getMonth(),base.getDate()+i));}
-  return out;
-}
-function schedRoster(){return SCHED_ROSTER||[];}          // elle yönetilen isim listesi
-function schedVal(name,day){var r=SCHED[name];return (r&&r[day])||'';}
-function schedCell(idx,day,val){
-  var name=SCHED_ROSTER[idx];if(name==null)return;
-  SCHED[name]=SCHED[name]||['','','','','','',''];SCHED[name][day]=val;
-  SCHED_ALL[SCHED_WEEK]=SCHED;
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}
-}
-var schedEdit=false; // personel düzenleme modu (✕ / rename / ekle sadece bu modda)
-// Hücre rengi (Excel gibi): şube=mavi, Magic=yeşil, OFF=turuncu, özel=sarı/mor/kırmızı
-function schedColor(v){
-  if(!v)return {bg:'',fg:'',cbg:'#ffffff'};
-  if(v==='OFF')return {bg:'#f9c990',fg:'#7a3e00',cbg:'#f9c990'};
-  if(v==='Больничный')return {bg:'#f4a8a8',fg:'#7a1a1a',cbg:'#f4a8a8'};
-  if(v==='Отпуск')return {bg:'#cdb8f2',fg:'#3a1a6a',cbg:'#cdb8f2'};
-  if(v==='Обучение')return {bg:'#f0e08a',fg:'#5a4600',cbg:'#f0e08a'};
-  if(/^Magic\b/i.test(v))return {bg:'#bfe6bf',fg:'#12481a',cbg:'#bfe6bf'};
-  return {bg:'#aacef2',fg:'#0a3560',cbg:'#aacef2'}; // şube (C5) = mavi
-}
-function schedSaveRoster(){
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'sched_roster_save',names:SCHED_ROSTER}))}catch(e){}}
-}
-async function schedRenameEmp(idx){
-  var old=SCHED_ROSTER[idx];if(old==null)return;
-  var nm=((await cfPrompt('Изменить имя:',old,{okText:'Сохранить',icon:'✏️'}))||'').trim();
-  if(!nm||nm===old)return;
-  SCHED_ROSTER[idx]=nm;
-  if(SCHED[old]){SCHED[nm]=SCHED[old];delete SCHED[old];SCHED_ALL[SCHED_WEEK]=SCHED;
-    if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:SCHED}))}catch(e){}}}
-  schedSaveRoster();render();
-}
-async function schedClearWeek(){
-  if(!(await cfAsk('Очистить график этой недели?\nВсе смены будут удалены.',{danger:true,okText:'Очистить'})))return;
-  SCHED={};SCHED_ALL[SCHED_WEEK]={};
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_save',week:SCHED_WEEK,data:{}}))}catch(e){}}
-  toast('График очищен');render();
-}
-async function schedAddEmp(){
-  var nm=((await cfPrompt('Имя сотрудника:','',{placeholder:'напр. Хасан',okText:'Добавить',icon:'👤'}))||'').trim();
-  if(!nm)return;
-  SCHED_ROSTER=SCHED_ROSTER||[];if(SCHED_ROSTER.indexOf(nm)<0)SCHED_ROSTER.push(nm);
-  schedSaveRoster();render();
-}
-async function schedRemoveEmp(idx){
-  var nm=SCHED_ROSTER[idx];if(nm==null)return;
-  if(!(await cfAsk('Убрать «'+nm+'» из графика?',{danger:true,okText:'Убрать'})))return;
-  SCHED_ROSTER.splice(idx,1);
-  schedSaveRoster();render();
-}
-// Hafta seç: girilen tarihi PAZARTESİ'ye çevir, o haftanın verisini yükle
-function schedSetWeek(v){
-  if(!v)return;var d=new Date(v+'T00:00:00');if(isNaN(d.getTime()))return;
-  var wd=(d.getDay()+6)%7;var mon=new Date(d.getFullYear(),d.getMonth(),d.getDate()-wd);
-  var pad=function(n){return String(n).padStart(2,'0')};
-  SCHED_WEEK=mon.getFullYear()+'-'+pad(mon.getMonth()+1)+'-'+pad(mon.getDate());
-  SCHED=SCHED_ALL[SCHED_WEEK]||{};
-  render();
-}
-function schedShiftWeek(delta){
-  var ds=schedDates();var mon=new Date(ds[0].getFullYear(),ds[0].getMonth(),ds[0].getDate()+delta*7);
-  var pad=function(n){return String(n).padStart(2,'0')};
-  schedSetWeek(mon.getFullYear()+'-'+pad(mon.getMonth()+1)+'-'+pad(mon.getDate()));
-}
-function schedOptsHTML(cur){
-  var h='<option value=""'+(cur===''?' selected':'')+'>—</option>';
-  SCHED_SPECIAL.forEach(function(s){h+='<option value="'+s+'"'+(cur===s?' selected':'')+'>'+s+'</option>';});
-  (BRANCHES||[]).forEach(function(b){
-    SCHED_TIMES.forEach(function(t){var v=b.name+' '+t;h+='<option value="'+escH(v)+'"'+(cur===v?' selected':'')+'>'+escH(v)+'</option>';});
-  });
-  return h;
-}
-function rMSchedule(m,b){
-  if(MY_ROLE!=='owner'){mView='main';render();return}
-  var ds=schedDates();
-  var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
-  var h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  h+='<div class="sec">📅 График смен</div>';
-  // Hafta seçici: sadece PAZARTESİ tarihi girilir, diğer günler otomatik.
-  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
-    +'<button onclick="schedShiftWeek(-1)" style="padding:8px 12px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t1);font-size:15px;font-weight:700;cursor:pointer">‹</button>'
-    +'<label style="flex:1;min-width:150px;font-size:12px;color:var(--t2);font-weight:600">Неделя с понедельника:<input type="date" value="'+ds[0].getFullYear()+'-'+String(ds[0].getMonth()+1).padStart(2,"0")+'-'+String(ds[0].getDate()).padStart(2,"0")+'" onchange="schedSetWeek(this.value)" style="width:100%;margin-top:4px;padding:9px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-family:inherit;font-size:13px"></label>'
-    +'<button onclick="schedShiftWeek(1)" style="padding:8px 12px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t1);font-size:15px;font-weight:700;cursor:pointer">›</button>'
-    +'</div>';
-  h+='<div class="refresh-hint" style="margin-bottom:10px">Неделя: <b>'+wl+'</b>. Заполните смены — сохраняется автоматически. «📤 В группу» отправит таблицу картинкой.</div>';
-  var roster=schedRoster();
-  // Düzenleme modu toggle (✕/rename/ekle sadece bu modda → yanlışlıkla silme yok)
-  h+='<div style="display:flex;gap:8px;margin-bottom:10px">'
-    +'<button onclick="schedEdit=!schedEdit;render()" style="flex:1;padding:9px;border-radius:var(--r3);border:1px solid '+(schedEdit?'var(--gold)':'var(--border2)')+';background:'+(schedEdit?'var(--gold-bg)':'transparent')+';color:'+(schedEdit?'var(--gold2)':'var(--t2)')+';font-size:12.5px;font-weight:700;cursor:pointer">✏️ '+(schedEdit?'Готово':'Изменить сотрудников')+'</button>'
-    +(schedEdit?'<button onclick="schedClearWeek()" style="flex:1;padding:9px;border-radius:var(--r3);border:1px solid var(--red-bg);background:transparent;color:var(--red);font-size:12.5px;font-weight:700;cursor:pointer">🗑 Очистить неделю</button>':'')
-    +'</div>';
-  // Renkli tablo (Excel gibi): günler sarı, tarih yeşil, isim başlığı mavi
-  h+='<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px">';
-  h+='<table style="border-collapse:collapse;min-width:660px;font-size:12px">';
-  h+='<tr><th style="position:sticky;left:0;background:#5b8fc9;color:#fff;padding:8px 10px;text-align:left;min-width:112px">Сотрудник</th>';
-  ds.forEach(function(d,i){h+='<th style="padding:5px 4px;min-width:80px;background:#f5d76e;color:#5a4600;border-left:1px solid rgba(0,0,0,.08)">'+SCHED_DOW[i]+'<br><span style="font-size:9px;background:#b6e0a8;color:#1f5a1f;padding:1px 5px;border-radius:6px;display:inline-block;margin-top:2px">'+d.getDate()+'.'+String(d.getMonth()+1).padStart(2,'0')+'</span></th>';});
-  h+='</tr>';
-  if(!roster.length){h+='<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--t3)">Нет сотрудников — включите «Изменить» и добавьте</td></tr>';}
-  roster.forEach(function(nm,ri){
-    var nameCell=schedEdit
-      ? '<div style="display:flex;align-items:center;gap:6px"><button onclick="schedRemoveEmp('+ri+')" title="Убрать" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:12px;cursor:pointer;line-height:1">✕</button><span onclick="schedRenameEmp('+ri+')" style="font-weight:700;cursor:pointer;text-decoration:underline dotted">'+escH(nm)+'</span></div>'
-      : '<span style="font-weight:700">'+escH(nm)+'</span>';
-    h+='<tr><td style="position:sticky;left:0;background:var(--card);padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap">'+nameCell+'</td>';
-    for(var d=0;d<7;d++){
-      var cv=schedVal(nm,d);var col=schedColor(cv);
-      var selStyle='width:78px;padding:6px 3px;border:1px solid rgba(0,0,0,.08);border-radius:6px;font-size:10.5px;font-weight:600;font-family:inherit;'+(cv?('background:'+col.bg+';color:'+col.fg):'background:var(--card);color:var(--t3)');
-      h+='<td style="padding:2px;border-bottom:1px solid var(--border);border-left:1px solid var(--border)"><select onchange="schedCell('+ri+','+d+',this.value)" style="'+selStyle+'">'+schedOptsHTML(cv)+'</select></td>';
-    }
-    h+='</tr>';
-  });
-  h+='</table></div>';
-  if(schedEdit)h+='<button onclick="schedAddEmp()" style="width:100%;margin-top:10px;padding:11px;border-radius:var(--r3);border:1px dashed var(--gold-border);background:var(--gold-bg);color:var(--gold2);font-size:13px;font-weight:700;cursor:pointer">＋ Добавить сотрудника</button>';
-  if(roster.length)h+='<button class="btn-start" style="margin-top:10px" onclick="sendScheduleImage()"><span class="ic">📤</span>Отправить в группу (картинкой)</button>';
-  h+='<div class="footer">XSYN</div>';
-  m.innerHTML=h;b.style.display='none';
-}
-// Çizelgeyi canvas'a çiz → PNG → bota gönder
-function sendScheduleImage(){
-  try{
-    var ds=schedDates();var roster=schedRoster();
-    if(!roster.length){toast('Нет сотрудников');return;}
-    var scale=2;
-    var nameW=150,dayW=150,rowH=46,headH=60,titleH=54,pad=0;
-    var cols=7;var W=nameW+dayW*cols;var H=titleH+headH+rowH*roster.length+14;
-    var cv=document.createElement('canvas');cv.width=W*scale;cv.height=H*scale;
-    var cx=cv.getContext('2d');cx.scale(scale,scale);
-    var dark=document.documentElement.getAttribute('data-theme')==='dark';
-    var bg=dark?'#1f1910':'#fffdf8',line=dark?'rgba(255,225,170,.16)':'rgba(76,57,26,.15)',
-        t1=dark?'#f6efe1':'#2a2012',t2=dark?'#bdac8e':'#6f604a',gold=dark?'#eebe4d':'#c28e0e',
-        head=dark?'#2a2215':'#f0e9da',off=dark?'#332a1a':'#efe7d6';
-    cx.fillStyle=bg;cx.fillRect(0,0,W,H);
-    // başlık
-    var wl=ds[0].getDate()+'.'+String(ds[0].getMonth()+1).padStart(2,'0')+'–'+ds[6].getDate()+'.'+String(ds[6].getMonth()+1).padStart(2,'0');
-    cx.fillStyle=gold;cx.font='700 20px Arial, sans-serif';cx.textBaseline='middle';
-    cx.fillText('☕ CAFFELITO · График смен  '+wl,14,titleH/2);
-    // header satırı — Excel gibi: isim başlığı mavi, günler sarı, tarih yeşil pill
-    var y0=titleH;
-    cx.fillStyle='#5b8fc9';cx.fillRect(0,y0,nameW,headH);
-    cx.fillStyle='#f5d76e';cx.fillRect(nameW,y0,dayW*7,headH);
-    cx.fillStyle='#fff';cx.font='700 14px Arial, sans-serif';cx.textAlign='left';cx.fillText('Сотрудник',12,y0+headH/2);
-    cx.textAlign='center';
-    for(var i=0;i<7;i++){var xc=nameW+dayW*i+dayW/2;
-      cx.fillStyle='#5a4600';cx.font='700 15px Arial, sans-serif';cx.fillText(SCHED_DOW[i],xc,y0+headH/2-9);
-      // tarih yeşil pill
-      var dt=ds[i].getDate()+'.'+String(ds[i].getMonth()+1).padStart(2,'0');
-      cx.font='700 11px Arial, sans-serif';var tw=cx.measureText(dt).width+14;
-      cx.fillStyle='#b6e0a8';_rr(cx,xc-tw/2,y0+headH/2+2,tw,17,7);cx.fill();
-      cx.fillStyle='#1f5a1f';cx.fillText(dt,xc,y0+headH/2+11);
-    }
-    // satırlar — renkli hücreler (schedColor)
-    roster.forEach(function(nm,ri){
-      var y=y0+headH+rowH*ri;
-      cx.fillStyle=(ri%2?(dark?'#241d12':'#faf6ee'):bg);cx.fillRect(0,y,nameW,rowH);
-      cx.fillStyle=t1;cx.font='700 13px Arial, sans-serif';cx.textAlign='left';
-      cx.fillText(_fit(cx,nm,nameW-16),10,y+rowH/2);
-      cx.textAlign='center';
-      for(var d=0;d<7;d++){
-        var xc=nameW+dayW*d;var v=schedVal(nm,d);var col=schedColor(v);
-        cx.fillStyle=col.cbg;cx.fillRect(xc,y,dayW,rowH);
-        cx.fillStyle=v?col.fg:'#c9bfa8';
-        cx.font=(v?'700 ':'500 ')+'12px Arial, sans-serif';
-        cx.fillText(_fit(cx,v||'—',dayW-12),xc+dayW/2,y+rowH/2);
-      }
-    });
-    // grid çizgileri
-    cx.strokeStyle=line;cx.lineWidth=1;
-    for(var c=0;c<=7;c++){var x=nameW+dayW*c;cx.beginPath();cx.moveTo(x,y0);cx.lineTo(x,H-14);cx.stroke();}
-    for(var r=0;r<=roster.length;r++){var yy=y0+headH+rowH*r;cx.beginPath();cx.moveTo(0,yy);cx.lineTo(W,yy);cx.stroke();}
-    cx.beginPath();cx.moveTo(0,y0);cx.lineTo(W,y0);cx.stroke();
-    var png=cv.toDataURL('image/png');
-    if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'schedule_image',png:png,caption:'📅 График смен · '+wl}))}catch(e){}}
-    toast('📤 Отправляю в группу…');
-  }catch(e){console.warn('sched img',e);toast('Ошибка изображения');}
-}
-function _fit(cx,txt,maxw){
-  txt=String(txt||'');if(cx.measureText(txt).width<=maxw)return txt;
-  while(txt.length>1&&cx.measureText(txt+'…').width>maxw)txt=txt.slice(0,-1);
-  return txt+'…';
-}
-function _rr(cx,x,y,w,h,r){cx.beginPath();cx.moveTo(x+r,y);cx.arcTo(x+w,y,x+w,y+h,r);cx.arcTo(x+w,y+h,x,y+h,r);cx.arcTo(x,y+h,x,y,r);cx.arcTo(x,y,x+w,y,r);cx.closePath();}
 function saveBranchHours(id){
   var o=parseInt((document.getElementById('bo_'+id)||{}).value);if(isNaN(o))o=7;
   var c=parseInt((document.getElementById('bc_'+id)||{}).value);if(isNaN(c))c=3;
