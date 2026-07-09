@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070140;
+var APP_BUILD=2026070141;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2796,6 +2796,19 @@ function paidHours(startIso, endIso){
     return {raw:raw, unpaid:unpaid, paid:Math.round(paid*100)/100};
   }catch(_e){return {raw:0,unpaid:0,paid:0};}
 }
+// Vardiya-kapatma kırılım satırı — Отработано / kapalı düşüm / max limit → к оплате.
+// paid==raw ise (düşüm yok) boş döner (temiz). Canlı güncellenir.
+function endBreakdownHTML(ph){
+  if(!ph||(ph.raw-ph.paid)<=0.01)return '';
+  var w=PAY_WIN||{};
+  var cl=String(parseInt(w.close)||0).padStart(2,'0'),op=String(parseInt(w.open)||7).padStart(2,'0');
+  var s='🕐 Отработано <b>'+fmtH(ph.raw)+'</b>';
+  if(ph.unpaid>0.01)s+=' · закрытые часы (<b>'+cl+':00–'+op+':00</b>) не оплачиваются <b style="color:var(--red)">−'+fmtH(ph.unpaid)+'</b>';
+  var mx=parseInt(w.max)||0;
+  if(mx&&(ph.raw-ph.unpaid)>mx+0.01)s+=' · <b style="color:#d97706">макс. '+mx+'ч</b>';
+  s+=' → к оплате <b style="color:#059669">'+fmtH(ph.paid)+'</b>';
+  return '<div class="refresh-hint" style="margin:8px 0 0;color:var(--t2);line-height:1.5">'+s+'</div>';
+}
 
 // Saatleri okunabilir biçimde göster:
 //   0.02h → "1м"
@@ -3234,13 +3247,8 @@ function rMShiftEnd(m,b){
       +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">К оплате</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
     +'</div>'
   +'</div>';
-  // Kapalı saat kırılımı — barista "az yazıldı" sanmasın (canlı)
-  if(_ph.unpaid>0.01){
-    var _cl=String(parseInt(PAY_WIN.close)||0).padStart(2,'0'),_op=String(parseInt(PAY_WIN.open)||7).padStart(2,'0');
-    h+='<div class="refresh-hint" style="margin:8px 0 0;color:var(--t2);line-height:1.5">'
-      +'🕐 Отработано <b>'+fmtH(_ph.raw)+'</b> · закрытые часы (<b>'+_cl+':00–'+_op+':00</b>) не оплачиваются <b style="color:var(--red)">−'+fmtH(_ph.unpaid)+'</b> → к оплате <b style="color:#059669">'+fmtH(_ph.paid)+'</b>'
-    +'</div>';
-  }
+  // Kapalı saat / max limit kırılımı — barista "az yazıldı" sanmasın (id'li → canlı güncellenir)
+  h+='<div id="seBreak">'+endBreakdownHTML(_ph)+'</div>';
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
   const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
   h+='<div style="margin:8px 0 4px;padding:10px 12px;border:1px dashed #cbd5e1;border-radius:12px;background:#fefce8">'
@@ -3308,12 +3316,9 @@ function rMShiftEnd(m,b){
   if(window._endTimer)clearInterval(window._endTimer);
   if(!endDraft.endTime){
     window._endTimer=setInterval(function(){
-      const en=document.getElementById('seNow');if(!en){clearInterval(window._endTimer);return}
+      if(!document.getElementById('seNow')){clearInterval(window._endTimer);return}
       if(endDraft.endTime){clearInterval(window._endTimer);return}
-      const lh=liveHours(active.start_time);
-      en.textContent=fmtTime(new Date().toISOString());
-      const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(lh);
-      recalcEnd();
+      recalcEnd();  // seNow(şu an)+seDur(ödenecek)+seBreak(kırılım)+ИТОГО canlı
     },1000);
   }
 }
@@ -3385,11 +3390,10 @@ function recalcEnd(){
   const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
   const eTt=document.getElementById('seTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
-  // Saatleri de yenile (manuel saat değiştiyse)
+  // Saatleri + kırılımı yenile (manuel saat değişince VEYA canlı tik)
   const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(liveH);
-  if(endDraft.endTime){
-    const en=document.getElementById('seNow');if(en)en.textContent=fmtTime(effEnd.toISOString());
-  }
+  const sb=document.getElementById('seBreak');if(sb)sb.innerHTML=endBreakdownHTML(_ph);
+  const en=document.getElementById('seNow');if(en)en.textContent=fmtTime(effEnd.toISOString());
 }
 
 async function endShiftSave(){
