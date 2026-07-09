@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070132;
+var APP_BUILD=2026070133;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1762,6 +1762,12 @@ dT();
 
 const DAY_MAP={0:'ВС Воскресенье',1:'ПН Понедельник',2:'ВТ Вторник',3:'СР Среда',4:'ЧТ Четверг',5:'ПТ Пятница',6:'СБ Суббота'};
 let _lastViewKey='';
+// ── Scroll hafızası: her view-key için son scroll konumu (geri dönünce oraya) ──
+var _scrollMem={};
+function _getScroll(){try{var m=document.getElementById('main');return Math.max(window.scrollY||0,document.documentElement.scrollTop||0,document.body.scrollTop||0,(m?m.scrollTop:0)||0)}catch(e){return 0}}
+function _setScroll(y){if(!y)return;try{window.scrollTo(0,y)}catch(e){}try{document.documentElement.scrollTop=y}catch(e){}try{document.body.scrollTop=y}catch(e){}try{var m=document.getElementById('main');if(m)m.scrollTop=y}catch(e){}}
+// Navigasyon konumunu sakla → refresh/yeniden açılışta kaldığın yerden devam (30 dk tazelik)
+function _saveNav(){try{localStorage.setItem('cf_nav',JSON.stringify({tab:tab,cat:cat,t:Date.now()}))}catch(e){}}
 // ── Owner header şube seçici KALDIRILDI (kullanıcı isteğiyle). Çubuk hep gizli. ──
 function renderBranchBar(){
   const bar=document.getElementById('branchBar');
@@ -1781,6 +1787,8 @@ function setActiveBranchUI(id){
 }
 function render(){
   const m=document.getElementById('main'),b=document.getElementById('bot');
+  // Giden görünümün scroll konumunu yakala (innerHTML değişmeden ÖNCE)
+  var _prevKey=_lastViewKey,_prevScroll=_getScroll();
   try{renderBranchBar()}catch(e){}
   // Edit kalemini sadece owner görsün
   const eBtn=document.getElementById('eBtn');
@@ -1795,8 +1803,13 @@ function render(){
   try{
     const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'');
     if(key!==_lastViewKey){
+      // Giden görünümün scroll'unu hatırla, gelen görünümün kayıtlı scroll'unu geri yükle
+      if(_prevKey)_scrollMem[_prevKey]=_prevScroll;
       _lastViewKey=key;
-      scrollTopAll();
+      try{_saveNav()}catch(_n){}
+      var _rem=_scrollMem[key]||0;
+      if(_rem){_setScroll(_rem);requestAnimationFrame(function(){_setScroll(_rem)});}
+      else scrollTopAll();
       // Sekme / alt-görünüm değişiminde kademeli giriş animasyonu.
       // Güvenlik: animasyon (görünmez sekmede duraklarsa vs.) bitince cf-in'i
       // kaldır → içerik her koşulda tam görünür tabana döner (fill:both kilidi olmasın).
@@ -5548,6 +5561,18 @@ function finishGame(){
     try{sessionStorage.setItem('cf_pass_ok','1')}catch(e){}
   }catch(e){}
 })();
+
+// ── Refresh/yeniden açılışta kaldığın sekme+kategoriden devam et (30 dk tazelik) ──
+try{
+  if(MY_UID){
+    var _nv=JSON.parse(localStorage.getItem('cf_nav')||'null');
+    if(_nv&&_nv.tab&&(Date.now()-(_nv.t||0)<1800000)){
+      if(visTabs().some(function(x){return x.id===_nv.tab}))tab=_nv.tab;
+      if(_nv.cat&&tab==='order'&&typeof P!=='undefined'&&P&&P[_nv.cat])cat=_nv.cat;
+      try{dT()}catch(e){}
+    }
+  }
+}catch(e){}
 
 render();
 // Trenajör/sınav otomatik açılışı kaldırıldı (kullanıcı isteği).
