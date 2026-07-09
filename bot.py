@@ -1807,7 +1807,7 @@ async def cmd_maosh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = calc_summary(db, user.id)
     text = (f"💰 *Моя зарплата — {s['period']}*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"⏱️ Часы: *{s['hours']:g}* × 12.000 = *{fmt_sum(s['hourly'])}* сум\n"
+            f"⏱️ Часы: *{s['hours']:g}* ч → *{fmt_sum(s['hourly'])}* сум\n"
             f"🥤 Бонус ({s['shifts_count']} смен): *{fmt_sum(s['bonus'])}* сум\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 Брутто: *{fmt_sum(s['gross'])}* сум\n"
@@ -2893,6 +2893,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             cups = sum(int(v or 0) for v in drinks.values())
             sweets = sum(int(v or 0) for v in desserts.values())
             period = sh["period"]
+            _rate = barista_pay_info(db, user.id)["rate"]  # kategorinin gerçek ставка'sı
             s = calc_summary(db, user.id, period)
             # DM cevabı: kişisel — saatlik dahil net
             text = (f"🔴 *Смена закрыта!*\n"
@@ -2901,7 +2902,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
             if sweets:
                 text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
-            text += (f"💵 Часы (12.000): {fmt_sum(hourly_pay)} _(в конце месяца)_\n"
+            text += (f"💵 Часы ({fmt_sum(_rate)}/ч): {fmt_sum(hourly_pay)} _(в конце месяца)_\n"
                      f"💎 За смену: *{fmt_sum(total)}* сум\n"
                      f"━━━━━━━━━━━━━━━━━━\n"
                      f"📊 *Месяц {period}:*\n"
@@ -2977,8 +2978,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             hours = float(data.get("hours", 0) or 0)
             drinks = data.get("drinks", {}) or {}
             note = data.get("note", "")
-            bonus = calc_bonus(drinks)
-            hourly_pay = int(hours * int(get_pay_cfg(db).get("rate", HOURLY_RATE)))
+            _pi = barista_pay_info(db, user.id)
+            _bp = get_caffelito_bonus(db) if _pi["bonus_system"] == "caffelito" else get_prices(db)
+            bonus = 0 if _pi["use_kpi"] else calc_bonus(drinks, _bp)
+            hourly_pay = int(hours * int(_pi["rate"]))
             total = hourly_pay + bonus
             period = current_period()
             db.execute(
@@ -2992,7 +2995,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             s = calc_summary(db, user.id, period)
             text = (f"✅ *Смена записана!*\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"⏱️ {hours:g}h × 12.000 = *{fmt_sum(hourly_pay)}* сум\n"
+                    f"⏱️ {hours:g}h × {fmt_sum(_pi['rate'])} = *{fmt_sum(hourly_pay)}* сум\n"
                     f"🥤 Бонус: *{fmt_sum(bonus)}* сум\n"
                     f"💵 За смену: *{fmt_sum(total)}* сум\n"
                     f"━━━━━━━━━━━━━━━━━━\n"

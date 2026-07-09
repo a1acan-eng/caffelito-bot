@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070137;
+var APP_BUILD=2026070138;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1859,6 +1859,11 @@ function drinkRate(d){
   if(MY_CAT&&MY_CAT.kpi)return 0;
   if(MY_BONUS_SYS==='caffelito'){var v=CAFFELITO_BONUS&&CAFFELITO_BONUS[d.id];return (v!=null&&v!=='')?(parseInt(v)||0):(d.r||0);}
   return d.r||0;
+}
+// Bir baristanın saatlik ücreti: kategorisi varsa onunki, yoksa global (PAY_CFG.rate).
+function baristaRate(b){
+  if(b&&b.cat){var c=(SAL_CATS||[]).find(function(x){return x.id===b.cat});if(c)return parseInt(c.hourly_rate)||0;}
+  return (PAY_CFG&&PAY_CFG.rate!=null)?PAY_CFG.rate:HOURLY_RATE;
 }
 function buildPreview(){
   const all=allItems();
@@ -3903,7 +3908,7 @@ function rMBaristas(m,b){
           +'</div>'
           +'<div class="bcard-net">'+fmt(brs.net||0)+'</div>'
         +'</div>'
-        +'<div class="bcard-stat"><span>Часы</span><span>'+fmtH(brs.h||0)+' × 12k = '+fmt(brs.hp||0)+'</span></div>'
+        +'<div class="bcard-stat"><span>Часы</span><span>'+fmtH(brs.h||0)+' × '+fmt(baristaRate(brs))+' = '+fmt(brs.hp||0)+'</span></div>'
         +'<div class="bcard-stat"><span>Бонус</span><span>+'+fmt(brs.b||0)+'</span></div>'
         +'<div class="bcard-stat"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(brs.f||0)+'</span></div>'
         +(brs.paid?'<div class="bcard-stat"><span>Выплачено</span><span style="color:var(--t3)">-'+fmt(brs.paid)+'</span></div>':'')
@@ -4055,7 +4060,7 @@ function rMPay(m,b){
     const t=BARISTAS.find(function(x){return x.id===payTarget});
     if(t){
       h+='<div class="sf-total">'
-        +'<div class="sf-tot-row"><span>Часы '+(t.h||0)+'h × 12k</span><span>+'+fmt(t.hp||0)+'</span></div>'
+        +'<div class="sf-tot-row"><span>Часы '+(t.h||0)+'h × '+fmt(baristaRate(t))+'</span><span>+'+fmt(t.hp||0)+'</span></div>'
         +'<div class="sf-tot-row"><span>Бонус</span><span>+'+fmt(t.b||0)+'</span></div>'
         +'<div class="sf-tot-row"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(t.f||0)+'</span></div>'
         +(t.paid?'<div class="sf-tot-row"><span>Уже выплачено</span><span style="color:var(--t3)">-'+fmt(t.paid)+'</span></div>':'')
