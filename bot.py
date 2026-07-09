@@ -3444,9 +3444,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Укажите название филиала.")
                 return
             mx = db.execute("SELECT COALESCE(MAX(sort_order),0) AS m FROM branches").fetchone()["m"]
+            # Yeni şube varsayılanları: работа 07:00–03:00, kapalı pencere (03:00–07:00)
+            # ÖDENMEZ (unpaid_win=1 → toggle açık). Owner istediğinde Филиалы'de değiştirir.
             cur = db.execute(
-                "INSERT INTO branches (name, group_chat_id, sort_order, active, created_at) "
-                "VALUES (?,?,?,1,?)", (bname, None, (mx or 0) + 1, now.isoformat()))
+                "INSERT INTO branches (name, group_chat_id, sort_order, active, created_at, "
+                "open_hour, close_hour, unpaid_win) VALUES (?,?,?,1,?,7,3,1)",
+                (bname, None, (mx or 0) + 1, now.isoformat()))
             db.commit()
             log_action(db, "create_branch", user.id, user.first_name, None, None,
                        {"id": cur.lastrowid, "name": bname})
