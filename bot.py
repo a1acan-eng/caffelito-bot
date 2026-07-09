@@ -358,6 +358,23 @@ def get_db():
         db.execute("ALTER TABLE users ADD COLUMN salary_cat_id INTEGER")
     except sqlite3.OperationalError:
         pass
+    # Kategori bardak-bonus sistemi: 'own' (bizim/Цены) | 'caffelito' (resmi preset).
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN bonus_system TEXT DEFAULT 'own'")
+    except sqlite3.OperationalError:
+        pass
+    # Caffelito bardak bonus preset'i (bizim 'prices' tablosundan AYRI, düzenlenebilir).
+    db.execute("""CREATE TABLE IF NOT EXISTS caffelito_bonus (
+        drink_id TEXT PRIMARY KEY,
+        amount INTEGER DEFAULT 0)""")
+    try:
+        _cbc = db.execute("SELECT COUNT(*) AS c FROM caffelito_bonus").fetchone()
+        if (_cbc["c"] or 0) == 0:
+            for _did, _amt in CAFFELITO_BONUS_DEFAULTS.items():
+                db.execute("INSERT OR REPLACE INTO caffelito_bonus (drink_id, amount) VALUES (?,?)",
+                           (_did, int(_amt)))
+    except sqlite3.OperationalError:
+        pass
     # İlk kurulum: hiç kategori yoksa mevcut global ставка ile "Базовая ставка" tohumla.
     # (Baristalar otomatik atanmaz → atanmayan global ставка kullanır, davranış değişmez.)
     try:
@@ -486,7 +503,8 @@ def get_pay_cfg(db):
 
 def get_salary_categories(db, only_active=False):
     """Maaş kategorileri listesi (dict)."""
-    q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,active,sort_order "
+    q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,"
+         "COALESCE(bonus_system,'own') AS bonus_system,active,sort_order "
          "FROM salary_categories")
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
@@ -497,20 +515,32 @@ def get_salary_categories(db, only_active=False):
         return []
 
 
+def get_caffelito_bonus(db):
+    """Caffelito bardak-bonus preset'i {drink_id: amount} (default > DB override)."""
+    out = dict(CAFFELITO_BONUS_DEFAULTS)
+    try:
+        for r in db.execute("SELECT drink_id, amount FROM caffelito_bonus").fetchall():
+            out[r["drink_id"]] = int(r["amount"] or 0)
+    except Exception:
+        pass
+    return out
+
+
 def barista_pay_info(db, user_id):
-    """Baristanın maaş bilgisi: {rate, use_kpi, cat_id, cat_name}.
-    Kategori atanmış VE aktifse onun ставка'sı; yoksa global ставка (geriye uyumlu)."""
+    """Baristanın maaş bilgisi: {rate, use_kpi, bonus_system, cat_id, cat_name}.
+    Kategori atanmış VE aktifse onun ставка'sı+bonus sistemi; yoksa global (geriye uyumlu)."""
     info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
-            "use_kpi": 0, "cat_id": None, "cat_name": None}
+            "use_kpi": 0, "bonus_system": "own", "cat_id": None, "cat_name": None}
     try:
         r = db.execute(
             "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
-            "c.active AS active FROM users u "
+            "COALESCE(c.bonus_system,'own') AS bsys, c.active AS active FROM users u "
             "JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
             (user_id,)).fetchone()
         if r and (r["active"] is None or r["active"] == 1):
             info["rate"] = int(r["rate"] or 0)
             info["use_kpi"] = int(r["kpi"] or 0)
+            info["bonus_system"] = r["bsys"] or "own"
             info["cat_id"] = r["cid"]
             info["cat_name"] = r["cname"]
     except Exception:
@@ -574,6 +604,19 @@ BONUS_RATES = {
     "ml500": 1400,
     "dome300": 1000,
     "dome400": 1300,
+}
+
+# Caffelito resmi bardak-bonus preset'i (örnek değerler; panelden düzenlenebilir).
+# 100-200мл=200, 300=300, 400=700, 500=800. (Купол = ilgili boy ile eşlenir.)
+# NOT: "Сезонное меню +1000" ayrı bir sayaç gerektirir (henüz vardiya kapatmada yok) → ileride.
+CAFFELITO_BONUS_DEFAULTS = {
+    "ml100": 200,
+    "ml200": 200,
+    "ml300": 300,
+    "ml400": 700,
+    "ml500": 800,
+    "dome300": 300,
+    "dome400": 700,
 }
 
 # Tatlılar — her biri 500 сум sabit
@@ -963,9 +1006,11 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     _pc = branch_pay_window(db, _bid)
     hours = paid_hours(start, end_dt, _pc)
     # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
-    # ise satış (bardak+tatlı) bonusundan etkilenmez.
+    # ise satış (bardak+tatlı) bonusundan etkilenmez. Bardak bonus değerleri
+    # kategorinin bonus sistemine göre: 'caffelito' preset'i veya 'own' (bizim/Цены).
     _pi = barista_pay_info(db, user_id)
-    drinks_bonus = calc_bonus(drinks, get_prices(db))
+    _bonus_prices = get_caffelito_bonus(db) if _pi["bonus_system"] == "caffelito" else get_prices(db)
+    drinks_bonus = calc_bonus(drinks, _bonus_prices)
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
     if _pi["use_kpi"]:
         drinks_bonus = 0
@@ -1170,6 +1215,8 @@ def build_hash_payload(db, user_id, name):
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
         f"my_rate={int(_my_pi['rate'])}",
         f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi']}, ensure_ascii=False))}",
+        f"my_bonus_sys={_my_pi['bonus_system']}",
+        f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"ts={ts}",
     ]
@@ -3318,23 +3365,41 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             desc = (data.get("description") or "").strip()[:300]
             kpi = 1 if int(data.get("use_kpi", 0) or 0) else 0
             act = 0 if int(data.get("active", 1) or 0) == 0 else 1
+            bsys = "caffelito" if (data.get("bonus_system") == "caffelito") else "own"
             cid = data.get("id")
             if cid:
                 db.execute(
                     "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
-                    "next_cat_id=?, description=?, use_kpi=?, active=? WHERE id=?",
-                    (nm, rate, mn, nxt, desc, kpi, act, int(cid)))
+                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=? WHERE id=?",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, int(cid)))
                 msg = f"✅ Категория «{nm}» обновлена."
             else:
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
                 db.execute(
                     "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
-                    "description, use_kpi, active, sort_order, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (nm, rate, mn, nxt, desc, kpi, act, (_mo["s"] if _mo else 0),
+                    "description, use_kpi, active, bonus_system, sort_order, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, (_mo["s"] if _mo else 0),
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
             await update.message.reply_text(msg)
+
+        elif action == "caffelito_bonus_save":
+            # Owner: Caffelito bardak-bonus preset değerlerini güncelle {drink_id: amount}
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            vals = data.get("values") or {}
+            if isinstance(vals, dict):
+                for _did, _amt in vals.items():
+                    try:
+                        db.execute("INSERT OR REPLACE INTO caffelito_bonus (drink_id, amount) VALUES (?,?)",
+                                   (str(_did)[:20], max(0, int(_amt))))
+                    except Exception:
+                        pass
+                db.commit()
 
         elif action == "salcat_delete":
             # Owner: kategori sil (bağlı baristalar → NULL = global ставка)

@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070134;
+var APP_BUILD=2026070135;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,6 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1577,6 +1578,10 @@ let MY_CAT={};
 try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
 let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
 HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
+// Bardak bonus sistemi: bu kullanıcının kategorisininki ('own'|'caffelito') + Caffelito preset değerleri
+let MY_BONUS_SYS=(HP.get('my_bonus_sys')||'own');
+let CAFFELITO_BONUS={};
+try{CAFFELITO_BONUS=JSON.parse((HP.get('caffelito_bonus')||'{}'))||{}}catch(e){CAFFELITO_BONUS={}}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -1848,6 +1853,13 @@ function adjustBottomPadding(){
 window.addEventListener('resize',function(){try{adjustBottomPadding()}catch(e){}});
 function allItems(){return Object.values(P).flatMap(c=>c.items)}
 
+// Bardak bonusu birim tutarı — bu kullanıcının kategorisinin bonus sistemine göre.
+// KPI → 0; 'caffelito' → Caffelito preset; 'own' → bizim (d.r / Цены).
+function drinkRate(d){
+  if(MY_CAT&&MY_CAT.kpi)return 0;
+  if(MY_BONUS_SYS==='caffelito'){var v=CAFFELITO_BONUS&&CAFFELITO_BONUS[d.id];return (v!=null&&v!=='')?(parseInt(v)||0):(d.r||0);}
+  return d.r||0;
+}
 function buildPreview(){
   const all=allItems();
   const lines=Object.entries(ord).map(([id,qty])=>{const p=all.find(x=>x.id===id);const nm=p?p.n:id;return'<div class="ord-line"><span class="ord-line-name">'+nm+'</span><span class="ord-line-qty">'+qty+'\xd7</span></div>'}).join('');
@@ -3202,7 +3214,7 @@ function rMShiftEnd(m,b){
     var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0; // Осталость boşken Прод=0
     totalSold+=s;
     h+='<div style="display:flex;align-items:center;gap:5px;margin-bottom:6px">'
-      +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(d.r)+' / шт</div></div>'
+      +'<div style="flex:1.3;font-size:12px;font-weight:600">'+d.c+' '+d.l+'<div style="font-size:9px;color:var(--t3);font-weight:500">'+fmt(drinkRate(d))+' / шт</div></div>'
       +'<input class="set-input" type="number" inputmode="numeric" id="eb_'+d.id+'" value="'+b+'" oninput="endDraft.bylo[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
       +(zv?'<input class="set-input" type="number" inputmode="numeric" id="ez_'+d.id+'" value="'+(r||'')+'" placeholder="0" oninput="endDraft.zavoz[\''+d.id+'\']=parseInt(this.value)||0;recalcEnd()" style="width:52px;text-align:center;padding:8px 4px;color:#2563eb;font-weight:700">':'')
       +'<input class="set-input" type="number" inputmode="numeric" id="eo_'+d.id+'" value="'+(counted?oRaw:'')+'" placeholder="—" oninput="endDraft.ostalos[\''+d.id+'\']=this.value;recalcEnd()" style="width:'+iw+'px;text-align:center;padding:8px 4px">'
@@ -3306,7 +3318,7 @@ function recalcEnd(){
     var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;  // Осталость boşsa Продано=0
     endDraft.drinks[d.id]=s;  // Продано = Было + Завоз − Осталось → bonus + сменный отчёт
     var el=document.getElementById('es_'+d.id);if(el)el.textContent=s;
-    drinkBonus+=s*d.r; drinkSold+=s;
+    drinkBonus+=s*drinkRate(d); drinkSold+=s;
   });
   var etc=document.getElementById('esTotalCups');if(etc)etc.textContent=fmt(drinkSold)+' шт';
   const desN=parseInt(endDraft.dessertsTotal)||0;
@@ -3339,7 +3351,7 @@ async function endShiftSave(){
     var oRaw=endDraft.ostalos[d.id],counted=!(oRaw===''||oRaw==null);
     var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;
     endDraft.drinks[d.id]=s;
-    drinkBonus+=s*d.r;
+    drinkBonus+=s*drinkRate(d);
   });
   const desN=parseInt(endDraft.dessertsTotal)||0;
   let desBonus=desN*DESSERT_RATE;
@@ -3641,7 +3653,7 @@ function rMShift(m,b){
     const q=parseInt(shiftDraft.drinks[d.id])||0;
     const sub=q*d.r;
     h+='<div class="dr-item '+(q?'has':'')+'">'
-      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(d.r)+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
+      +'<div class="dr-l"><div class="dr-n">'+d.c+' '+d.l+'</div><div class="dr-s">'+fmt(drinkRate(d))+' / шт'+(q?' · +'+fmt(sub):'')+'</div></div>'
       +'<div class="qty-box">'
         +'<button class="qb m" onclick="dq(\''+d.id+'\',-1)">&minus;</button>'
         +'<span class="qv '+(q?'':'z')+'" onclick="dqManual(\''+d.id+'\')" title="Нажмите для ввода">'+(q||'&middot;')+'</span>'
@@ -4325,6 +4337,20 @@ function rMSettings(m,b){
         +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="savePrice(\''+d.id+'\')">💾</button>'
       +'</div>';
     });
+    // ── Система Caffelito (ayrı bardak-bonus preset'i; kategori bu sistemi seçince uygulanır) ──
+    h+='<div class="sec" style="margin-top:18px">☕ Система Caffelito · бонус за стакан</div>';
+    h+='<div class="refresh-hint" style="margin-top:0">Отдельный набор бонусов за стакан. Применяется к баристам, чья категория использует «Систему Caffelito». Наша система (выше) остаётся без изменений.</div>';
+    DRINK_LIST.forEach(function(d){
+      var cv=(CAFFELITO_BONUS&&CAFFELITO_BONUS[d.id]!=null)?CAFFELITO_BONUS[d.id]:0;
+      h+='<div class="set-row">'
+        +'<div class="set-row-l">'
+          +'<div class="set-row-t">'+d.c+' '+escH(d.l)+'</div>'
+          +'<div class="set-row-s">id: '+d.id+'</div>'
+        +'</div>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" id="cb_'+d.id+'" value="'+cv+'">'
+        +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveCaffelitoBonus(\''+d.id+'\')">💾</button>'
+      +'</div>';
+    });
     // ── Десерты (каталог) — Цены sekmesiyle birleştirildi (tek yer) ──
     h+='<div class="sec" style="margin-top:18px">🍰 Десерты (каталог)</div>';
     h+='<div class="refresh-hint" style="margin-top:0">Стаканы — фиксированы (меняется только цена сверху). Десерты — добавляйте, редактируйте цены, удаляйте. Изменения сразу для всех.</div>';
@@ -4374,6 +4400,13 @@ function rMSettings(m,b){
           +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="sc_r_'+c.id+'" value="'+(c.hourly_rate||0)+'" style="width:120px;font-weight:800;text-align:center">'
         +'</div>'
         +'<input class="set-input wide" type="text" id="sc_d_'+c.id+'" value="'+escH(c.description||'')+'" placeholder="Описание (необязательно)" style="width:100%;margin-bottom:8px">'
+        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+          +'<label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">🥤 Бонус за стакан</label>'
+          +'<select id="sc_bs_'+c.id+'" style="width:150px;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
+            +'<option value="own"'+((c.bonus_system||'own')!=='caffelito'?' selected':'')+'>Наша (Цены)</option>'
+            +'<option value="caffelito"'+((c.bonus_system||'own')==='caffelito'?' selected':'')+'>Система Caffelito</option>'
+          +'</select>'
+        +'</div>'
         +'<div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;flex-wrap:wrap">'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_a_'+c.id+'" '+(act?'checked':'')+'> Активна</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_k_'+c.id+'" '+(c.use_kpi?'checked':'')+'> KPI (без бонуса за стаканы)</label>'
@@ -4391,6 +4424,10 @@ function rMSettings(m,b){
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
         +'<label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Ставка/час</label>'
         +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="ncRate" placeholder="0" style="width:120px;text-align:center">'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+        +'<label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">🥤 Бонус за стакан</label>'
+        +'<select id="ncBsys" style="width:150px;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit"><option value="own">Наша (Цены)</option><option value="caffelito">Система Caffelito</option></select>'
       +'</div>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKpi"> KPI-категория</label>'
       +'<button class="add-btn" onclick="addSalCat()" style="padding:9px 12px;width:100%">➕ Создать категорию</button>'
@@ -4598,10 +4635,11 @@ function saveSalCat(id){
   var desc=((document.getElementById('sc_d_'+id)||{}).value||'').trim();
   var act=(document.getElementById('sc_a_'+id)||{}).checked?1:0;
   var kpi=(document.getElementById('sc_k_'+id)||{}).checked?1:0;
+  var bsys=((document.getElementById('sc_bs_'+id)||{}).value==='caffelito')?'caffelito':'own';
   // Optimistik: yerel SAL_CATS güncelle
   var c=(SAL_CATS||[]).find(function(x){return x.id===id});
-  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi}))}catch(e){}}
+  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys}))}catch(e){}}
   toast('💾 Категория сохранена');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 function addSalCat(){
@@ -4609,9 +4647,10 @@ function addSalCat(){
   if(!nm){toast('Укажите название');return}
   var rate=parseInt((document.getElementById('ncRate')||{}).value)||0;
   var kpi=(document.getElementById('ncKpi')||{}).checked?1:0;
+  var bsys=((document.getElementById('ncBsys')||{}).value==='caffelito')?'caffelito':'own';
   // Optimistik: geçici id ile listeye ekle (sunucu gerçek id ile refreshState'te düzeltir)
-  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi});
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1}))}catch(e){}}
+  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys}))}catch(e){}}
   toast('✅ Категория создана');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 async function deleteSalCat(id){
@@ -4629,6 +4668,14 @@ function assignSalCat(uid,catId){
   var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.cat=cid;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_assign',target:uid,cat_id:cid}))}catch(e){}}
   toast('🏷️ Категория назначена');if(tg)tg.HapticFeedback?.impactOccurred('light');render();
+}
+function saveCaffelitoBonus(drinkId){
+  var el=document.getElementById('cb_'+drinkId);if(!el)return;
+  var v=Math.max(0,parseInt(el.value)||0);
+  CAFFELITO_BONUS=CAFFELITO_BONUS||{};CAFFELITO_BONUS[drinkId]=v;
+  var o={};o[drinkId]=v;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'caffelito_bonus_save',values:o}))}catch(e){}}
+  toast('💾 Бонус Caffelito сохранён');if(tg)tg.HapticFeedback?.notificationOccurred('success');
 }
 function savePrice(drinkId){
   const el=document.getElementById('pr_'+drinkId);
