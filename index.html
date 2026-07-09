@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070141;
+var APP_BUILD=2026070142;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2774,21 +2774,21 @@ function paidHours(startIso, endIso){
     if(!(e>s))return {raw:0,unpaid:0,paid:0};
     var raw=(e-s)/3600000;
     var w=PAY_WIN||{};
+    // "Не оплачивать" KAPALI → tüm süre ödenir (düşüm+cap yok) — backend ile aynı
+    if(!w.unpaid)return {raw:raw, unpaid:0, paid:Math.round(raw*100)/100};
     var unpaid=0;
-    if(w.unpaid){
-      var oh=parseInt(w.open); if(isNaN(oh))oh=7;
-      var ch=parseInt(w.close); if(isNaN(ch))ch=3;
-      if(ch>=0 && ch<oh && oh<=24){
-        var day=new Date(s.getFullYear(),s.getMonth(),s.getDate());
-        var endDay=new Date(e.getFullYear(),e.getMonth(),e.getDate());
-        var guard=0;
-        while(day.getTime()<=endDay.getTime() && guard<400){
-          var w0=new Date(day); w0.setHours(ch,0,0,0);
-          var w1=new Date(day); w1.setHours(oh,0,0,0);
-          var ov=(Math.min(e.getTime(),w1.getTime())-Math.max(s.getTime(),w0.getTime()))/3600000;
-          if(ov>0)unpaid+=ov;
-          day=new Date(day.getTime()+86400000); guard++;
-        }
+    var oh=parseInt(w.open); if(isNaN(oh))oh=7;
+    var ch=parseInt(w.close); if(isNaN(ch))ch=3;
+    if(ch>=0 && ch<oh && oh<=24){
+      var day=new Date(s.getFullYear(),s.getMonth(),s.getDate());
+      var endDay=new Date(e.getFullYear(),e.getMonth(),e.getDate());
+      var guard=0;
+      while(day.getTime()<=endDay.getTime() && guard<400){
+        var w0=new Date(day); w0.setHours(ch,0,0,0);
+        var w1=new Date(day); w1.setHours(oh,0,0,0);
+        var ov=(Math.min(e.getTime(),w1.getTime())-Math.max(s.getTime(),w0.getTime()))/3600000;
+        if(ov>0)unpaid+=ov;
+        day=new Date(day.getTime()+86400000); guard++;
       }
     }
     var paid=Math.max(0,raw-unpaid);
@@ -4451,10 +4451,13 @@ function rMSettings(m,b){
         +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'fixed\';render()" class="opt '+(!_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ сум/час</div></div></button>'
         +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'percent\';render()" class="opt '+(_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ %</div></div></button>'
       +'</div>'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Доплата за сверхурочный час</label>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Доплата за сверхурочный час '+(_otp?'(%)':'(сум)')+'</label>'
         +'<input class="set-input" type="number" inputmode="numeric" min="0" id="otValue" value="'+_otv+'" style="width:110px;text-align:center;font-weight:800"></div>'
       +'<button class="mbtn" onclick="saveOvertime()">💾 Сохранить</button>'
-      +'<div class="refresh-hint" style="margin-top:10px">Часы сверх нормы за месяц оплачиваются дополнительно. Норма = 0 → переработка выключена.</div>'
+      +'<div class="refresh-hint" style="margin-top:10px">'+(_otp
+        ?('<b>%</b> считается от <b>ставки за час</b> категории бариста. Пример: ставка 26.000 + '+(_otv||0)+'% → доплата <b>'+fmt(Math.round(26000*(_otv||0)/100))+' сум</b> за каждый сверхурочный час.')
+        :('Фиксированная доплата <b>'+fmt(_otv||0)+' сум</b> за каждый час сверх нормы.'))
+        +' Норма = 0 → переработка выключена.</div>'
     +'</div>';
     // ── Зарплатные категории (dinamik saatlik ücret grupları) ──
     h+='<div class="sec" style="margin-top:4px">🏷️ Категории зарплат</div>';
