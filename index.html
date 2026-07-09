@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070138;
+var APP_BUILD=2026070139;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1578,6 +1578,9 @@ let MY_CAT={};
 try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
 let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
 HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
+// Fazla mesai (сверхурочные) ayarı — owner
+let OT_CFG={};
+try{OT_CFG=JSON.parse((HP.get('ot_cfg')||'{}'))||{}}catch(e){OT_CFG={}}
 // Bardak bonus sistemi: bu kullanıcının kategorisininki ('own'|'caffelito') + Caffelito preset değerleri
 let MY_BONUS_SYS=(HP.get('my_bonus_sys')||'own');
 let CAFFELITO_BONUS={};
@@ -2860,6 +2863,7 @@ function rMMain(m,b){
         +'<div class="sal-comp-lg"><span><i class="gold"></i>Ставка '+fmt(hourly)+'</span><span><i class="grn"></i>Бонус +'+fmt(bonus)+'</span></div>'
       +'</div>'
     ):'')
+    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка ('+fmt(s.overtime_hours||0)+'ч)</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
   +'</div>';
 
   // Чаевые + Аванс kartları aşağıya (istatistiklerin altına) kompakt yan yana taşındı.
@@ -4389,7 +4393,23 @@ function rMSettings(m,b){
       +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id создаётся автоматически из названия</div>'
     +'</div>';
   } else if(settingsTab==='cats'){
+    // ── Fazla mesai (сверхурочные) ──
+    OT_CFG=OT_CFG||{};var _ot=OT_CFG;var _oth=(_ot.hours!=null?_ot.hours:0);var _otp=(_ot.type==='percent');var _otv=(_ot.value!=null?_ot.value:0);
+    h+='<div class="sec" style="margin-top:4px">⏱ Переработка (сверхурочные)</div>';
+    h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:16px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Норма часов в месяц</label>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" step="10" id="otHours" value="'+_oth+'" style="width:110px;text-align:center;font-weight:800" placeholder="0"></div>'
+      +'<div style="display:flex;gap:6px;margin-bottom:10px">'
+        +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'fixed\';render()" class="opt '+(!_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ сум/час</div></div></button>'
+        +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'percent\';render()" class="opt '+(_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ %</div></div></button>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Доплата за сверхурочный час</label>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" id="otValue" value="'+_otv+'" style="width:110px;text-align:center;font-weight:800"></div>'
+      +'<button class="mbtn" onclick="saveOvertime()">💾 Сохранить</button>'
+      +'<div class="refresh-hint" style="margin-top:10px">Часы сверх нормы за месяц оплачиваются дополнительно. Норма = 0 → переработка выключена.</div>'
+    +'</div>';
     // ── Зарплатные категории (dinamik saatlik ücret grupları) ──
+    h+='<div class="sec" style="margin-top:4px">🏷️ Категории зарплат</div>';
     h+='<div class="refresh-hint" style="margin-top:0">Каждый барист привязан к одной категории со своей ставкой. Категорию можно назначить в «Все баристы». KPI-категории не получают бонус за стаканы/десерты.</div>';
     (SAL_CATS||[]).forEach(function(c){
       var cnt=(BARISTAS||[]).filter(function(x){return x.cat===c.id}).length;
@@ -4672,6 +4692,15 @@ function assignSalCat(uid,catId){
   var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.cat=cid;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_assign',target:uid,cat_id:cid}))}catch(e){}}
   toast('🏷️ Категория назначена');if(tg)tg.HapticFeedback?.impactOccurred('light');render();
+}
+function saveOvertime(){
+  var hours=Math.max(0,parseInt((document.getElementById('otHours')||{}).value)||0);
+  var value=Math.max(0,parseInt((document.getElementById('otValue')||{}).value)||0);
+  var type=(OT_CFG&&OT_CFG.type==='percent')?'percent':'fixed';
+  OT_CFG={hours:hours,type:type,value:value};
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'overtime_settings',hours:hours,type:type,value:value}))}catch(e){}}
+  toast(hours>0?'⏱ Переработка сохранена':'⏱ Переработка выключена');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 function saveCaffelitoBonus(drinkId){
   var el=document.getElementById('cb_'+drinkId);if(!el)return;

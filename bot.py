@@ -859,6 +859,42 @@ def get_prices(db):
     return out
 
 
+# ─── Fazla mesai (сверхурочные) yapılandırması ───
+def get_overtime_cfg(db):
+    """{hours, type, value}: aylık norm saat (0=kapalı), tip ('fixed'|'percent'),
+    değer (fixed=ek сум/saat, percent=% artış). Norm üstü saatlere uygulanır."""
+    cfg = {"hours": 0, "type": "fixed", "value": 0}
+    try:
+        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('ot_hours','ot_type','ot_value')").fetchall():
+            k = r["k"][3:]
+            if k == "type":
+                cfg["type"] = r["val"] if r["val"] in ("fixed", "percent") else "fixed"
+            else:
+                try:
+                    cfg[k] = int(float(r["val"]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cfg
+
+
+def calc_overtime(db, user_id, total_hours):
+    """Aylık norm üstü saatler için ek ödeme (сверхурочные). (ot_hours, bonus) döner."""
+    otc = get_overtime_cfg(db)
+    thr = int(otc.get("hours") or 0)
+    if thr <= 0 or total_hours <= thr:
+        return 0.0, 0
+    ot_h = total_hours - thr
+    val = int(otc.get("value") or 0)
+    if otc.get("type") == "percent":
+        rate = int(barista_pay_info(db, user_id)["rate"])
+        bonus = int(ot_h * rate * (val / 100.0))
+    else:
+        bonus = int(ot_h * val)
+    return round(ot_h, 2), bonus
+
+
 # ─── Audit log ───
 def log_action(db, action, actor_id, actor_name, target_id=None, target_name=None, details=None):
     db.execute(
@@ -893,7 +929,8 @@ def calc_summary(db, user_id, period=None):
     fine_total = sum(f["amount"] for f in fines)
     paid_total = paid_row["s"] or 0
     tips_total = sum(t["amount"] for t in tips)
-    gross = hourly + bonus + tips_total
+    ot_hours, ot_bonus = calc_overtime(db, user_id, hours)
+    gross = hourly + bonus + tips_total + ot_bonus
     net = gross - fine_total - paid_total
 
     return {
@@ -901,6 +938,8 @@ def calc_summary(db, user_id, period=None):
         "hours": hours,
         "bonus": bonus,
         "hourly": hourly,
+        "overtime_hours": ot_hours,
+        "overtime": ot_bonus,
         "fines": fine_total,
         "paid": paid_total,
         "tips": tips_total,
@@ -1079,6 +1118,7 @@ def build_hash_payload(db, user_id, name):
     prices = get_prices(db)
     summary = {
         "hours": s["hours"], "bonus": s["bonus"], "hourly": s["hourly"],
+        "overtime_hours": s.get("overtime_hours", 0), "overtime": s.get("overtime", 0),
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
         "tips": s["tips"], "tips_count": s["tips_count"],
         "tips_list": s["tips_list"][-5:],
@@ -1218,6 +1258,7 @@ def build_hash_payload(db, user_id, name):
         f"my_bonus_sys={_my_pi['bonus_system']}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
+        f"ot_cfg={quote(json.dumps(get_overtime_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -2894,9 +2935,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             sweets = sum(int(v or 0) for v in desserts.values())
             period = sh["period"]
             _rate = barista_pay_info(db, user.id)["rate"]  # kategorinin gerçek ставка'sı
+            _bname = (get_branch(db, sh["branch_id"]) or {}).get("name", "") if sh["branch_id"] else ""
             s = calc_summary(db, user.id, period)
             # DM cevabı: kişisel — saatlik dahil net
-            text = (f"🔴 *Смена закрыта!*\n"
+            text = (f"🔴 *Смена закрыта!*"
+                    + (f" · 🏢 {_bname}" if _bname else "") + "\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
                     f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
@@ -3387,6 +3430,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
             await update.message.reply_text(msg)
+
+        elif action == "overtime_settings":
+            # Owner: fazla mesai (сверхурочные) — aylık norm + ek ödeme
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                oh = max(0, int(data.get("hours") or 0))
+            except Exception:
+                oh = 0
+            ot = "percent" if (data.get("type") == "percent") else "fixed"
+            try:
+                ov = max(0, int(data.get("value") or 0))
+            except Exception:
+                ov = 0
+            for k, v in (("ot_hours", oh), ("ot_type", ot), ("ot_value", ov)):
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
+            db.commit()
+            if oh > 0:
+                _d = f"+{fmt_sum(ov)}%/ч" if ot == "percent" else f"+{fmt_sum(ov)} сум/ч"
+                await update.message.reply_text(f"✅ Переработка: после {oh} ч/мес → {_d}")
+            else:
+                await update.message.reply_text("✅ Переработка отключена.")
 
         elif action == "caffelito_bonus_save":
             # Owner: Caffelito bardak-bonus preset değerlerini güncelle {drink_id: amount}
