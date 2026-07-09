@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070136;
+var APP_BUILD=2026070137;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3984,8 +3984,8 @@ function rMBranches(m,b){
       +'<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border2)">'
         +'<div style="font-size:11px;color:var(--t2);font-weight:600;margin-bottom:6px">🕐 Рабочие часы (вне них не оплачивается)</div>'
         +'<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">'
-          +'<label style="flex:1;min-width:70px;font-size:10.5px;color:var(--t3)">Открытие<input class="set-input" type="number" min="0" max="23" id="bo_'+br.id+'" value="'+(br.open!=null?br.open:7)+'" style="width:100%;margin-top:3px"></label>'
-          +'<label style="flex:1;min-width:70px;font-size:10.5px;color:var(--t3)">Закрытие<input class="set-input" type="number" min="0" max="23" id="bc_'+br.id+'" value="'+(br.close!=null?br.close:3)+'" style="width:100%;margin-top:3px"></label>'
+          +'<label style="flex:1;min-width:88px;font-size:10.5px;color:var(--t3)">🕓 Открытие<input class="set-input time-inp" type="time" step="3600" id="bo_'+br.id+'" value="'+hourHHMM(br.open,7)+'" style="width:100%;margin-top:3px;text-align:center;font-size:17px;font-weight:800;letter-spacing:.5px"></label>'
+          +'<label style="flex:1;min-width:88px;font-size:10.5px;color:var(--t3)">🌙 Закрытие<input class="set-input time-inp" type="time" step="3600" id="bc_'+br.id+'" value="'+hourHHMM(br.close,3)+'" style="width:100%;margin-top:3px;text-align:center;font-size:17px;font-weight:800;letter-spacing:.5px"></label>'
           +'<button class="add-btn" style="padding:9px 12px" onclick="saveBranchHours('+br.id+')">💾</button>'
         +'</div>'
         +'<label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12px;cursor:pointer"><input type="checkbox" id="bu_'+br.id+'" '+((br.unpaid==null||br.unpaid)?'checked':'')+' style="width:16px;height:16px;accent-color:var(--gold)"> Не оплачивать закрытые часы</label>'
@@ -3996,9 +3996,13 @@ function rMBranches(m,b){
   m.innerHTML=h;b.style.display='none';
 }
 
+// Saat (0–23 tam sayı) → "HH:00" (time input değeri); geçersizse d varsayılanı
+function hourHHMM(x,d){var h=(x==null||x==='')?d:(parseInt(x)||0);h=Math.max(0,Math.min(23,h));return ('0'+h).slice(-2)+':00';}
+// "HH:MM" veya "H" → saat tamsayısı (dakika yok sayılır)
+function parseHour(v,d){if(v==null||v==='')return d;var h=parseInt(String(v).split(':')[0]);return isNaN(h)?d:Math.max(0,Math.min(23,h));}
 function saveBranchHours(id){
-  var o=parseInt((document.getElementById('bo_'+id)||{}).value);if(isNaN(o))o=7;
-  var c=parseInt((document.getElementById('bc_'+id)||{}).value);if(isNaN(c))c=3;
+  var o=parseHour((document.getElementById('bo_'+id)||{}).value,7);
+  var c=parseHour((document.getElementById('bc_'+id)||{}).value,3);
   var u=(document.getElementById('bu_'+id)||{}).checked?1:0;
   var br=(BRANCHES||[]).find(function(x){return x.id===id});if(br){br.open=o;br.close=c;br.unpaid=u;}
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'branch_hours',branch_id:id,open:o,close:c,unpaid:u}))}catch(e){}}
