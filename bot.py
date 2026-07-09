@@ -123,7 +123,8 @@ def get_db():
         start_time TEXT, end_time TEXT, note TEXT)""")
     # ── Migration: eski DB'de bu kolonlar yoksa ekle ──
     for col, ddl in [("start_time", "TEXT"), ("end_time", "TEXT"), ("note", "TEXT"),
-                     ("desserts", "TEXT"), ("dessert_bonus", "INTEGER DEFAULT 0")]:
+                     ("desserts", "TEXT"), ("dessert_bonus", "INTEGER DEFAULT 0"),
+                     ("overtime", "INTEGER DEFAULT 0"), ("overtime_h", "REAL DEFAULT 0")]:
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {col} {ddl}")
         except sqlite3.OperationalError:
@@ -882,20 +883,9 @@ def get_overtime_cfg(db):
     return cfg
 
 
-def calc_overtime(db, user_id, total_hours):
-    """Aylık norm üstü saatler için ek ödeme (сверхурочные). (ot_hours, bonus) döner."""
-    otc = get_overtime_cfg(db)
-    thr = int(otc.get("hours") or 0)
-    if thr <= 0 or total_hours <= thr:
-        return 0.0, 0
-    ot_h = total_hours - thr
-    val = int(otc.get("value") or 0)
-    if otc.get("type") == "percent":
-        rate = int(barista_pay_info(db, user_id)["rate"])
-        bonus = int(ot_h * rate * (val / 100.0))
-    else:
-        bonus = int(ot_h * val)
-    return round(ot_h, 2), bonus
+# NOT: Eski canlı/geriye-dönük calc_overtime KALDIRILDI. Fazla mesai artık her
+# vardiyada KAPANIŞ ANINDA (end_shift) dondurulup shifts.overtime'a saklanır;
+# calc_summary sadece bunları TOPLAR (ayar değişse eski vardiyalar korunur).
 
 
 # ─── Audit log ───
@@ -932,7 +922,10 @@ def calc_summary(db, user_id, period=None):
     fine_total = sum(f["amount"] for f in fines)
     paid_total = paid_row["s"] or 0
     tips_total = sum(t["amount"] for t in tips)
-    ot_hours, ot_bonus = calc_overtime(db, user_id, hours)
+    # Fazla mesai: her vardiyada KAPANIŞ ANINDA dondurulmuş değerler toplanır
+    # (geriye dönük DEĞİL — ayar sonradan değişse eski vardiyalar korunur).
+    ot_bonus = sum((s["overtime"] if "overtime" in s.keys() else 0) or 0 for s in shifts)
+    ot_hours = round(sum((s["overtime_h"] if "overtime_h" in s.keys() else 0) or 0 for s in shifts), 2)
     gross = hourly + bonus + tips_total + ot_bonus
     net = gross - fine_total - paid_total
 
@@ -1060,12 +1053,35 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     bonus = drinks_bonus + dessert_bonus
     hourly_pay = int(hours * int(_pi["rate"]))
     total = hourly_pay + bonus
+    # ── Fazla mesai (сверхурочные): KAPANIŞ ANINDA dondurulur (geriye dönük DEĞİL) ──
+    # O anki config + bu vardiyanın aylık norm-üstü ARTIMLI kısmı. Kapalıysa (thr=0) → 0.
+    # Ayar sonradan değişse/kapansa bu vardiyanın saklanan değeri korunur.
+    ot_shift, ot_h = 0, 0.0
+    try:
+        _otc = get_overtime_cfg(db)
+        _thr = int(_otc.get("hours") or 0)
+        if _thr > 0 and hours > 0:
+            _prev = db.execute(
+                "SELECT COALESCE(SUM(hours),0) AS h FROM shifts WHERE user_id=? AND period=? "
+                "AND id!=? AND (end_time IS NOT NULL OR start_time IS NULL)",
+                (user_id, active["period"], active["id"])).fetchone()["h"] or 0
+            _before = max(0.0, _prev - _thr)
+            _after = max(0.0, (_prev + hours) - _thr)
+            ot_h = round(_after - _before, 2)  # bu vardiyanın norm-üstü saati
+            if ot_h > 0:
+                _val = int(_otc.get("value") or 0)
+                if _otc.get("type") == "percent":
+                    ot_shift = int(ot_h * int(_pi["rate"]) * (_val / 100.0))
+                else:
+                    ot_shift = int(ot_h * _val)
+    except Exception:
+        ot_shift, ot_h = 0, 0.0
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
-        "desserts=?, dessert_bonus=? WHERE id=?",
+        "desserts=?, dessert_bonus=?, overtime=?, overtime_h=? WHERE id=?",
         (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
          bonus, hourly_pay, total, note or "",
-         json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, active["id"]))
+         json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h, active["id"]))
     db.commit()
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
