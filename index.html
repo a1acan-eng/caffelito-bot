@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070135;
+var APP_BUILD=2026070136;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2896,6 +2896,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
+        +'<div class="own-btn" onclick="mView=\'branches\';render()"><div class="own-btn-i">🏢</div><div class="own-btn-t">Филиалы</div></div>'
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
@@ -3927,8 +3928,8 @@ function rMBaristas(m,b){
           +BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+((brs.bid||1)===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('')
           +'</select></div>';
       }
-      // Maaş kategorisi (owner olmayan baristalar) — kategoriler tanımlıysa
-      if((SAL_CATS||[]).length && brs.r!=='owner'){
+      // Maaş kategorisi (owner dahil herkes) — kategoriler tanımlıysa
+      if((SAL_CATS||[]).length){
         h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏷️ Категория:'
           +'<select onchange="assignSalCat('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
           +'<option value="">— общая ставка —</option>'
@@ -4317,16 +4318,10 @@ function rMSettings(m,b){
   +'</div>';
 
   if(settingsTab==='prices'){
-    // ── Saatlik ücret (sadeleştirildi — açılış/kapanış/max arkada sabit) ──
-    var _pc=PAY_CFG||{};var _prate=(_pc.rate!=null?_pc.rate:HOURLY_RATE);
-    h+='<div class="sec" style="margin-top:4px">💵 Оплата труда</div>';
-    h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:16px">'
-      +'<label style="display:block;font-size:12px;color:var(--t2);font-weight:600;margin-bottom:6px">Ставка за час (сум)</label>'
-      +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="payRate" value="'+_prate+'" style="width:100%;font-size:20px;font-weight:800;text-align:center">'
-      +'<button class="mbtn" style="margin-top:12px" onclick="savePaySettings()">💾 Сохранить ставку</button>'
-      +'<div class="refresh-hint" style="margin-top:10px">Применяется к сменам, закрытым после сохранения. Ночные нерабочие часы (03:00–07:00) не оплачиваются автоматически.</div>'
-    +'</div>';
-    h+='<div class="refresh-hint" style="margin-top:0">Цены за один напиток — изменения сохраняются и применяются ко всем баристам.</div>';
+    // Saatlik ücret artık kategorilerde (Настройки → Категории). Global ставка bloğu kaldırıldı.
+    h+='<div class="refresh-hint" style="margin-top:4px">⏱ Ставка за час теперь задаётся в <b>«Категории»</b> (у каждой категории своя). 🕐 Нерабочие часы — в <b>«Филиалы»</b> (для каждого филиала отдельно).</div>';
+    h+='<div class="sec" style="margin-top:10px">🥤 Цены за стакан · наша система</div>';
+    h+='<div class="refresh-hint" style="margin-top:0">Цены за один напиток — изменения сохраняются и применяются к баристам на «нашей» системе бонусов.</div>';
     DRINK_LIST.forEach(function(d){
       h+='<div class="set-row">'
         +'<div class="set-row-l">'
