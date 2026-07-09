@@ -1234,6 +1234,9 @@ def build_hash_payload(db, user_id, name):
         scheduled_out = []
     # Bu kullanıcının maaş bilgisi (canlı saatlik hesap kategorisine göre olsun)
     _my_pi = barista_pay_info(db, user_id)
+    # Bu kullanıcının şubesinin ödeme penceresi (open/close/unpaid/max) — client
+    # canlı vardiya saatini backend paid_hours ile AYNI hesaplasın (raw değil).
+    _my_win = branch_pay_window(db, acting_branch_id(db, user_id))
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -1256,6 +1259,7 @@ def build_hash_payload(db, user_id, name):
         f"my_rate={int(_my_pi['rate'])}",
         f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi']}, ensure_ascii=False))}",
         f"my_bonus_sys={_my_pi['bonus_system']}",
+        f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
@@ -2949,8 +2953,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                      f"💎 За смену: *{fmt_sum(total)}* сум\n"
                      f"━━━━━━━━━━━━━━━━━━\n"
                      f"📊 *Месяц {period}:*\n"
-                     f"Часы: {fmt_hm(s['hours'])} | Смен: {s['shifts_count']}\n"
-                     f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*")
+                     f"Часы: {fmt_hm(s['hours'])} | Смен: {s['shifts_count']}\n")
+            if (s.get('overtime') or 0) > 0:
+                text += f"⏱ Переработка ({fmt_hm(s['overtime_hours'])}): +{fmt_sum(s['overtime'])} сум\n"
+            text += f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*"
             if note:
                 text += f"\n📝 {note}"
             await update.message.reply_text(text, parse_mode="Markdown")

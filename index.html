@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070139;
+var APP_BUILD=2026070140;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1585,6 +1585,9 @@ try{OT_CFG=JSON.parse((HP.get('ot_cfg')||'{}'))||{}}catch(e){OT_CFG={}}
 let MY_BONUS_SYS=(HP.get('my_bonus_sys')||'own');
 let CAFFELITO_BONUS={};
 try{CAFFELITO_BONUS=JSON.parse((HP.get('caffelito_bonus')||'{}'))||{}}catch(e){CAFFELITO_BONUS={}}
+// Şubenin ödeme penceresi (open/close/unpaid/max) — canlı vardiya saati backend gibi hesaplansın
+let PAY_WIN={};
+try{PAY_WIN=JSON.parse((HP.get('my_pay_window')||'{}'))||{}}catch(e){PAY_WIN={}}
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -2762,6 +2765,37 @@ function liveHours(startIso){
     return Math.max(0,(now.getTime()-s.getTime())/3600000);
   }catch(e){return 0}
 }
+// Ödenecek saat — backend paid_hours ile BİREBİR: ham süreden kapalı pencere
+// (закрытие→открытие) düşülür, max ile sınırlanır. {raw, unpaid, paid} döner.
+// PAY_WIN = şubenin {open, close, unpaid, max} penceresi (payload'dan).
+function paidHours(startIso, endIso){
+  try{
+    var s=new Date(startIso), e=endIso?new Date(endIso):gT();
+    if(!(e>s))return {raw:0,unpaid:0,paid:0};
+    var raw=(e-s)/3600000;
+    var w=PAY_WIN||{};
+    var unpaid=0;
+    if(w.unpaid){
+      var oh=parseInt(w.open); if(isNaN(oh))oh=7;
+      var ch=parseInt(w.close); if(isNaN(ch))ch=3;
+      if(ch>=0 && ch<oh && oh<=24){
+        var day=new Date(s.getFullYear(),s.getMonth(),s.getDate());
+        var endDay=new Date(e.getFullYear(),e.getMonth(),e.getDate());
+        var guard=0;
+        while(day.getTime()<=endDay.getTime() && guard<400){
+          var w0=new Date(day); w0.setHours(ch,0,0,0);
+          var w1=new Date(day); w1.setHours(oh,0,0,0);
+          var ov=(Math.min(e.getTime(),w1.getTime())-Math.max(s.getTime(),w0.getTime()))/3600000;
+          if(ov>0)unpaid+=ov;
+          day=new Date(day.getTime()+86400000); guard++;
+        }
+      }
+    }
+    var paid=Math.max(0,raw-unpaid);
+    var mx=parseInt(w.max); if(!isNaN(mx)&&mx>0&&paid>mx)paid=mx;
+    return {raw:raw, unpaid:unpaid, paid:Math.round(paid*100)/100};
+  }catch(_e){return {raw:0,unpaid:0,paid:0};}
+}
 
 // Saatleri okunabilir biçimde göster:
 //   0.02h → "1м"
@@ -3188,7 +3222,8 @@ function rMShiftEnd(m,b){
   const dayStr=fmtDay(active.start_time);
   // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
-  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">🔴 Завершить смену · '+dayStr+'</div>';
   // Süre özeti
@@ -3196,9 +3231,16 @@ function rMShiftEnd(m,b){
     +'<div class="det-times">'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
       +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
-      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">Часы</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">К оплате</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
     +'</div>'
   +'</div>';
+  // Kapalı saat kırılımı — barista "az yazıldı" sanmasın (canlı)
+  if(_ph.unpaid>0.01){
+    var _cl=String(parseInt(PAY_WIN.close)||0).padStart(2,'0'),_op=String(parseInt(PAY_WIN.open)||7).padStart(2,'0');
+    h+='<div class="refresh-hint" style="margin:8px 0 0;color:var(--t2);line-height:1.5">'
+      +'🕐 Отработано <b>'+fmtH(_ph.raw)+'</b> · закрытые часы (<b>'+_cl+':00–'+_op+':00</b>) не оплачиваются <b style="color:var(--red)">−'+fmtH(_ph.unpaid)+'</b> → к оплате <b style="color:#059669">'+fmtH(_ph.paid)+'</b>'
+    +'</div>';
+  }
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
   const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
   h+='<div style="margin:8px 0 4px;padding:10px 12px;border:1px dashed #cbd5e1;border-radius:12px;background:#fefce8">'
@@ -3320,7 +3362,8 @@ function recalcEnd(){
   const active=(SUMMARY||{}).active;if(!active)return;
   // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
-  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;
   let drinkBonus=0,drinkSold=0;
   DRINK_LIST.forEach(function(d){
     var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
@@ -3354,7 +3397,8 @@ async function endShiftSave(){
   if(!active){toast('Нет активной смены');return}
   // Bitiş zamanı: manuel girildiyse onu kullan, yoksa şu an
   const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
-  const liveH=Math.max(0,(effEnd-new Date(active.start_time))/3600000);
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;
   let drinkBonus=0;
   DRINK_LIST.forEach(function(d){
     var b=parseInt(endDraft.bylo[d.id])||0,r=parseInt(endDraft.zavoz[d.id])||0;
