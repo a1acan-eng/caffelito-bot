@@ -338,6 +338,44 @@ def get_db():
                     pass
     except sqlite3.OperationalError:
         pass
+    # ─── Зарплатные категории (maaş kategorileri) — dinamik saatlik ücret grupları ───
+    # Her barista bir kategoriye bağlanır; kategori kendi ставка'sını taşır. use_kpi=1
+    # kategoriler satış (bardak/tatlı) bonusundan etkilenmez. min_months/next_cat_id
+    # ileride terfi modülü için saklanır.
+    db.execute("""CREATE TABLE IF NOT EXISTS salary_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        hourly_rate INTEGER DEFAULT 0,
+        min_months REAL DEFAULT 0,
+        next_cat_id INTEGER,
+        description TEXT,
+        use_kpi INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT)""")
+    # users → bağlı olduğu maaş kategorisi (NULL = global ставка, geriye tam uyumlu)
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN salary_cat_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    # İlk kurulum: hiç kategori yoksa mevcut global ставка ile "Базовая ставка" tohumla.
+    # (Baristalar otomatik atanmaz → atanmayan global ставка kullanır, davranış değişmez.)
+    try:
+        _scc = db.execute("SELECT COUNT(*) AS c FROM salary_categories").fetchone()
+        if (_scc["c"] or 0) == 0:
+            _r0 = HOURLY_RATE
+            try:
+                _rr0 = db.execute("SELECT val FROM meta WHERE k='pay_rate'").fetchone()
+                if _rr0 and _rr0["val"]:
+                    _r0 = int(_rr0["val"])
+            except Exception:
+                pass
+            db.execute(
+                "INSERT INTO salary_categories (name, hourly_rate, sort_order, active, created_at) "
+                "VALUES (?,?,0,1,?)",
+                ("Базовая ставка", int(_r0), datetime.now(TZ).isoformat()))
+    except sqlite3.OperationalError:
+        pass
     db.commit()
     return db
 
@@ -444,6 +482,40 @@ def get_pay_cfg(db):
     except Exception:
         pass
     return cfg
+
+
+def get_salary_categories(db, only_active=False):
+    """Maaş kategorileri listesi (dict)."""
+    q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,active,sort_order "
+         "FROM salary_categories")
+    if only_active:
+        q += " WHERE COALESCE(active,1)=1"
+    q += " ORDER BY sort_order, id"
+    try:
+        return [dict(r) for r in db.execute(q).fetchall()]
+    except Exception:
+        return []
+
+
+def barista_pay_info(db, user_id):
+    """Baristanın maaş bilgisi: {rate, use_kpi, cat_id, cat_name}.
+    Kategori atanmış VE aktifse onun ставка'sı; yoksa global ставка (geriye uyumlu)."""
+    info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
+            "use_kpi": 0, "cat_id": None, "cat_name": None}
+    try:
+        r = db.execute(
+            "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
+            "c.active AS active FROM users u "
+            "JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
+            (user_id,)).fetchone()
+        if r and (r["active"] is None or r["active"] == 1):
+            info["rate"] = int(r["rate"] or 0)
+            info["use_kpi"] = int(r["kpi"] or 0)
+            info["cat_id"] = r["cid"]
+            info["cat_name"] = r["cname"]
+    except Exception:
+        pass
+    return info
 
 
 def paid_hours(start_dt, end_dt, cfg):
@@ -890,10 +962,16 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
     _pc = branch_pay_window(db, _bid)
     hours = paid_hours(start, end_dt, _pc)
+    # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
+    # ise satış (bardak+tatlı) bonusundan etkilenmez.
+    _pi = barista_pay_info(db, user_id)
     drinks_bonus = calc_bonus(drinks, get_prices(db))
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
+    if _pi["use_kpi"]:
+        drinks_bonus = 0
+        dessert_bonus = 0
     bonus = drinks_bonus + dessert_bonus
-    hourly_pay = int(hours * int(_pc.get("rate", HOURLY_RATE)))
+    hourly_pay = int(hours * int(_pi["rate"]))
     total = hourly_pay + bonus
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
@@ -1069,6 +1147,8 @@ def build_hash_payload(db, user_id, name):
                           "at": r["send_at"], "bid": r["branch_id"] or 1} for r in _srows]
     except Exception:
         scheduled_out = []
+    # Bu kullanıcının maaş bilgisi (canlı saatlik hesap kategorisine göre olsun)
+    _my_pi = barista_pay_info(db, user_id)
     parts = [
         f"uid={user_id}",
         f"role={role}",
@@ -1088,6 +1168,9 @@ def build_hash_payload(db, user_id, name):
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
+        f"my_rate={int(_my_pi['rate'])}",
+        f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi']}, ensure_ascii=False))}",
+        f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -1129,7 +1212,8 @@ def build_hash_payload(db, user_id, name):
     if role == "owner":
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
-            "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id "
+            "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id, "
+            "salary_cat_id "
             "FROM users WHERE COALESCE(approved,0)=1 "
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
@@ -1168,6 +1252,7 @@ def build_hash_payload(db, user_id, name):
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
+                "cat": b["salary_cat_id"],
                 "recent": [],
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
@@ -3205,6 +3290,81 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"Макс. смена: {mx} ч\n"
                 f"Закрытое окно ({cl:02d}:00–{op:02d}:00) не оплачивается: {'да' if un else 'нет'}",
                 parse_mode="Markdown")
+
+        elif action == "salcat_save":
+            # Owner: maaş kategorisi oluştur/güncelle (id verilirse update)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            nm = (data.get("name") or "").strip()[:60]
+            if not nm:
+                await update.message.reply_text("❌ Укажите название категории.")
+                return
+            def _ci(v, lo, hi, dflt=0):
+                try:
+                    return max(lo, min(hi, int(v)))
+                except Exception:
+                    return dflt
+            def _cf(v, dflt=0.0):
+                try:
+                    return max(0.0, float(v))
+                except Exception:
+                    return dflt
+            rate = _ci(data.get("rate"), 0, 5000000, 0)
+            mn = _cf(data.get("min_months"), 0.0)
+            nxt = data.get("next_cat_id")
+            nxt = int(nxt) if (nxt not in (None, "", 0, "0")) else None
+            desc = (data.get("description") or "").strip()[:300]
+            kpi = 1 if int(data.get("use_kpi", 0) or 0) else 0
+            act = 0 if int(data.get("active", 1) or 0) == 0 else 1
+            cid = data.get("id")
+            if cid:
+                db.execute(
+                    "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
+                    "next_cat_id=?, description=?, use_kpi=?, active=? WHERE id=?",
+                    (nm, rate, mn, nxt, desc, kpi, act, int(cid)))
+                msg = f"✅ Категория «{nm}» обновлена."
+            else:
+                _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
+                db.execute(
+                    "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
+                    "description, use_kpi, active, sort_order, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, (_mo["s"] if _mo else 0),
+                     datetime.now(TZ).isoformat()))
+                msg = f"✅ Категория «{nm}» создана."
+            db.commit()
+            await update.message.reply_text(msg)
+
+        elif action == "salcat_delete":
+            # Owner: kategori sil (bağlı baristalar → NULL = global ставка)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            cid = data.get("id")
+            if cid:
+                db.execute("UPDATE users SET salary_cat_id=NULL WHERE salary_cat_id=?", (int(cid),))
+                db.execute("UPDATE salary_categories SET next_cat_id=NULL WHERE next_cat_id=?", (int(cid),))
+                db.execute("DELETE FROM salary_categories WHERE id=?", (int(cid),))
+                db.commit()
+            await update.message.reply_text("🗑 Категория удалена.")
+
+        elif action == "salcat_assign":
+            # Owner: baristayı bir maaş kategorisine bağla (0/None = kaldır → global)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            tgt = data.get("target")
+            cid = data.get("cat_id")
+            if tgt:
+                cid_val = int(cid) if (cid not in (None, "", 0, "0")) else None
+                if cid_val is not None and not db.execute(
+                        "SELECT 1 FROM salary_categories WHERE id=?", (cid_val,)).fetchone():
+                    cid_val = None
+                db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
+                db.commit()
 
         elif action == "create_branch":
             db = get_db()

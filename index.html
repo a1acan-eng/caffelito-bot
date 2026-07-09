@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070133;
+var APP_BUILD=2026070134;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1018,6 +1018,7 @@ function refreshState(){
         SCHEDULED=J('scheduled','[]');
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
+        SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1569,6 +1570,13 @@ try{SCHEDULED=JSON.parse((HP.get('scheduled')||'[]'))}catch(e){SCHEDULED=[]}
 let PAY_CFG={};
 try{PAY_CFG=JSON.parse((HP.get('pay_cfg')||'{}'))||{}}catch(e){PAY_CFG={}}
 HOURLY_RATE=parseInt(HP.get('pay_rate'))||HOURLY_RATE;
+// ── Maaş kategorileri (owner listesi) + bu kullanıcının kategorisi/ставка'sı ──
+let SAL_CATS=[];
+try{SAL_CATS=JSON.parse((HP.get('sal_cats')||'[]'))||[]}catch(e){SAL_CATS=[]}
+let MY_CAT={};
+try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
+let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
+HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
 let MY_BRANCH=parseInt(HP.get('my_branch'))||1;
 // Owner Управление ekranındaki şube filtresi (0 = «Все филиалы»). localStorage'da tutulur.
 let ACTIVE_BRANCH=0;
@@ -3907,6 +3915,14 @@ function rMBaristas(m,b){
           +BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+((brs.bid||1)===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('')
           +'</select></div>';
       }
+      // Maaş kategorisi (owner olmayan baristalar) — kategoriler tanımlıysa
+      if((SAL_CATS||[]).length && brs.r!=='owner'){
+        h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏷️ Категория:'
+          +'<select onchange="assignSalCat('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
+          +'<option value="">— общая ставка —</option>'
+          +SAL_CATS.filter(function(c){return c.active!==0||c.id===brs.cat}).map(function(c){return '<option value="'+c.id+'"'+(brs.cat===c.id?' selected':'')+'>'+escH(c.name)+' ('+fmt(c.hourly_rate||0)+')'+(c.use_kpi?' · KPI':'')+'</option>'}).join('')
+          +'</select></div>';
+      }
       h+='</div>';
     });
   }
@@ -4277,11 +4293,12 @@ async function decideLoan(id,decision){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
+  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',cats:'Категории зарплат',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
-  // Mini tabs (5 alt sekme — yeni sayfa açmıyoruz)
+  // Mini tabs (alt sekmeler — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
     +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'prices\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
+    +'<div class="opt '+(settingsTab==='cats'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'cats\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🏷️ Категории</div></div></div>'
     +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">👥 Люди</div></div></div>'
     +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'logs\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
     +'<div class="opt '+(settingsTab==='reset'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'reset\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🗑 Сброс</div></div></div>'
@@ -4340,6 +4357,43 @@ function rMSettings(m,b){
         +'<button class="add-btn" onclick="addNewDessert()" style="padding:8px 12px">➕ Добавить</button>'
       +'</div>'
       +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id создаётся автоматически из названия</div>'
+    +'</div>';
+  } else if(settingsTab==='cats'){
+    // ── Зарплатные категории (dinamik saatlik ücret grupları) ──
+    h+='<div class="refresh-hint" style="margin-top:0">Каждый барист привязан к одной категории со своей ставкой. Категорию можно назначить в «Все баристы». KPI-категории не получают бонус за стаканы/десерты.</div>';
+    (SAL_CATS||[]).forEach(function(c){
+      var cnt=(BARISTAS||[]).filter(function(x){return x.cat===c.id}).length;
+      var act=c.active!==0;
+      h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:12px;margin-bottom:12px;'+(act?'':'opacity:.6')+'">'
+        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +'<input class="set-input wide" type="text" id="sc_n_'+c.id+'" value="'+escH(c.name||'')+'" placeholder="Название" style="flex:1;font-weight:700">'
+          +'<span style="font-size:11px;color:var(--t3);white-space:nowrap">👥 '+cnt+'</span>'
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +'<label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Ставка/час</label>'
+          +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="sc_r_'+c.id+'" value="'+(c.hourly_rate||0)+'" style="width:120px;font-weight:800;text-align:center">'
+        +'</div>'
+        +'<input class="set-input wide" type="text" id="sc_d_'+c.id+'" value="'+escH(c.description||'')+'" placeholder="Описание (необязательно)" style="width:100%;margin-bottom:8px">'
+        +'<div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;flex-wrap:wrap">'
+          +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_a_'+c.id+'" '+(act?'checked':'')+'> Активна</label>'
+          +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_k_'+c.id+'" '+(c.use_kpi?'checked':'')+'> KPI (без бонуса за стаканы)</label>'
+        +'</div>'
+        +'<div style="display:flex;gap:8px">'
+          +'<button class="mbtn" style="flex:1" onclick="saveSalCat('+c.id+')">💾 Сохранить</button>'
+          +'<button class="add-btn" style="padding:8px 14px;background:#ef4444" onclick="deleteSalCat('+c.id+')">🗑</button>'
+        +'</div>'
+      +'</div>';
+    });
+    if(!(SAL_CATS||[]).length)h+='<div class="empty-mini">Категорий пока нет. Создайте первую ниже.</div>';
+    h+='<div style="margin-top:14px;padding:12px;border:2px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
+      +'<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--t1)">➕ Новая категория</div>'
+      +'<input class="set-input wide" type="text" id="ncName" placeholder="Название (напр. Бариста Категория 2)" style="width:100%;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+        +'<label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Ставка/час</label>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="ncRate" placeholder="0" style="width:120px;text-align:center">'
+      +'</div>'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKpi"> KPI-категория</label>'
+      +'<button class="add-btn" onclick="addSalCat()" style="padding:9px 12px;width:100%">➕ Создать категорию</button>'
     +'</div>';
   } else if(settingsTab==='names'){
     // 🆕 Onay bekleyen yeni başlayanlar — kabul edince 'Все баристы'ye geçer
@@ -4535,6 +4589,46 @@ function savePaySettings(){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'pay_settings',open:7,close:3,max:20,unpaid:1,rate:rate}))}catch(e){}}
   toast('💵 Ставка сохранена');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
+}
+// ── Зарплатные категории (Maaş kategorileri) ──
+function saveSalCat(id){
+  var nm=((document.getElementById('sc_n_'+id)||{}).value||'').trim();
+  if(!nm){toast('Укажите название');return}
+  var rate=parseInt((document.getElementById('sc_r_'+id)||{}).value)||0;
+  var desc=((document.getElementById('sc_d_'+id)||{}).value||'').trim();
+  var act=(document.getElementById('sc_a_'+id)||{}).checked?1:0;
+  var kpi=(document.getElementById('sc_k_'+id)||{}).checked?1:0;
+  // Optimistik: yerel SAL_CATS güncelle
+  var c=(SAL_CATS||[]).find(function(x){return x.id===id});
+  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi}))}catch(e){}}
+  toast('💾 Категория сохранена');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
+}
+function addSalCat(){
+  var nm=((document.getElementById('ncName')||{}).value||'').trim();
+  if(!nm){toast('Укажите название');return}
+  var rate=parseInt((document.getElementById('ncRate')||{}).value)||0;
+  var kpi=(document.getElementById('ncKpi')||{}).checked?1:0;
+  // Optimistik: geçici id ile listeye ekle (sunucu gerçek id ile refreshState'te düzeltir)
+  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1}))}catch(e){}}
+  toast('✅ Категория создана');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
+}
+async function deleteSalCat(id){
+  var c=(SAL_CATS||[]).find(function(x){return x.id===id});
+  var cnt=(BARISTAS||[]).filter(function(x){return x.cat===id}).length;
+  var warn='Удалить категорию «'+((c&&c.name)||'')+'»?'+(cnt?('\n'+cnt+' барист(ов) перейдут на общую ставку.'):'');
+  if(!(await cfAsk(warn,{danger:true,okText:'Удалить'})))return;
+  SAL_CATS=(SAL_CATS||[]).filter(function(x){return x.id!==id});
+  (BARISTAS||[]).forEach(function(x){if(x.cat===id)x.cat=null;});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_delete',id:id}))}catch(e){}}
+  toast('🗑 Категория удалена');render();
+}
+function assignSalCat(uid,catId){
+  var cid=(catId===''||catId==null)?null:(parseInt(catId)||null);
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.cat=cid;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_assign',target:uid,cat_id:cid}))}catch(e){}}
+  toast('🏷️ Категория назначена');if(tg)tg.HapticFeedback?.impactOccurred('light');render();
 }
 function savePrice(drinkId){
   const el=document.getElementById('pr_'+drinkId);
