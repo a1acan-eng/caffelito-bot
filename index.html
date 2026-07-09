@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070142;
+var APP_BUILD=2026070143;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2775,7 +2775,8 @@ function paidHours(startIso, endIso){
     var raw=(e-s)/3600000;
     var w=PAY_WIN||{};
     // "Не оплачивать" KAPALI → tüm süre ödenir (düşüm+cap yok) — backend ile aynı
-    if(!w.unpaid)return {raw:raw, unpaid:0, paid:Math.round(raw*100)/100};
+    // paid TAM HASSAS (yuvarlama YOK) → canlı hesap her saniye akıcı güncellenir
+    if(!w.unpaid)return {raw:raw, unpaid:0, paid:raw};
     var unpaid=0;
     var oh=parseInt(w.open); if(isNaN(oh))oh=7;
     var ch=parseInt(w.close); if(isNaN(ch))ch=3;
@@ -2793,7 +2794,7 @@ function paidHours(startIso, endIso){
     }
     var paid=Math.max(0,raw-unpaid);
     var mx=parseInt(w.max); if(!isNaN(mx)&&mx>0&&paid>mx)paid=mx;
-    return {raw:raw, unpaid:unpaid, paid:Math.round(paid*100)/100};
+    return {raw:raw, unpaid:unpaid, paid:paid};  // yuvarlama YOK → akıcı canlı
   }catch(_e){return {raw:0,unpaid:0,paid:0};}
 }
 // Vardiya-kapatma kırılım satırı — Отработано / kapalı düşüm / max limit → к оплате.
@@ -3989,7 +3990,7 @@ function rMBaristas(m,b){
       if((SAL_CATS||[]).length){
         h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏷️ Категория:'
           +'<select onchange="assignSalCat('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
-          +'<option value="">— общая ставка —</option>'
+          +(brs.cat==null?'<option value="" selected disabled>— выберите категорию —</option>':'')
           +SAL_CATS.filter(function(c){return c.active!==0||c.id===brs.cat}).map(function(c){return '<option value="'+c.id+'"'+(brs.cat===c.id?' selected':'')+'>'+escH(c.name)+' ('+fmt(c.hourly_rate||0)+')'+(c.use_kpi?' · KPI':'')+'</option>'}).join('')
           +'</select></div>';
       }
