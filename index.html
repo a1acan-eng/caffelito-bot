@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070148;
+var APP_BUILD=2026070149;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1553,6 +1553,7 @@ try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORT
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
 let reportRoom=null; // Отчёт oda görünümü (null=menü)
 let payDetail=null; // Выплачено: açık ödeme detayının id'si (hangi günleri kapsıyor)
+let shiftDetOpen=null; // Смены: kasa raporu olmayan vardiyada açık detayın start_time'ı
 let certPreview=false; // Сертификация — kendi adıyla örnek sertifika önizleme
 let certBack=null; // Сертификация'ya nereden girildi (geri tuşu oraya dönsün)
 let REP={}; // Отчёт odaları verisi (owner: hepsi, barista: orders+shifts)
@@ -2396,7 +2397,7 @@ function rR(m,b){b.style.display='none';
 }
 function openRoom(id,n){
   try{var s=JSON.parse(localStorage.getItem('cf_roomseen')||'{}');s[id]=n;localStorage.setItem('cf_roomseen',JSON.stringify(s));}catch(e){}
-  reportRoom=id;payDetail=null;render();
+  reportRoom=id;payDetail=null;shiftDetOpen=null;render();
 }
 function rReportRoom(m,b){
   b.style.display='none';
@@ -2464,13 +2465,24 @@ function rReportRoom(m,b){
           var kri=(s.start_time&&kByStart[s.start_time]!=null)?kByStart[s.start_time]:null;
           var hasRep=(kri!=null);
           var kr=hasRep?KASA_REPORTS[kri]:null;
-          h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0'+(hasRep?';cursor:pointer':'')+'"'+(hasRep?' onclick="kasaDetail=KASA_REPORTS['+kri+'];render()"':'')+'>'
+          var _sOpen=(!hasRep&&shiftDetOpen===s.start_time);
+          var _clk=hasRep?('kasaDetail=KASA_REPORTS['+kri+'];render()'):('shiftDetOpen=(shiftDetOpen===\''+esc(s.start_time)+'\'?null:\''+esc(s.start_time)+'\');render()');
+          h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer" onclick="'+_clk+'">'
             +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">👤</div>'
             +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
-            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':'')+'</div></div>'
+            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':(s.end_time?' · <span style="color:var(--t3)">'+(_sOpen?'▾':'▸')+' детали</span>':''))+'</div></div>'
             +(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
             +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
+          if(_sOpen){
+            var _stot=(s.total||0),_sot=(s.overtime||0);
+            h+='<div style="margin:0 0 6px;padding:8px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
+              +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+'</span><span style="font-weight:700">'+fmtH(s.hours||0)+'</span></div>'
+              +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">Часы + бонус</span><span style="font-weight:700">'+fmt(_stot)+'</span></div>'
+              +(_sot>0?'<div style="display:flex;justify-content:space-between;padding:2px 0;color:#7c3aed"><span>⏱ Переработка</span><span style="font-weight:700">+'+fmt(_sot)+'</span></div>':'')
+              +'<div style="display:flex;justify-content:space-between;padding:4px 0 0;border-top:1px dashed var(--border2);margin-top:3px;font-weight:800"><span>За смену</span><span style="color:var(--gold)">'+fmt(_stot+_sot)+'</span></div>'
+            +'</div>';
+          }
         });
         h+='</div></div>';
       });
@@ -3116,7 +3128,7 @@ async function startShiftNow(){
 function cfShiftStartedPop(){try{var _ac=document.getElementById('actCard');if(_ac){_ac.classList.remove('act-just');void _ac.offsetWidth;_ac.classList.add('act-just');setTimeout(function(){try{_ac.classList.remove('act-just')}catch(_e){}},1500);}}catch(_e){}}
 
 // ── Vardiya bitir kutlaması: konfeti + kazanç count-up overlay ──
-function cfCelebrateShiftEnd(total,hourly,bonus,hours){
+function cfCelebrateShiftEnd(total,hourly,bonus,hours,ot){
   try{
     var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
     var old=document.getElementById('cfCelebrate');if(old)old.remove();
@@ -3132,6 +3144,7 @@ function cfCelebrateShiftEnd(total,hourly,bonus,hours){
         +'<div><div class="cf-cel-rl">Часы</div><div class="cf-cel-rv">'+(Math.round((hours||0)*10)/10)+'ч</div></div>'
         +'<div><div class="cf-cel-rl">Ставка</div><div class="cf-cel-rv">'+fmt(hourly||0)+'</div></div>'
         +'<div><div class="cf-cel-rl">Бонус</div><div class="cf-cel-rv">+'+fmt(bonus||0)+'</div></div>'
+        +(((ot||0)>0)?'<div><div class="cf-cel-rl">Пере&shy;работка</div><div class="cf-cel-rv" style="color:#c4b5fd">+'+fmt(ot)+'</div></div>':'')
       +'</div>'
       +'<div class="cf-cel-tap">нажмите, чтобы закрыть</div>';
     ov.appendChild(card);document.body.appendChild(ov);
@@ -3496,7 +3509,8 @@ async function endShiftSave(){
   const _desObj=desN>0?{'Десерты (всего)':desN}:{};
   const bonus=drinkBonus+desBonus;
   const hourly=Math.round(liveH*HOURLY_RATE);
-  const total=hourly+bonus;
+  const ot=liveOvertime(liveH);              // bu vardiyanın fazla mesaisi
+  const total=hourly+bonus+ot.amount;        // ИТОГО = saat + bonus + fazla mesai
   const payload={
     action:'shift_end',
     drinks:endDraft.drinks,
@@ -3515,7 +3529,7 @@ async function endShiftSave(){
     hours:Math.round(liveH*100)/100,
     drinks:JSON.stringify(endDraft.drinks),
     desserts:JSON.stringify(_desObj),
-    bonus:bonus,dessert_bonus:desBonus,hourly_pay:hourly,total:total,
+    bonus:bonus,dessert_bonus:desBonus,hourly_pay:hourly,overtime:ot.amount,total:total,
     note:endDraft.note,
     created_at:active.start_time
   };
@@ -3525,7 +3539,9 @@ async function endShiftSave(){
   SUMMARY.hours=(SUMMARY.hours||0)+finishedShift.hours;
   SUMMARY.hourly=(SUMMARY.hourly||0)+hourly;
   SUMMARY.bonus=(SUMMARY.bonus||0)+bonus;
-  SUMMARY.gross=(SUMMARY.hourly)+(SUMMARY.bonus);
+  SUMMARY.overtime=(SUMMARY.overtime||0)+ot.amount;
+  SUMMARY.overtime_hours=(SUMMARY.overtime_hours||0)+ot.h;
+  SUMMARY.gross=(SUMMARY.hourly)+(SUMMARY.bonus)+(SUMMARY.overtime||0);
   SUMMARY.fines=SUMMARY.fines||0;
   SUMMARY.paid=SUMMARY.paid||0;
   SUMMARY.net=SUMMARY.gross-SUMMARY.fines-SUMMARY.paid;
@@ -3535,7 +3551,7 @@ async function endShiftSave(){
   hist.push({type:'shift',date:new Date().toISOString(),user:MY_NAME,hours:finishedShift.hours,drinks:endDraft.drinks,desserts:_desObj,note:endDraft.note,total:total});
   localStorage.setItem('cf5h',JSON.stringify(hist));
   toast('🔴 Смена закрыта · '+fmt(total)+' сум');
-  cfCelebrateShiftEnd(total,hourly,bonus,liveH);
+  cfCelebrateShiftEnd(total,hourly,bonus,liveH,ot.amount);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   mView='main';
