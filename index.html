@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070147;
+var APP_BUILD=2026070148;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1552,6 +1552,7 @@ let KASA_REPORTS=[];
 try{KASA_REPORTS=JSON.parse((HP.get('kasa_reports')||'[]'))}catch(e){KASA_REPORTS=[]}
 let kasaDetail=null; // Отчёт'te açık kasa raporu detayı
 let reportRoom=null; // Отчёт oda görünümü (null=menü)
+let payDetail=null; // Выплачено: açık ödeme detayının id'si (hangi günleri kapsıyor)
 let certPreview=false; // Сертификация — kendi adıyla örnek sertifika önizleme
 let certBack=null; // Сертификация'ya nereden girildi (geri tuşu oraya dönsün)
 let REP={}; // Отчёт odaları verisi (owner: hepsi, barista: orders+shifts)
@@ -2395,7 +2396,7 @@ function rR(m,b){b.style.display='none';
 }
 function openRoom(id,n){
   try{var s=JSON.parse(localStorage.getItem('cf_roomseen')||'{}');s[id]=n;localStorage.setItem('cf_roomseen',JSON.stringify(s));}catch(e){}
-  reportRoom=id;render();
+  reportRoom=id;payDetail=null;render();
 }
 function rReportRoom(m,b){
   b.style.display='none';
@@ -2481,7 +2482,12 @@ function rReportRoom(m,b){
   } else if(room==='pays'){
     lst=REP.pays||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
-    lst.forEach(function(p){var sub=p.note||p.kind||'';h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div>'+delBtn('pay',p.id)+'</div>';});
+    h+='<div class="refresh-hint" style="margin-top:0">Нажмите на выплату — покажем, за какие смены/дни она (с прошлой выплаты).</div>';
+    lst.forEach(function(p){
+      var sub=p.note||p.kind||'';var open=(payDetail===p.id);
+      h+='<div class="hist" style="cursor:pointer" onclick="payDetail=(payDetail==='+p.id+'?null:'+p.id+');render()"><div class="hist-l"><div class="hist-d">'+(open?'▾ ':'▸ ')+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div>'+delBtn('pay',p.id)+'</div>';
+      if(open)h+=payDetailHTML(p);
+    });
   } else if(room==='fines'){
     lst=REP.fines||[];
     if(!lst.length)h+='<div class="empty-mini">Нет</div>';
@@ -2495,6 +2501,38 @@ function rReportRoom(m,b){
   try{var _mb=m.querySelectorAll('.mbar[data-h]');if(_mb.length)setTimeout(function(){_mb.forEach(function(el){el.style.height=el.getAttribute('data-h')+'%';});},60);}catch(_e){}
 }
 
+// Bir ödemenin kapsadığı vardiyalar: aynı isim + AYNI baristanın önceki ödemesinden
+// bu ödemeye kadar tarih aralığındaki vardiyalar. (Ödeme = o güne kadarki mesaiyi kapatır.)
+function payCoverageShifts(p){
+  var nm=(p.nm||'');var upto=new Date(p.at).getTime();
+  var prev=0;
+  (REP.pays||[]).forEach(function(x){if((x.nm||'')===nm){var t=new Date(x.at).getTime();if(t<upto&&t>prev)prev=t;}});
+  return (REP.shifts||[]).filter(function(s){
+    if((s.nm||'')!==nm)return false;
+    var d=new Date(s.start_time||s.end_time||0).getTime();
+    return d>prev && d<=upto;
+  }).sort(function(a,b){return new Date(a.start_time||0)-new Date(b.start_time||0)});
+}
+function payDetailHTML(p){
+  var shs=payCoverageShifts(p);
+  var sum=0;
+  var rows='';
+  shs.forEach(function(s){
+    var pay=(s.total||0)+(s.overtime||0);sum+=pay;
+    var day=repDay(s.start_time).split(' ')[0];
+    var hrs=(s.hours||0);hrs=(hrs%1===0)?hrs:Number(hrs).toFixed(1);
+    rows+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border2)">'
+      +'<span style="color:var(--t2)">📅 '+day+' · '+hrs+'ч'+((s.overtime||0)>0?' <span style="color:#7c3aed">+пере</span>':'')+'</span>'
+      +'<span style="font-weight:700">'+fmt(pay)+'</span></div>';
+  });
+  if(!shs.length)rows='<div style="font-size:12px;color:var(--t3);padding:4px 0">Смен в этом периоде не найдено.</div>';
+  return '<div style="margin:-2px 0 10px;padding:10px 12px;background:var(--card2);border:1px solid var(--border2);border-radius:0 0 12px 12px">'
+    +'<div style="font-size:11px;color:var(--t3);font-weight:700;margin-bottom:6px">СМЕНЫ ЗА ПЕРИОД ('+shs.length+')</div>'
+    +rows
+    +'<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:800;margin-top:7px"><span>Итого за смены</span><span>'+fmt(sum)+'</span></div>'
+    +(sum!==(p.amount||0)?'<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t3);margin-top:3px"><span>Выплачено</span><span>'+fmt(p.amount||0)+'</span></div>':'')
+    +'</div>';
+}
 function esc(s){return String(s||'').replace(/'/g,"\\'")}
 function escH(s){return String(s||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function toast(msg,type){
