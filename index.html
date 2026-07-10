@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070145;
+var APP_BUILD=2026070146;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3273,6 +3273,7 @@ function rMShiftEnd(m,b){
       +'<input type="time" id="cstEnd" value="'+curHHMM+'" oninput="setEndTime(this.value)" style="flex:1;padding:9px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;font-family:inherit">'
       +(endDraft.endTime?'<button onclick="endDraft.endTime=\'\';render()" style="padding:9px 12px;background:#ef4444;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">⟲ Сейчас</button>':'<span style="font-size:11px;color:var(--t3)">по умолчанию</span>')
     +'</div>'
+    +'<div id="cstEndDay" style="font-size:11px;color:var(--t2);font-weight:700;margin-top:5px"></div>'
   +'</div>';
   // Stakanlar (bardak sayımı → Продано = bonus + сменный отчёт)
   var zv=!!endDraft.showZavoz;
@@ -3339,12 +3340,20 @@ function rMShiftEnd(m,b){
   },1000);
 }
 
-// Manuel bitiş saati — input değiştiğinde
+// Manuel bitiş saati — input değiştiğinde.
+// GÜN SEÇİMİ: girilen saat, vardiya BAŞLANGICINDAN SONRAKİ İLK o saattir.
+// Dünden açık (unutulan) vardiyada "22:40" = DÜNÜN 22:40'ı (bugünün değil) →
+// 07:00→22:40 = 15ч40м doğru hesaplanır. Gelecek zaman girilirse şimdiye çekilir.
 function setEndTime(hhmm){
   if(!hhmm){endDraft.endTime='';render();return}
   const [hh,mm]=hhmm.split(':').map(function(x){return parseInt(x)||0});
+  const act=(SUMMARY||{}).active;
+  const base=(act&&act.start_time)?new Date(act.start_time):new Date();
+  let dt=new Date(base.getFullYear(),base.getMonth(),base.getDate(),hh,mm,0,0);
+  let guard=0;
+  while(dt<=base&&guard<5){dt=new Date(dt.getTime()+86400000);guard++;} // başlangıçtan sonraki ilk
   const now=new Date();
-  const dt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+  if(dt>now)dt=now; // фактическое время ухода geçmişte olmalı
   endDraft.endTime=dt.toISOString();
   recalcEnd();
 }
@@ -3414,6 +3423,14 @@ function recalcEnd(){
   const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(liveH);
   const sb=document.getElementById('seBreak');if(sb)sb.innerHTML=endBreakdownHTML(_ph);
   const en=document.getElementById('seNow');if(en)en.textContent=fmtTime(effEnd.toISOString());
+  // Elle girilen çıkışın HANGİ GÜNE düştüğünü göster (dünden açık vardiyada net olsun)
+  const cd=document.getElementById('cstEndDay');
+  if(cd){
+    if(endDraft.endTime){
+      var _td=new Date();var _sameDay=(effEnd.getFullYear()===_td.getFullYear()&&effEnd.getMonth()===_td.getMonth()&&effEnd.getDate()===_td.getDate());
+      cd.textContent='→ уход: '+fmtDay(effEnd.toISOString()).slice(0,5)+' в '+fmtTime(effEnd.toISOString())+(_sameDay?' (сегодня)':' (вчера/ранее)');
+    }else cd.textContent='';
+  }
 }
 
 async function endShiftSave(){
