@@ -792,7 +792,7 @@ body{letter-spacing:-.01em}
 .rt-next{background:linear-gradient(150deg,#f8d765,#e2ac16);color:#3d2c00}
 /* golden hero cards — warmer, less neon */
 .sal-card{background:linear-gradient(140deg,#fdf3cd,#f7e29b 55%,#efce6b);border:1px solid rgba(180,130,20,.35)}
-.sal-amount{font-family:'Unbounded','Golos Text',sans-serif;font-size:29px;font-weight:700;letter-spacing:-.5px}
+.sal-amount{font-family:'Golos Text',sans-serif;font-size:34px;font-weight:800;letter-spacing:-1px}
 .rt-card,.rt-hero,.rt-ready,.no-owner-card,.loan-card{background:linear-gradient(140deg,#fbeec3,#f3d878);border-color:rgba(180,130,20,.35)}
 .split-toggle{background:#f8ecc4}
 .split-toggle.on{background:linear-gradient(150deg,#f8d765,#e2ac16)}
@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070150;
+var APP_BUILD=2026070151;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
