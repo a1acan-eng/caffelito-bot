@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070146;
+var APP_BUILD=2026070147;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2792,8 +2792,7 @@ function paidHours(startIso, endIso){
         day=new Date(day.getTime()+86400000); guard++;
       }
     }
-    var paid=Math.max(0,raw-unpaid);
-    var mx=parseInt(w.max); if(!isNaN(mx)&&mx>0&&paid>mx)paid=mx;
+    var paid=Math.max(0,raw-unpaid);  // max cap KALDIRILDI (kullanıcı istedi) → к оплате = çalışılan − kapalı
     return {raw:raw, unpaid:unpaid, paid:paid};  // yuvarlama YOK → akıcı canlı
   }catch(_e){return {raw:0,unpaid:0,paid:0};}
 }
@@ -2807,16 +2806,14 @@ function liveOvertime(liveH){
   var perH=(o.type==='percent')?Math.round(HOURLY_RATE*(parseInt(o.value)||0)/100):(parseInt(o.value)||0);
   return {h:oth, amount:Math.round(oth*perH), perH:perH};
 }
-// Vardiya-kapatma kırılım satırı — Отработано / kapalı düşüm / max limit → к оплате.
-// paid==raw ise (düşüm yok) boş döner (temiz). Canlı güncellenir.
+// Vardiya-kapatma kırılım satırı — Отработано / kapalı düşüm → к оплате.
+// paid==raw ise (düşüm yok) boş döner (temiz). Canlı güncellenir. (Max cap KALDIRILDI.)
 function endBreakdownHTML(ph){
   if(!ph||(ph.raw-ph.paid)<=0.01)return '';
   var w=PAY_WIN||{};
   var cl=String(parseInt(w.close)||0).padStart(2,'0'),op=String(parseInt(w.open)||7).padStart(2,'0');
   var s='🕐 Отработано <b>'+fmtH(ph.raw)+'</b>';
   if(ph.unpaid>0.01)s+=' · закрытые часы (<b>'+cl+':00–'+op+':00</b>) не оплачиваются <b style="color:var(--red)">−'+fmtH(ph.unpaid)+'</b>';
-  var mx=parseInt(w.max)||0;
-  if(mx&&(ph.raw-ph.unpaid)>mx+0.01)s+=' · <b style="color:#d97706">макс. '+mx+'ч</b>';
   s+=' → к оплате <b style="color:#059669">'+fmtH(ph.paid)+'</b>';
   return '<div class="refresh-hint" style="margin:8px 0 0;color:var(--t2);line-height:1.5">'+s+'</div>';
 }
@@ -3267,10 +3264,12 @@ function rMShiftEnd(m,b){
   h+='<div id="seBreak">'+endBreakdownHTML(_ph)+'</div>';
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
   const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
+  const curDate=effEnd.getFullYear()+'-'+String(effEnd.getMonth()+1).padStart(2,'0')+'-'+String(effEnd.getDate()).padStart(2,'0');
   h+='<div style="margin:8px 0 4px;padding:10px 12px;border:1px dashed #cbd5e1;border-radius:12px;background:#fefce8">'
     +'<div style="font-size:11px;color:var(--t2);margin-bottom:6px">⏰ Если забыли закрыть смену вовремя — укажите фактическое время ухода:</div>'
-    +'<div style="display:flex;gap:8px;align-items:center">'
-      +'<input type="time" id="cstEnd" value="'+curHHMM+'" oninput="setEndTime(this.value)" style="flex:1;padding:9px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;font-family:inherit">'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +'<input type="date" id="cstEndDate" value="'+curDate+'" onchange="applyEndDT()" style="flex:1;min-width:130px;padding:9px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;font-family:inherit">'
+      +'<input type="time" id="cstEnd" value="'+curHHMM+'" oninput="applyEndDT()" style="flex:1;min-width:110px;padding:9px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;font-family:inherit">'
       +(endDraft.endTime?'<button onclick="endDraft.endTime=\'\';render()" style="padding:9px 12px;background:#ef4444;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">⟲ Сейчас</button>':'<span style="font-size:11px;color:var(--t3)">по умолчанию</span>')
     +'</div>'
     +'<div id="cstEndDay" style="font-size:11px;color:var(--t2);font-weight:700;margin-top:5px"></div>'
@@ -3341,18 +3340,24 @@ function rMShiftEnd(m,b){
 }
 
 // Manuel bitiş saati — input değiştiğinde.
-// GÜN SEÇİMİ: girilen saat, vardiya BAŞLANGICINDAN SONRAKİ İLK o saattir.
-// Dünden açık (unutulan) vardiyada "22:40" = DÜNÜN 22:40'ı (bugünün değil) →
-// 07:00→22:40 = 15ч40м doğru hesaplanır. Gelecek zaman girilirse şimdiye çekilir.
-function setEndTime(hhmm){
-  if(!hhmm){endDraft.endTime='';render();return}
-  const [hh,mm]=hhmm.split(':').map(function(x){return parseInt(x)||0});
-  const act=(SUMMARY||{}).active;
-  const base=(act&&act.start_time)?new Date(act.start_time):new Date();
-  let dt=new Date(base.getFullYear(),base.getMonth(),base.getDate(),hh,mm,0,0);
-  let guard=0;
-  while(dt<=base&&guard<5){dt=new Date(dt.getTime()+86400000);guard++;} // başlangıçtan sonraki ilk
+// Elle çıkış = TARİH + SAAT. Tarih girildiyse birebir o gün+saat; tarih boşsa
+// saat, vardiya başlangıcından SONRAKİ İLK o saat (gece vardiyası). Gelecek → şimdi.
+function applyEndDT(){
+  const t=(document.getElementById('cstEnd')||{}).value;
+  const d=(document.getElementById('cstEndDate')||{}).value;
+  if(!t){endDraft.endTime='';render();return}
+  const [hh,mm]=t.split(':').map(function(x){return parseInt(x)||0});
   const now=new Date();
+  let dt;
+  if(d){
+    const p=d.split('-');
+    dt=new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2]),hh,mm,0,0);
+  }else{
+    const act=(SUMMARY||{}).active;
+    const base=(act&&act.start_time)?new Date(act.start_time):now;
+    dt=new Date(base.getFullYear(),base.getMonth(),base.getDate(),hh,mm,0,0);
+    let g=0;while(dt<=base&&g<7){dt=new Date(dt.getTime()+86400000);g++;}
+  }
   if(dt>now)dt=now; // фактическое время ухода geçmişte olmalı
   endDraft.endTime=dt.toISOString();
   recalcEnd();

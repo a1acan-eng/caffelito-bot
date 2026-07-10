@@ -550,14 +550,13 @@ def barista_pay_info(db, user_id):
 
 
 def paid_hours(start_dt, end_dt, cfg):
-    """Ödenecek saat: ham süreden KAPALI pencereye (kapanış→açılış, ör. 03:00–07:00)
-    denk gelen kısım düşülür; sonuç max vardiya saatiyle sınırlanır (unutulan vardiya
-    koruması). start_dt/end_dt naive datetime."""
+    """Ödenecek saat: ham süreden KAPALI pencereye (kapanış→açılış, ör. 01:00–07:00)
+    denk gelen kısım düşülür. MAX CAP YOK (kullanıcı isteğiyle kaldırıldı) → к оплате =
+    çalışılan − kapalı saatler. start_dt/end_dt naive datetime."""
     if not end_dt or not start_dt or end_dt <= start_dt:
         return 0.0
     raw = (end_dt - start_dt).total_seconds() / 3600.0
-    # "Не оплачивать закрытые часы" KAPALI → tüm süre ödenir (kapalı-pencere düşümü
-    # YOK, max cap YOK). Owner bilinçli kapattı → ham saat.
+    # "Не оплачивать закрытые часы" KAPALI → tüm süre ödenir (düşüm yok).
     if not cfg.get("unpaid", 1):
         return round(raw, 2)
     unpaid = 0.0
@@ -572,10 +571,7 @@ def paid_hours(start_dt, end_dt, cfg):
             if ov > 0:
                 unpaid += ov / 3600.0
             day = day + timedelta(days=1); guard += 1
-    paid = max(0.0, raw - unpaid)
-    mx = int(cfg.get("max", 20) or 0)
-    if mx and paid > mx:
-        paid = float(mx)
+    paid = max(0.0, raw - unpaid)  # max cap KALDIRILDI
     return round(paid, 2)
 
 
