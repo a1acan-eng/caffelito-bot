@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070144;
+var APP_BUILD=2026070145;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2797,14 +2797,13 @@ function paidHours(startIso, endIso){
     return {raw:raw, unpaid:unpaid, paid:paid};  // yuvarlama YOK → akıcı canlı
   }catch(_e){return {raw:0,unpaid:0,paid:0};}
 }
-// Bu vardiyanın CANLI fazla mesaisi — aylık norm üstü ARTIMLI kısım (backend end_shift ile aynı).
-// prev = bu ayın kapanmış vardiyaları (SUMMARY.hours). {h: saat, amount: сум, perH: saatlik}.
+// Bu vardiyanın CANLI fazla mesaisi — norm VARDİYA BAŞINA (backend end_shift ile aynı):
+// liveH = ödenecek saat (kapalı pencere ZATEN düşülmüş) normu aşarsa fark fazla mesai.
+// {h: saat, amount: сум, perH: saatlik}. HOURLY_RATE/OT_CFG her çağrıda canlı okunur.
 function liveOvertime(liveH){
-  var o=OT_CFG||{};var thr=parseInt(o.hours)||0;
-  if(thr<=0||!(liveH>0))return {h:0,amount:0,perH:0};
-  var prev=(SUMMARY&&SUMMARY.hours)||0;
-  var before=Math.max(0,prev-thr),after=Math.max(0,(prev+liveH)-thr);
-  var oth=Math.max(0,after-before);
+  var o=OT_CFG||{};var thr=parseFloat(o.hours)||0;
+  if(thr<=0||!(liveH>thr))return {h:0,amount:0,perH:0};
+  var oth=liveH-thr;
   var perH=(o.type==='percent')?Math.round(HOURLY_RATE*(parseInt(o.value)||0)/100):(parseInt(o.value)||0);
   return {h:oth, amount:Math.round(oth*perH), perH:perH};
 }
@@ -3037,7 +3036,12 @@ function cfSalaryFx(){
     setTimeout(function(){bars.forEach(function(el){el.style.width=el.getAttribute('data-w')+'%';});},60);
   }catch(_e){}
 }
-function openShiftEnd(){mView='shiftEnd';endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+function openShiftEnd(){
+  // AYNI açık vardiyanın taslağı varsa KORU (ayarlara gidip dönünce girilenler
+  // kaybolmasın; yeni rate/norm zaten canlı timer+render ile yansır).
+  var _act=(SUMMARY||{}).active;var _key=_act?String(_act.start_time||''):'';
+  if(endDraft&&endDraft._key===_key&&_key){mView='shiftEnd';render();return}
+  mView='shiftEnd';endDraft={_key:_key,drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   // Было'yu önceki vardiyanın Осталось'undan ön-doldur. Осталось BOŞ başlar (barista sonunda sayar;
   // boşken Продано=0 → ön-dolu sayı yüzünden Прод kendiliğinden dolmasın). Завоз/передача = 0 (gerekince açılır).
   DRINK_LIST.forEach(function(d){var b=parseInt(KASA_LAST[SIZE_MAP[d.id]])||0;endDraft.bylo[d.id]=b;endDraft.ostalos[d.id]='';endDraft.zavoz[d.id]=0;});
@@ -3325,15 +3329,14 @@ function rMShiftEnd(m,b){
   b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену</button>';
   endExpRender();
   recalcEnd();
-  // Saniyelik canlı güncelleme — sadece manuel saat YOKSA çalışsın
+  // Saniyelik canlı güncelleme — HER KOŞULDA çalışır (manuel saatte de):
+  // rate/OT_CFG/PAY_WIN ayarları değişince (refreshState globalleri yazar)
+  // ≤1sn içinde ekrandaki hesap kendini düzeltir. recalcEnd ucuz, güvenli.
   if(window._endTimer)clearInterval(window._endTimer);
-  if(!endDraft.endTime){
-    window._endTimer=setInterval(function(){
-      if(!document.getElementById('seNow')){clearInterval(window._endTimer);return}
-      if(endDraft.endTime){clearInterval(window._endTimer);return}
-      recalcEnd();  // seNow(şu an)+seDur(ödenecek)+seBreak(kırılım)+ИТОГО canlı
-    },1000);
-  }
+  window._endTimer=setInterval(function(){
+    if(!document.getElementById('seNow')){clearInterval(window._endTimer);window._endTimer=null;return}
+    recalcEnd();  // seNow+seDur(ödenecek)+seBreak(kırılım)+Переработка+ИТОГО canlı
+  },1000);
 }
 
 // Manuel bitiş saati — input değiştiğinde
@@ -4462,8 +4465,8 @@ function rMSettings(m,b){
     OT_CFG=OT_CFG||{};var _ot=OT_CFG;var _oth=(_ot.hours!=null?_ot.hours:0);var _otp=(_ot.type==='percent');var _otv=(_ot.value!=null?_ot.value:0);
     h+='<div class="sec" style="margin-top:4px">⏱ Переработка (сверхурочные)</div>';
     h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:16px">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Норма часов в месяц</label>'
-        +'<input class="set-input" type="number" inputmode="numeric" min="0" step="10" id="otHours" value="'+_oth+'" style="width:110px;text-align:center;font-weight:800" placeholder="0"></div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Норма часов в смену</label>'
+        +'<input class="set-input" type="number" inputmode="numeric" min="0" step="1" id="otHours" value="'+_oth+'" style="width:110px;text-align:center;font-weight:800" placeholder="0"></div>'
       +'<div style="display:flex;gap:6px;margin-bottom:10px">'
         +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'fixed\';render()" class="opt '+(!_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ сум/час</div></div></button>'
         +'<button onclick="OT_CFG.hours=(parseInt((document.getElementById(\'otHours\')||{}).value)||0);OT_CFG.value=(parseInt((document.getElementById(\'otValue\')||{}).value)||0);OT_CFG.type=\'percent\';render()" class="opt '+(_otp?'on':'')+'" style="flex:1;margin:0;padding:8px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">+ %</div></div></button>'
@@ -4471,10 +4474,10 @@ function rMSettings(m,b){
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Доплата за сверхурочный час '+(_otp?'(%)':'(сум)')+'</label>'
         +'<input class="set-input" type="number" inputmode="numeric" min="0" id="otValue" value="'+_otv+'" style="width:110px;text-align:center;font-weight:800"></div>'
       +'<button class="mbtn" onclick="saveOvertime()">💾 Сохранить</button>'
-      +'<div class="refresh-hint" style="margin-top:10px">'+(_otp
+      +'<div class="refresh-hint" style="margin-top:10px">Часы <b>сверх нормы за смену</b> (закрытые часы уже вычтены) оплачиваются дополнительно. '+(_otp
         ?('<b>%</b> считается от <b>ставки за час</b> категории бариста. Пример: ставка 26.000 + '+(_otv||0)+'% → доплата <b>'+fmt(Math.round(26000*(_otv||0)/100))+' сум</b> за каждый сверхурочный час.')
         :('Фиксированная доплата <b>'+fmt(_otv||0)+' сум</b> за каждый час сверх нормы.'))
-        +' Норма = 0 → переработка выключена.</div>'
+        +' Норма = 0 → переработка выключена. Изменение действует сразу, в т.ч. на открытые смены.</div>'
     +'</div>';
     // ── Зарплатные категории (dinamik saatlik ücret grupları) ──
     h+='<div class="sec" style="margin-top:4px">🏷️ Категории зарплат</div>';

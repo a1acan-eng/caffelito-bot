@@ -1054,26 +1054,20 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     hourly_pay = int(hours * int(_pi["rate"]))
     total = hourly_pay + bonus
     # ── Fazla mesai (сверхурочные): KAPANIŞ ANINDA dondurulur (geriye dönük DEĞİL) ──
-    # O anki config + bu vardiyanın aylık norm-üstü ARTIMLI kısmı. Kapalıysa (thr=0) → 0.
+    # Norm VARDİYA BAŞINA (ör. 8ч/смена): bu vardiyanın ödenecek saati (kapalı
+    # pencere zaten düşülmüş `hours`) normu aşarsa fark fazla mesai. thr=0 → kapalı.
     # Ayar sonradan değişse/kapansa bu vardiyanın saklanan değeri korunur.
     ot_shift, ot_h = 0, 0.0
     try:
         _otc = get_overtime_cfg(db)
-        _thr = int(_otc.get("hours") or 0)
-        if _thr > 0 and hours > 0:
-            _prev = db.execute(
-                "SELECT COALESCE(SUM(hours),0) AS h FROM shifts WHERE user_id=? AND period=? "
-                "AND id!=? AND (end_time IS NOT NULL OR start_time IS NULL)",
-                (user_id, active["period"], active["id"])).fetchone()["h"] or 0
-            _before = max(0.0, _prev - _thr)
-            _after = max(0.0, (_prev + hours) - _thr)
-            ot_h = round(_after - _before, 2)  # bu vardiyanın norm-üstü saati
-            if ot_h > 0:
-                _val = int(_otc.get("value") or 0)
-                if _otc.get("type") == "percent":
-                    ot_shift = int(ot_h * int(_pi["rate"]) * (_val / 100.0))
-                else:
-                    ot_shift = int(ot_h * _val)
+        _thr = float(_otc.get("hours") or 0)
+        if _thr > 0 and hours > _thr:
+            ot_h = round(hours - _thr, 2)  # bu vardiyanın norm-üstü saati
+            _val = int(_otc.get("value") or 0)
+            if _otc.get("type") == "percent":
+                ot_shift = int(ot_h * int(_pi["rate"]) * (_val / 100.0))
+            else:
+                ot_shift = int(ot_h * _val)
     except Exception:
         ot_shift, ot_h = 0, 0.0
     db.execute(
@@ -3483,7 +3477,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             if oh > 0:
                 _d = f"+{fmt_sum(ov)}%/ч" if ot == "percent" else f"+{fmt_sum(ov)} сум/ч"
-                await update.message.reply_text(f"✅ Переработка: после {oh} ч/мес → {_d}")
+                await update.message.reply_text(f"✅ Переработка: свыше {oh} ч за смену → {_d}")
             else:
                 await update.message.reply_text("✅ Переработка отключена.")
 
