@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070149;
+var APP_BUILD=2026070150;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2475,12 +2475,15 @@ function rReportRoom(m,b){
             +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
           if(_sOpen){
-            var _stot=(s.total||0),_sot=(s.overtime||0);
-            h+='<div style="margin:0 0 6px;padding:8px 10px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
-              +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+'</span><span style="font-weight:700">'+fmtH(s.hours||0)+'</span></div>'
-              +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">Часы + бонус</span><span style="font-weight:700">'+fmt(_stot)+'</span></div>'
-              +(_sot>0?'<div style="display:flex;justify-content:space-between;padding:2px 0;color:#7c3aed"><span>⏱ Переработка</span><span style="font-weight:700">+'+fmt(_sot)+'</span></div>':'')
-              +'<div style="display:flex;justify-content:space-between;padding:4px 0 0;border-top:1px dashed var(--border2);margin-top:3px;font-weight:800"><span>За смену</span><span style="color:var(--gold)">'+fmt(_stot+_sot)+'</span></div>'
+            var _shp=(s.hourly_pay!=null?s.hourly_pay:(s.total||0)),_sbn=(s.bonus||0),_sot=(s.overtime||0);
+            var _srate=((s.hours||0)>0)?Math.round(_shp/s.hours):0;
+            var _sfull=_shp+_sbn+_sot;
+            h+='<div style="margin:0 0 6px;padding:9px 11px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
+              +'<div style="display:flex;justify-content:space-between;padding:1px 0 4px;color:var(--t3);font-size:11px"><span>⏰ '+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+'</span><span>'+fmtH(s.hours||0)+'</span></div>'
+              +'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;opacity:.72"><span>💵 Часы'+(_srate?' × '+fmt(_srate):'')+' <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">'+fmt(_shp)+'</span></div>'
+              +'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0"><span>🥤 Бонус <span style="font-size:9px;color:var(--t3)">из кассы, за день</span></span><span style="font-weight:700;color:#059669">+'+fmt(_sbn)+'</span></div>'
+              +(_sot>0?'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;color:#7c3aed"><span>⏱ Переработка <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">+'+fmt(_sot)+'</span></div>':'')
+              +'<div style="display:flex;justify-content:space-between;padding:5px 0 0;border-top:1px dashed var(--border2);margin-top:4px;font-weight:800"><span>Итого за смену</span><span style="color:var(--gold)">'+fmt(_sfull)+'</span></div>'
             +'</div>';
           }
         });
@@ -2527,22 +2530,32 @@ function payCoverageShifts(p){
 }
 function payDetailHTML(p){
   var shs=payCoverageShifts(p);
-  var sum=0;
+  var sHp=0,sBn=0,sOt=0;
   var rows='';
   shs.forEach(function(s){
-    var pay=(s.total||0)+(s.overtime||0);sum+=pay;
+    var hp=(s.hourly_pay!=null?s.hourly_pay:(s.total||0)),bn=(s.bonus||0),ot=(s.overtime||0);
+    sHp+=hp;sBn+=bn;sOt+=ot;
     var day=repDay(s.start_time).split(' ')[0];
     var hrs=(s.hours||0);hrs=(hrs%1===0)?hrs:Number(hrs).toFixed(1);
-    rows+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border2)">'
-      +'<span style="color:var(--t2)">📅 '+day+' · '+hrs+'ч'+((s.overtime||0)>0?' <span style="color:#7c3aed">+пере</span>':'')+'</span>'
-      +'<span style="font-weight:700">'+fmt(pay)+'</span></div>';
+    rows+='<div style="padding:5px 0;border-bottom:1px dashed var(--border2)">'
+      +'<div style="font-size:11px;color:var(--t2);font-weight:700;margin-bottom:2px">📅 '+day+' · '+hrs+'ч</div>'
+      +'<div style="display:flex;justify-content:space-between;font-size:11.5px;opacity:.72"><span>💵 Часы <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">'+fmt(hp)+'</span></div>'
+      +'<div style="display:flex;justify-content:space-between;font-size:11.5px"><span>🥤 Бонус <span style="font-size:9px;color:var(--t3)">за день</span></span><span style="font-weight:700;color:#059669">+'+fmt(bn)+'</span></div>'
+      +(ot>0?'<div style="display:flex;justify-content:space-between;font-size:11.5px;color:#7c3aed"><span>⏱ Переработка</span><span style="font-weight:700">+'+fmt(ot)+'</span></div>':'')
+    +'</div>';
   });
   if(!shs.length)rows='<div style="font-size:12px;color:var(--t3);padding:4px 0">Смен в этом периоде не найдено.</div>';
+  var grand=sHp+sBn+sOt;
   return '<div style="margin:-2px 0 10px;padding:10px 12px;background:var(--card2);border:1px solid var(--border2);border-radius:0 0 12px 12px">'
     +'<div style="font-size:11px;color:var(--t3);font-weight:700;margin-bottom:6px">СМЕНЫ ЗА ПЕРИОД ('+shs.length+')</div>'
     +rows
-    +'<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:800;margin-top:7px"><span>Итого за смены</span><span>'+fmt(sum)+'</span></div>'
-    +(sum!==(p.amount||0)?'<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t3);margin-top:3px"><span>Выплачено</span><span>'+fmt(p.amount||0)+'</span></div>':'')
+    +(shs.length?('<div style="margin-top:8px;font-size:12px">'
+      +'<div style="display:flex;justify-content:space-between;padding:2px 0;opacity:.75"><span>💵 Часы <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">'+fmt(sHp)+'</span></div>'
+      +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span>🥤 Бонусы <span style="font-size:9px;color:var(--t3)">за дни</span></span><span style="font-weight:700;color:#059669">+'+fmt(sBn)+'</span></div>'
+      +(sOt>0?'<div style="display:flex;justify-content:space-between;padding:2px 0;color:#7c3aed"><span>⏱ Переработка</span><span style="font-weight:700">+'+fmt(sOt)+'</span></div>':'')
+      +'<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:800;margin-top:4px;padding-top:4px;border-top:1px solid var(--border2)"><span>Итого за смены</span><span>'+fmt(grand)+'</span></div>'
+      +'</div>'):'')
+    +(grand!==(p.amount||0)?'<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t3);margin-top:3px"><span>Выплачено</span><span>'+fmt(p.amount||0)+'</span></div>':'')
     +'</div>';
 }
 function esc(s){return String(s||'').replace(/'/g,"\\'")}

@@ -1282,6 +1282,7 @@ def build_hash_payload(db, user_id, name):
             return []
     if role == "owner":
         _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, "
+                    "COALESCE(s.hourly_pay,0) AS hourly_pay, COALESCE(s.bonus,0) AS bonus, "
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, COALESCE(u.display_name,u.name) AS nm "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
@@ -1297,6 +1298,7 @@ def build_hash_payload(db, user_id, name):
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
     else:
         _sh = _repq("SELECT s.id AS sid, s.start_time, s.end_time, s.hours, s.total, "
+                    "COALESCE(s.hourly_pay,0) AS hourly_pay, COALESCE(s.bonus,0) AS bonus, "
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, ? AS nm FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
@@ -1304,7 +1306,7 @@ def build_hash_payload(db, user_id, name):
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
