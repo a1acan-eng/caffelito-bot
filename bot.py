@@ -1281,7 +1281,7 @@ def build_hash_payload(db, user_id, name):
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
-        f"ot_cfg={quote(json.dumps(get_overtime_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
+        f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -2968,13 +2968,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
             if sweets:
                 text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
-            text += (f"💵 Часы ({fmt_sum(_rate)}/ч): {fmt_sum(hourly_pay)} _(в конце месяца)_\n"
-                     f"💎 За смену: *{fmt_sum(total)}* сум\n"
+            text += (f"💵 Часы ({fmt_sum(_rate)}/ч): {fmt_sum(hourly_pay)} _(в конце месяца)_\n")
+            # Fazla mesai — saatlik ücret (fixed=сум, percent=ставка'nın %'i)
+            _otc = get_overtime_cfg(db)
+            _ot_perh = int(_rate * (_otc.get("value") or 0) / 100.0) if _otc.get("type") == "percent" else int(_otc.get("value") or 0)
+            if (sh["overtime"] or 0) > 0:
+                text += (f"⏱ Переработка (эта смена): {fmt_hm(sh['overtime_h'])} × "
+                         f"{fmt_sum(_ot_perh)}/ч = *+{fmt_sum(sh['overtime'])}* сум\n")
+            text += (f"💎 За смену: *{fmt_sum(total + (sh['overtime'] or 0))}* сум\n"
                      f"━━━━━━━━━━━━━━━━━━\n"
                      f"📊 *Месяц {period}:*\n"
                      f"Часы: {fmt_hm(s['hours'])} | Смен: {s['shifts_count']}\n")
             if (s.get('overtime') or 0) > 0:
-                text += f"⏱ Переработка ({fmt_hm(s['overtime_hours'])}): +{fmt_sum(s['overtime'])} сум\n"
+                text += (f"⏱ Переработка за месяц ({fmt_hm(s['overtime_hours'])} × "
+                         f"{fmt_sum(_ot_perh)}/ч): +{fmt_sum(s['overtime'])} сум\n")
             text += f"💎 *НЕТТО: {fmt_sum(s['net'])} сум*"
             if note:
                 text += f"\n📝 {note}"

@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070143;
+var APP_BUILD=2026070144;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2797,6 +2797,17 @@ function paidHours(startIso, endIso){
     return {raw:raw, unpaid:unpaid, paid:paid};  // yuvarlama YOK → akıcı canlı
   }catch(_e){return {raw:0,unpaid:0,paid:0};}
 }
+// Bu vardiyanın CANLI fazla mesaisi — aylık norm üstü ARTIMLI kısım (backend end_shift ile aynı).
+// prev = bu ayın kapanmış vardiyaları (SUMMARY.hours). {h: saat, amount: сум, perH: saatlik}.
+function liveOvertime(liveH){
+  var o=OT_CFG||{};var thr=parseInt(o.hours)||0;
+  if(thr<=0||!(liveH>0))return {h:0,amount:0,perH:0};
+  var prev=(SUMMARY&&SUMMARY.hours)||0;
+  var before=Math.max(0,prev-thr),after=Math.max(0,(prev+liveH)-thr);
+  var oth=Math.max(0,after-before);
+  var perH=(o.type==='percent')?Math.round(HOURLY_RATE*(parseInt(o.value)||0)/100):(parseInt(o.value)||0);
+  return {h:oth, amount:Math.round(oth*perH), perH:perH};
+}
 // Vardiya-kapatma kırılım satırı — Отработано / kapalı düşüm / max limit → к оплате.
 // paid==raw ise (düşüm yok) boş döner (temiz). Canlı güncellenir.
 function endBreakdownHTML(ph){
@@ -2911,7 +2922,7 @@ function rMMain(m,b){
         +'<div class="sal-comp-lg"><span><i class="gold"></i>Ставка '+fmt(hourly)+'</span><span><i class="grn"></i>Бонус +'+fmt(bonus)+'</span></div>'
       +'</div>'
     ):'')
-    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка ('+fmt(s.overtime_hours||0)+'ч)</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
+    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка ('+fmt(s.overtime_hours||0)+'ч × '+fmt((OT_CFG&&OT_CFG.type==='percent')?Math.round(HOURLY_RATE*(parseInt(OT_CFG.value)||0)/100):((OT_CFG&&parseInt(OT_CFG.value))||0))+'/ч)</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
   +'</div>';
 
   // Чаевые + Аванс kartları aşağıya (istatistiklerin altına) kompakt yan yana taşındı.
@@ -3303,6 +3314,7 @@ function rMShiftEnd(m,b){
     +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+' <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
     +'<div class="sf-tot-row"><span>Бонус — напитки</span><span id="seBonus">0</span></div>'
     +'<div class="sf-tot-row"><span>Бонус — десерты</span><span id="seDesBonus">0</span></div>'
+    +'<div id="seOtRow"></div>'
     +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span id="seTotal">'+fmt(Math.round(liveH*HOURLY_RATE))+' сум</span></div>'
   +'</div>';
   // Günlük bonus — kasadan alınır (tek pratik para göstergesi)
@@ -3383,13 +3395,17 @@ function recalcEnd(){
   const desN=parseInt(endDraft.dessertsTotal)||0;
   let desBonus=desN*DESSERT_RATE;
   const hourly=Math.round(liveH*HOURLY_RATE);
-  const total=hourly+drinkBonus+desBonus;
+  // Canlı fazla mesai (bu vardiya) — norm üstü saat × saatlik fazla mesai ücreti
+  const ot=liveOvertime(liveH);
+  const total=hourly+drinkBonus+desBonus+ot.amount;
   // Günlük bonus (kasadan alınır) — POS para mutabakatı kaldırıldı
   var _daily=drinkBonus+desBonus;
   var _edb=document.getElementById('eDailyBonus');if(_edb)_edb.textContent=fmt(_daily);
   const eHr=document.getElementById('seHourly');if(eHr)eHr.textContent=fmt(hourly);
   const eBn=document.getElementById('seBonus');if(eBn)eBn.textContent=fmt(drinkBonus);
   const eDb=document.getElementById('seDesBonus');if(eDb)eDb.textContent=fmt(desBonus);
+  const eOt=document.getElementById('seOtRow');
+  if(eOt)eOt.innerHTML=(ot.amount>0)?('<div class="sf-tot-row" style="color:#7c3aed"><span>⏱ Переработка ('+fmtH(ot.h)+' × '+fmt(ot.perH)+'/ч)</span><span>+'+fmt(ot.amount)+'</span></div>'):'';
   const eTt=document.getElementById('seTotal');if(eTt)eTt.textContent=fmt(total)+' сум';
   // Saatleri + kırılımı yenile (manuel saat değişince VEYA canlı tik)
   const ed=document.getElementById('seDur');if(ed)ed.textContent=fmtH(liveH);
