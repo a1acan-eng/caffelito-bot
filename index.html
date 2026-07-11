@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070153;
+var APP_BUILD=2026070154;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1679,6 +1679,7 @@ let endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},ostalos:{},kasa:{
 const SIZE_MAP={ml100:'Стакан 100',ml200:'Стакан 200',ml300:'Стакан 300',ml400:'Стакан 400',ml500:'Стакан 500',dome300:'Купол 300',dome400:'Купол 400'};
 let fineDraft={targets:[],type:'clean',amount:30000,reason:'',custom:'',split:false,chefShare:false};
 let payTarget=0;
+let payProducts={}; // Выплатить: ödeme anında girilen ürün satışları {pid: qty}
 let detailShift=null;                      // Tıklanan vardiya kaydı
 let tipDraft={total:'',distributions:{},note:'',mode:'equal'}; // equal|custom
 let settingsTab='prices'; // prices|desserts|names|passwords|logs
@@ -1876,6 +1877,25 @@ function drinkRate(d){
 function baristaRate(b){
   if(b&&b.cat){var c=(SAL_CATS||[]).find(function(x){return x.id===b.cat});if(c)return parseInt(c.hourly_rate)||0;}
   return (PAY_CFG&&PAY_CFG.rate!=null)?PAY_CFG.rate:HOURLY_RATE;
+}
+// Ürün bonusu: baristanın kategorisi uygun mu? (SAL_CATS.product_bonus)
+function productEligibleFor(b){
+  if(!b||!b.cat)return false;var c=(SAL_CATS||[]).find(function(x){return x.id===b.cat});return !!(c&&c.product_bonus);
+}
+// Bir ürünün birim bonusu (backend product_bonus_per_unit ile aynı)
+function productUnit(p){
+  if(!p)return 0;
+  if((p.bonus_type||'percent')==='fixed')return parseInt(p.bonus_value)||0;
+  return Math.round((parseInt(p.price)||0)*(parseInt(p.bonus_value)||0)/100);
+}
+// payProducts {pid:qty} → {revenue, bonus} (aktif katalog + eligible ise)
+function payProductCalc(){
+  var out={revenue:0,bonus:0};var byId={};(PRODUCTS||[]).forEach(function(p){byId[p.id]=p;});
+  Object.keys(payProducts||{}).forEach(function(pid){
+    var p=byId[pid]||byId[parseInt(pid)];var q=parseInt(payProducts[pid])||0;if(!p||q<=0)return;
+    out.revenue+=(parseInt(p.price)||0)*q;out.bonus+=productUnit(p)*q;
+  });
+  return out;
 }
 function buildPreview(){
   const all=allItems();
@@ -4215,7 +4235,7 @@ function rMPay(m,b){
   BARISTAS.filter(function(x){return !x.arch}).forEach(function(brs){
     const sel=payTarget===brs.id;
     const able=brs.net>0;
-    h+='<div class="opt '+(sel?'on':'')+'" '+(able?'onclick="payTarget='+brs.id+';render()"':'style="opacity:.4;cursor:not-allowed"')+'>'
+    h+='<div class="opt '+(sel?'on':'')+'" '+(able?'onclick="payTarget='+brs.id+';payProducts={};render()"':'style="opacity:.4;cursor:not-allowed"')+'>'
       +'<div class="opt-r"></div>'
       +'<div class="opt-l"><div class="opt-t">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div><div class="opt-s">'+(brs.u?'@'+escH(brs.u)+' · ':'')+(able?'к выплате: '+fmt(brs.net)+' сум':'нет средств')+'</div></div>'
       +(brs.net>0?'<div class="opt-amt">'+fmt(brs.net)+'</div>':'')
@@ -4226,33 +4246,76 @@ function rMPay(m,b){
   if(payTarget){
     const t=BARISTAS.find(function(x){return x.id===payTarget});
     if(t){
+      var elig=productEligibleFor(t);
+      var pcalc=elig?payProductCalc():{revenue:0,bonus:0};
+      // ── Ürün bonusu paneli (uygun kategoriyse) — satış adetleri gir ──
+      if(elig&&(PRODUCTS||[]).filter(function(p){return p.active!==0}).length){
+        h+='<div class="sec" style="margin-top:12px;font-size:13px">🛍 Продажи товаров (за период)</div>';
+        h+='<div class="refresh-hint" style="margin-top:0">Введите проданное количество — бонус посчитается и добавится к выплате.</div>';
+        var _pcatL2={food:'🥪 Еда',snack:'🍪 Снэки',coffee:'☕ Кофе',icecream:'🍦 Мороженое'};
+        var _pg={};(PRODUCTS||[]).forEach(function(p){if(p.active===0)return;(_pg[p.category||'food']=_pg[p.category||'food']||[]).push(p);});
+        ['food','snack','coffee','icecream'].concat(Object.keys(_pg).filter(function(g){return ['food','snack','coffee','icecream'].indexOf(g)<0})).forEach(function(g){
+          var items=_pg[g];if(!items||!items.length)return;
+          h+='<div style="font-size:11px;color:var(--t3);font-weight:700;margin:8px 0 4px">'+(_pcatL2[g]||g)+'</div>';
+          items.forEach(function(p){
+            var q=parseInt(payProducts[p.id])||0;var lb=(q>0)?(' · +'+fmt(productUnit(p)*q)):'';
+            h+='<div style="display:flex;align-items:center;gap:8px;padding:4px 0">'
+              +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600">'+escH(p.name)+'</div><div style="font-size:10px;color:var(--t3)">'+fmt(p.price||0)+' · '+(p.bonus_type==='fixed'?('+'+fmt(p.bonus_value)+' фикс'):('+'+(p.bonus_value||0)+'%'))+lb+'</div></div>'
+              +'<input class="set-input" type="number" inputmode="numeric" min="0" value="'+(q||'')+'" placeholder="0" oninput="payProducts[\''+p.id+'\']=parseInt(this.value)||0;payRecalc()" style="width:80px;text-align:center">'
+            +'</div>';
+          });
+        });
+        h+='<div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 0 0;margin-top:4px;border-top:1px dashed var(--border2)"><span style="color:var(--t2)">Оборот товаров</span><span id="payProdRev" style="font-weight:700">'+fmt(pcalc.revenue)+'</span></div>';
+        h+='<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:2px 0"><span style="color:var(--t2)">🛍 Бонус за товары</span><span id="payProdBon" style="font-weight:800;color:#059669">+'+fmt(pcalc.bonus)+'</span></div>';
+      }
       h+='<div class="sf-total">'
         +'<div class="sf-tot-row"><span>Часы '+(t.h||0)+'h × '+fmt(baristaRate(t))+'</span><span>+'+fmt(t.hp||0)+'</span></div>'
         +'<div class="sf-tot-row"><span>Бонус</span><span>+'+fmt(t.b||0)+'</span></div>'
+        +(elig?'<div class="sf-tot-row" style="color:#059669"><span>🛍 Бонус за товары</span><span id="payProdBon2">+'+fmt(pcalc.bonus)+'</span></div>':'')
         +'<div class="sf-tot-row"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(t.f||0)+'</span></div>'
         +(t.paid?'<div class="sf-tot-row"><span>Уже выплачено</span><span style="color:var(--t3)">-'+fmt(t.paid)+'</span></div>':'')
-        +'<div class="sf-tot-big"><span>К выплате</span><span>'+fmt(t.net||0)+' сум</span></div>'
+        +'<div class="sf-tot-big"><span>К выплате</span><span id="payGrand">'+fmt((t.net||0)+pcalc.bonus)+' сум</span></div>'
       +'</div>';
     }
   }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='block';
   const tg2=BARISTAS.find(function(x){return x.id===payTarget});
-  const ok=tg2&&tg2.net>0;
-  b.innerHTML='<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="savePay()">'+(ok?'✅ Выплатить '+fmt(tg2.net)+' сум':'Выберите бариста')+'</button>';
+  var _pb2=(tg2&&productEligibleFor(tg2))?payProductCalc().bonus:0;
+  var _grand=tg2?((tg2.net||0)+_pb2):0;
+  const ok=tg2&&_grand>0;
+  b.innerHTML='<button class="mbtn '+(ok?'grn':'')+'" '+(ok?'':'disabled')+' onclick="savePay()">'+(ok?'✅ Выплатить '+fmt(_grand)+' сум':'Выберите бариста')+'</button>';
+}
+// Ödeme ekranında ürün adedi değişince canlı güncelle (full render YOK)
+function payRecalc(){
+  var t=BARISTAS.find(function(x){return x.id===payTarget});if(!t)return;
+  var pc=productEligibleFor(t)?payProductCalc():{revenue:0,bonus:0};
+  var e;
+  e=document.getElementById('payProdRev');if(e)e.textContent=fmt(pc.revenue);
+  e=document.getElementById('payProdBon');if(e)e.textContent='+'+fmt(pc.bonus);
+  e=document.getElementById('payProdBon2');if(e)e.textContent='+'+fmt(pc.bonus);
+  var grand=(t.net||0)+pc.bonus;
+  e=document.getElementById('payGrand');if(e)e.textContent=fmt(grand)+' сум';
+  var btn=document.querySelector('#bot .mbtn');if(btn&&grand>0)btn.textContent='✅ Выплатить '+fmt(grand)+' сум';
 }
 
 function savePay(){
   const t=BARISTAS.find(function(x){return x.id===payTarget});
-  if(!t||t.net<=0)return;
+  if(!t)return;
+  var elig=productEligibleFor(t);
+  var pc=elig?payProductCalc():{revenue:0,bonus:0};
+  var grand=(t.net||0)+pc.bonus;
+  if(grand<=0)return;
   const payload={action:'pay',target:payTarget,period:curPeriod()};
-  // Lokal güncelleme
-  t.paid=(t.paid||0)+t.net;
-  t.net=0;
-  toast('💵 Зарплата выплачена!');
+  // Ödeme anında girilen ürün satışları (varsa) — backend product_sales'e kaydeder,
+  // net'e ekler, toplam öder.
+  if(elig){var _ps={};Object.keys(payProducts||{}).forEach(function(pid){var q=parseInt(payProducts[pid])||0;if(q>0)_ps[pid]=q;});if(Object.keys(_ps).length)payload.product_sales=_ps;}
+  // Lokal güncelleme (optimistik)
+  t.paid=(t.paid||0)+grand;t.net=0;
+  toast(pc.bonus>0?('💵 Выплачено · 🛍 +'+fmt(pc.bonus)):'💵 Зарплата выплачена!');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
-  payTarget=0;mView='main';render();
+  payTarget=0;payProducts={};mView='main';render();
 }
 
 // ── Owner: Yetki devri ──

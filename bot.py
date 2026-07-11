@@ -394,6 +394,16 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN product_bonus INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    # Ürün satış kayıtları (ödeme anında girilir): dönemin gross'una ürün bonusu ekler.
+    db.execute("""CREATE TABLE IF NOT EXISTS product_sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        period TEXT,
+        sales TEXT,
+        revenue INTEGER DEFAULT 0,
+        bonus INTEGER DEFAULT 0,
+        created_at TEXT,
+        paid_by INTEGER)""")
     # İlk kurulum: katalog boşsa kullanıcının örnek ürünleriyle tohumla (hepsi düzenlenebilir).
     try:
         _pcc = db.execute("SELECT COUNT(*) AS c FROM product_catalog").fetchone()
@@ -1017,7 +1027,16 @@ def calc_summary(db, user_id, period=None):
     # (geriye dönük DEĞİL — ayar sonradan değişse eski vardiyalar korunur).
     ot_bonus = sum((s["overtime"] if "overtime" in s.keys() else 0) or 0 for s in shifts)
     ot_hours = round(sum((s["overtime_h"] if "overtime_h" in s.keys() else 0) or 0 for s in shifts), 2)
-    gross = hourly + bonus + tips_total + ot_bonus
+    # Ürün bonusu (ödeme anında girilen satışlardan; product_sales tablosu) — gross'a eklenir.
+    try:
+        _pbrow = db.execute(
+            "SELECT COALESCE(SUM(bonus),0) AS b, COALESCE(SUM(revenue),0) AS r "
+            "FROM product_sales WHERE user_id=? AND period=?", (user_id, period)).fetchone()
+        prod_bonus = _pbrow["b"] or 0
+        prod_revenue = _pbrow["r"] or 0
+    except Exception:
+        prod_bonus, prod_revenue = 0, 0
+    gross = hourly + bonus + tips_total + ot_bonus + prod_bonus
     net = gross - fine_total - paid_total
 
     return {
@@ -1027,6 +1046,8 @@ def calc_summary(db, user_id, period=None):
         "hourly": hourly,
         "overtime_hours": ot_hours,
         "overtime": ot_bonus,
+        "product_bonus": prod_bonus,
+        "product_revenue": prod_revenue,
         "fines": fine_total,
         "paid": paid_total,
         "tips": tips_total,
@@ -1223,6 +1244,7 @@ def build_hash_payload(db, user_id, name):
     summary = {
         "hours": s["hours"], "bonus": s["bonus"], "hourly": s["hourly"],
         "overtime_hours": s.get("overtime_hours", 0), "overtime": s.get("overtime", 0),
+        "product_bonus": s.get("product_bonus", 0),
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
         "tips": s["tips"], "tips_count": s["tips_count"],
         "tips_list": s["tips_list"][-5:],
@@ -3275,6 +3297,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not target_row:
                 await update.message.reply_text("❌ Бариста не найден.")
                 return
+            # Ürün satışları (ödeme anında girildi) → bonus'a çevir, product_sales'e KAYDET
+            # (calc_summary'den ÖNCE → net bu bonusu içerir ve toplam ödenir).
+            _psales = data.get("product_sales")
+            _pbon = 0
+            if isinstance(_psales, dict) and _psales:
+                _elig = bool(barista_pay_info(db, target_id)["product_ok"])
+                _pc = calc_product_bonus(db, _psales, eligible=_elig)
+                if _pc["revenue"] > 0:
+                    db.execute(
+                        "INSERT INTO product_sales (user_id, period, sales, revenue, bonus, created_at, paid_by) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (target_id, period, json.dumps(_psales, ensure_ascii=False),
+                         _pc["revenue"], _pc["bonus"], now.isoformat(), user.id))
+                    db.commit()
+                    _pbon = _pc["bonus"]
             s = calc_summary(db, target_id, period)
             if s["net"] <= 0:
                 await update.message.reply_text(f"❌ Нет средств: {fmt_sum(s['net'])} сум")
@@ -3287,10 +3324,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "pay", user.id, user.first_name, target_id,
                        display_name_for(db, target_id),
                        {"amount": s["net"], "period": period})
+            _pbline = f"🛍 Бонус за товары: +{fmt_sum(_pbon)} сум\n" if _pbon > 0 else ""
             await update.message.reply_text(
                 f"✅ Выплата записана\n\n"
                 f"Кому: {display_name_for(db, target_id)}\n"
                 f"Период: {period}\n"
+                f"{_pbline}"
                 f"Сумма: {fmt_sum(s['net'])} сум")
             try:
                 await context.bot.send_message(
