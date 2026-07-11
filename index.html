@@ -3421,15 +3421,8 @@ function rMShiftEnd(m,b){
     +'</div>';
   });
   h+='<div style="display:flex;justify-content:space-between;align-items:center;background:var(--gold-bg);border:1px solid var(--gold-border);border-radius:10px;padding:10px 13px;margin-top:6px;font-weight:800;font-size:14px"><span>🥤 Продано всего</span><span id="esTotalCups" style="color:var(--gold2)">'+totalSold+' шт</span></div>';
-  // Склад — kalan kahve çekirdeği (kg). Boş bırakılabilir; girilirse stok uyarısı tetikler (≤3🔴/≤5⚠️/≤8📦).
-  h+='<div class="sec">📦 Склад (на конец смены)</div>';
-  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">☕ Кофе в зёрнах (кг)</div><div style="font-size:10px;color:var(--t3)">сколько осталось — для заказа</div></div>'
-    +'<input class="set-input" type="number" inputmode="decimal" step="0.1" min="0" value="'+(endDraft.coffeeKg||'')+'" placeholder="напр. 4.5" oninput="endDraft.coffeeKg=this.value"></div>';
-  // Tatlılar (kataloğu owner Settings'ten yönetir)
-  var _dt=parseInt(endDraft.dessertsTotal)||0;
-  h+='<div class="sec">🍰 Десерты / еда — всего за смену</div>';
-  h+='<div class="set-row"><div class="set-row-l"><div class="set-row-t">Всего продано (шт)</div><div style="font-size:10px;color:var(--t3)">сэндвичи + круассаны + шоколад + десерты — одним числом</div></div>'
-    +'<input class="set-input" type="number" inputmode="numeric" min="0" value="'+(_dt||'')+'" placeholder="0" oninput="endDraft.dessertsTotal=parseInt(this.value)||0;recalcEnd()"></div>';
+  // (Склад «Кофе в зёрнах» + «Десерты/еда — всего» KALDIRILDI — kullanıcı isteği.
+  //  Gıda/ürün bonusu artık ödeme anında «Продажи товаров» panelinden giriliyor.)
   // ─── Расходы (по желанию) — POS para mutabakatı KALDIRILDI (onu POS yapıyor) ───
   h+='<div class="sec">💸 Расходы (по желанию)</div><div id="eexp"></div>';
   h+='<button class="add-btn" style="width:100%;margin-top:4px" onclick="endExpAdd()">+ Добавить расход</button>';
@@ -3440,7 +3433,6 @@ function rMShiftEnd(m,b){
   h+='<div class="sf-total">'
     +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+' <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(Math.round(liveH*HOURLY_RATE))+'</span></div>'
     +'<div class="sf-tot-row"><span>Бонус — напитки</span><span id="seBonus">0</span></div>'
-    +'<div class="sf-tot-row"><span>Бонус — десерты</span><span id="seDesBonus">0</span></div>'
     +'<div id="seOtRow"></div>'
     +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span id="seTotal">'+fmt(Math.round(liveH*HOURLY_RATE))+' сум</span></div>'
   +'</div>';
