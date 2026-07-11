@@ -609,6 +609,56 @@ def calc_product_bonus(db, sales, eligible=True):
     return out
 
 
+def get_product_report(db, period=None):
+    """Ürün bonusu dashboard verisi (owner). product_sales'i dönem için agregeler:
+    {revenue, bonus, count, avg, employees:[{nm,revenue,bonus}], products:[{name,qty,revenue,bonus}]}."""
+    period = period or current_period()
+    rep = {"revenue": 0, "bonus": 0, "count": 0, "avg": 0, "employees": [], "products": []}
+    try:
+        rows = db.execute(
+            "SELECT ps.sales AS sales, ps.revenue AS revenue, ps.bonus AS bonus, "
+            "COALESCE(u.display_name,u.name,'?') AS nm FROM product_sales ps "
+            "LEFT JOIN users u ON u.user_id=ps.user_id WHERE ps.period=? ORDER BY ps.id DESC",
+            (period,)).fetchall()
+    except Exception:
+        return rep
+    by_name = {p["id"]: p["name"] for p in get_product_catalog(db)}
+    by_price = {p["id"]: (p.get("price") or 0) for p in get_product_catalog(db)}
+    emp = {}
+    prod = {}  # pid -> [qty, revenue, bonus]
+    for r in rows:
+        nm = r["nm"] or "?"
+        rev = r["revenue"] or 0
+        bon = r["bonus"] or 0
+        rep["revenue"] += rev
+        rep["bonus"] += bon
+        e = emp.setdefault(nm, {"nm": nm, "revenue": 0, "bonus": 0})
+        e["revenue"] += rev
+        e["bonus"] += bon
+        try:
+            sales = json.loads(r["sales"] or "{}")
+        except Exception:
+            sales = {}
+        for pid, qty in sales.items():
+            try:
+                pid_i = int(pid)
+                q = int(qty or 0)
+            except Exception:
+                continue
+            if q <= 0:
+                continue
+            pr = prod.setdefault(pid_i, {"name": by_name.get(pid_i, "?"), "qty": 0, "revenue": 0, "bonus": 0})
+            pr["qty"] += q
+            # ürün başına ciro/bonus: kayıt anındaki katalog fiyatıyla değil, toplam
+            # kaydın dağılımıyla yaklaşık — basitlik için katalog fiyatını kullan
+            pr["revenue"] += q * by_price.get(pid_i, 0)
+    rep["count"] = len(rows)
+    rep["avg"] = int(rep["bonus"] / len(emp)) if emp else 0
+    rep["employees"] = sorted(emp.values(), key=lambda x: -x["bonus"])
+    rep["products"] = sorted(prod.values(), key=lambda x: -x["qty"])
+    return rep
+
+
 def get_caffelito_bonus(db):
     """Caffelito bardak-bonus preset'i {drink_id: amount} (default > DB override)."""
     out = dict(CAFFELITO_BONUS_DEFAULTS)
@@ -1390,6 +1440,7 @@ def build_hash_payload(db, user_id, name):
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"products={quote(json.dumps(get_product_catalog(db) if role == 'owner' else get_product_catalog(db, only_active=True), ensure_ascii=False))}",
         f"my_product_ok={_my_pi['product_ok']}",
+        f"prod_report={quote(json.dumps(get_product_report(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
         f"ts={ts}",
     ]

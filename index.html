@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070154;
+var APP_BUILD=2026070155;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1587,6 +1587,8 @@ try{OT_CFG=JSON.parse((HP.get('ot_cfg')||'{}'))||{}}catch(e){OT_CFG={}}
 let PRODUCTS=[];
 try{PRODUCTS=JSON.parse((HP.get('products')||'[]'))||[]}catch(e){PRODUCTS=[]}
 let MY_PRODUCT_OK=(HP.get('my_product_ok')==='1');
+let PROD_REPORT={};
+try{PROD_REPORT=JSON.parse((HP.get('prod_report')||'{}'))||{}}catch(e){PROD_REPORT={}}
 // Bardak bonus sistemi: bu kullanıcının kategorisininki ('own'|'caffelito') + Caffelito preset değerleri
 let MY_BONUS_SYS=(HP.get('my_bonus_sys')||'own');
 let CAFFELITO_BONUS={};
@@ -2399,6 +2401,7 @@ function rR(m,b){b.style.display='none';
     {id:'orders',i:'📦',t:'Заказы',n:(REP.orders||[]).filter(function(o){return inActiveBranch(o.bid)}).length},
     {id:'tips',i:'💝',t:'Чаевые',n:(REP.tips||[]).length},
     {id:'pays',i:'💵',t:'Выплачено',n:(REP.pays||[]).length},
+    {id:'products',i:'🛍',t:'Товары (бонус)',n:((PROD_REPORT&&PROD_REPORT.products)||[]).length},
     {id:'fines',i:'⚠️',t:'Штрафы',n:(REP.fines||[]).length},
     {id:'loans',i:'💸',t:'Авансы',n:(REP.loans||[]).length}
   ] : [
@@ -2426,7 +2429,7 @@ function openRoom(id,n){
 function rReportRoom(m,b){
   b.style.display='none';
   var room=reportRoom;
-  var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
+  var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',products:'🛍 Бонусы за товары',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
   var h='<button class="back" onclick="reportRoom=null;render()">‹ Назад</button>';
   h+='<div class="sec">'+(titles[room]||'Отчёт')+'</div>';
   if(MY_ROLE==='owner'&&edit)h+='<div class="refresh-hint" style="margin:0 0 8px;color:var(--red)">✏️ Режим редактирования: нажмите 🗑 у записи, чтобы удалить её.</div>';
@@ -2526,6 +2529,36 @@ function rReportRoom(m,b){
       var sub=p.note||p.kind||'';var open=(payDetail===p.id);
       h+='<div class="hist" style="cursor:pointer" onclick="payDetail=(payDetail==='+p.id+'?null:'+p.id+');render()"><div class="hist-l"><div class="hist-d">'+(open?'▾ ':'▸ ')+escH(p.nm||'?')+' · '+repDay(p.at)+'</div>'+(sub?'<div class="hist-m">'+escH(sub)+'</div>':'')+'</div><div class="hist-r" style="font-weight:800">'+fmt(p.amount||0)+'</div>'+delBtn('pay',p.id)+'</div>';
       if(open)h+=payDetailHTML(p);
+    });
+  } else if(room==='products'){
+    var pr=PROD_REPORT||{};
+    var emps=pr.employees||[],prods=pr.products||[];
+    h+='<div class="refresh-hint" style="margin-top:0">Бонусы за товары · '+escH(fmtMonth(curPeriod()))+'. Данные из выплат (введённые продажи).</div>';
+    // ── Dashboard üst kutular ──
+    var _cc='flex:1;min-width:120px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:11px 13px';
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+      +'<div style="'+_cc+'"><div style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase">Оборот товаров</div><div style="font-size:19px;font-weight:800;margin-top:3px">'+fmt(pr.revenue||0)+'</div></div>'
+      +'<div style="'+_cc+'"><div style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase">Бонус за товары</div><div style="font-size:19px;font-weight:800;margin-top:3px;color:#059669">+'+fmt(pr.bonus||0)+'</div></div>'
+    +'</div>';
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">'
+      +'<div style="'+_cc+'"><div style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase">Средний бонус</div><div style="font-size:16px;font-weight:800;margin-top:3px">'+fmt(pr.avg||0)+'</div></div>'
+      +'<div style="'+_cc+'"><div style="font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase">Выплат с товарами</div><div style="font-size:16px;font-weight:800;margin-top:3px">'+fmt(pr.count||0)+'</div></div>'
+    +'</div>';
+    // ── Çalışan sıralaması ──
+    h+='<div class="sec" style="font-size:13px">🏆 Рейтинг сотрудников</div>';
+    if(!emps.length)h+='<div class="empty-mini">Пока нет продаж товаров.</div>';
+    emps.forEach(function(e,i){
+      var medal=(i===0?'🥇':(i===1?'🥈':(i===2?'🥉':(i+1)+'.')));
+      h+='<div class="hist"><div class="hist-l"><div class="hist-d">'+medal+' '+escH(e.nm||'?')+'</div><div class="hist-m">оборот '+fmt(e.revenue||0)+'</div></div><div class="hist-r" style="font-weight:800;color:#059669">+'+fmt(e.bonus||0)+'</div></div>';
+    });
+    // ── Top ürünler (adete göre) ──
+    h+='<div class="sec" style="font-size:13px;margin-top:14px">📦 Топ товары (по продажам)</div>';
+    if(!prods.length)h+='<div class="empty-mini">Нет данных.</div>';
+    var _maxq=Math.max.apply(null,prods.map(function(p){return p.qty||0}).concat([1]));
+    prods.slice(0,15).forEach(function(p){
+      var pcw=Math.round((p.qty||0)/_maxq*100);
+      h+='<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:12.5px;font-weight:600"><span>'+escH(p.name||'?')+'</span><span>'+fmt(p.qty||0)+' шт · '+fmt(p.revenue||0)+'</span></div>'
+        +'<div style="height:7px;border-radius:5px;background:var(--card2);overflow:hidden;margin-top:3px"><div style="height:100%;width:'+pcw+'%;background:linear-gradient(90deg,#b88a2e,#e9c46a)"></div></div></div>';
     });
   } else if(room==='fines'){
     lst=REP.fines||[];
