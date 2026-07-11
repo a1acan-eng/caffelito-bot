@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070152;
+var APP_BUILD=2026070153;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1583,6 +1583,10 @@ HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
 // Fazla mesai (сверхурочные) ayarı — owner
 let OT_CFG={};
 try{OT_CFG=JSON.parse((HP.get('ot_cfg')||'{}'))||{}}catch(e){OT_CFG={}}
+// Ürün bonusu motoru (bardak bonusundan AYRI): katalog + bu kullanıcının uygunluğu
+let PRODUCTS=[];
+try{PRODUCTS=JSON.parse((HP.get('products')||'[]'))||[]}catch(e){PRODUCTS=[]}
+let MY_PRODUCT_OK=(HP.get('my_product_ok')==='1');
 // Bardak bonus sistemi: bu kullanıcının kategorisininki ('own'|'caffelito') + Caffelito preset değerleri
 let MY_BONUS_SYS=(HP.get('my_bonus_sys')||'own');
 let CAFFELITO_BONUS={};
@@ -4478,12 +4482,13 @@ async function decideLoan(id,decision){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',cats:'Категории зарплат',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
+  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',cats:'Категории зарплат',products:'Товары (бонус)',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
   // Mini tabs (alt sekmeler — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
     +'<div class="opt '+(settingsTab==='prices'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'prices\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">💰 Цены</div></div></div>'
     +'<div class="opt '+(settingsTab==='cats'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'cats\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🏷️ Категории</div></div></div>'
+    +'<div class="opt '+(settingsTab==='products'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'products\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🛍 Товары</div></div></div>'
     +'<div class="opt '+(settingsTab==='names'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'names\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">👥 Люди</div></div></div>'
     +'<div class="opt '+(settingsTab==='logs'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'logs\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">📋 Логи</div></div></div>'
     +'<div class="opt '+(settingsTab==='reset'?'on':'')+'" style="flex:1;min-width:64px;margin:0;padding:8px 4px" onclick="setSettingsTab(\'reset\')"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">🗑 Сброс</div></div></div>'
@@ -4596,6 +4601,7 @@ function rMSettings(m,b){
         +'<div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;flex-wrap:wrap">'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_a_'+c.id+'" '+(act?'checked':'')+'> Активна</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_k_'+c.id+'" '+(c.use_kpi?'checked':'')+'> KPI (без бонуса за стаканы)</label>'
+          +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_pb_'+c.id+'" '+(c.product_bonus?'checked':'')+'> 🛍 Бонус за товары</label>'
         +'</div>'
         +'<div style="display:flex;gap:8px">'
           +'<button class="mbtn" style="flex:1" onclick="saveSalCat('+c.id+')">💾 Сохранить</button>'
@@ -4616,7 +4622,44 @@ function rMSettings(m,b){
         +'<select id="ncBsys" style="width:150px;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit"><option value="own">Наша (Цены)</option><option value="caffelito">Система Caffelito</option></select>'
       +'</div>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKpi"> KPI-категория</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncPb"> 🛍 Бонус за товары</label>'
       +'<button class="add-btn" onclick="addSalCat()" style="padding:9px 12px;width:100%">➕ Создать категорию</button>'
+    +'</div>';
+  } else if(settingsTab==='products'){
+    // ── Ürün bonusu kataloğu (bardak bonusundan AYRI motor) ──
+    h+='<div class="refresh-hint" style="margin-top:0">Каталог розничных товаров и еды. Бонус: % от цены или фикс. сумма. Получают только категории с включённым «бонусом за товары». Стажёр — нет.</div>';
+    var _pcatL={food:'🥪 Еда',snack:'🍪 Снэки',coffee:'☕ Кофе',icecream:'🍦 Мороженое'};
+    var _pgroups={};(PRODUCTS||[]).forEach(function(p){var g=p.category||'food';(_pgroups[g]=_pgroups[g]||[]).push(p);});
+    ['food','snack','coffee','icecream'].concat(Object.keys(_pgroups).filter(function(g){return ['food','snack','coffee','icecream'].indexOf(g)<0})).forEach(function(g){
+      var items=_pgroups[g];if(!items||!items.length)return;
+      h+='<div class="sec" style="margin-top:14px;font-size:13px">'+(_pcatL[g]||g)+'</div>';
+      items.forEach(function(p){
+        var isPct=(p.bonus_type!=='fixed');var unit=isPct?Math.round((p.price||0)*(p.bonus_value||0)/100):(p.bonus_value||0);
+        h+='<div style="border:1px solid var(--border2);border-radius:12px;padding:11px;margin-bottom:10px;'+(p.active===0?'opacity:.55':'')+'">'
+          +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input class="set-input wide" type="text" id="pr_n_'+p.id+'" value="'+escH(p.name||'')+'" style="flex:1;font-weight:700"><button class="add-btn" style="padding:7px 9px;font-size:11px;background:#ef4444" onclick="deleteProduct('+p.id+')">🗑</button></div>'
+          +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Цена продажи</label><input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="pr_p_'+p.id+'" value="'+(p.price||0)+'" style="width:120px;text-align:center;font-weight:700"></div>'
+          +'<div style="display:flex;gap:6px;margin-bottom:8px">'
+            +'<button onclick="prodSetType('+p.id+',\'percent\')" class="opt '+(isPct?'on':'')+'" style="flex:1;margin:0;padding:7px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">Бонус %</div></div></button>'
+            +'<button onclick="prodSetType('+p.id+',\'fixed\')" class="opt '+(!isPct?'on':'')+'" style="flex:1;margin:0;padding:7px"><div class="opt-r" style="display:none"></div><div class="opt-l" style="text-align:center"><div class="opt-t" style="font-size:11px">Фикс. сум</div></div></button>'
+          +'</div>'
+          +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Бонус '+(isPct?'(%)':'(сум)')+'</label><input class="set-input" type="number" inputmode="numeric" min="0" id="pr_b_'+p.id+'" value="'+(p.bonus_value||0)+'" style="width:120px;text-align:center;font-weight:700"></div>'
+          +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+            +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="pr_a_'+p.id+'" '+(p.active!==0?'checked':'')+'> Активен</label>'
+            +'<span style="font-size:11px;color:var(--t3)">≈ '+fmt(unit)+' /шт</span>'
+          +'</div>'
+          +'<button class="mbtn" onclick="saveProduct('+p.id+')">💾 Сохранить</button>'
+        +'</div>';
+      });
+    });
+    if(!(PRODUCTS||[]).length)h+='<div class="empty-mini">Товаров пока нет. Добавьте первый.</div>';
+    h+='<div style="margin-top:14px;padding:12px;border:2px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
+      +'<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--t1)">➕ Новый товар</div>'
+      +'<input class="set-input wide" type="text" id="npName" placeholder="Название (напр. Сэндвич)" style="width:100%;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Цена</label><input class="set-input" type="number" inputmode="numeric" min="0" step="500" id="npPrice" placeholder="0" style="width:120px;text-align:center"></div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Категория</label>'
+        +'<select id="npCat" style="width:150px;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit"><option value="food">🥪 Еда</option><option value="snack">🍪 Снэки</option><option value="coffee">☕ Кофе</option><option value="icecream">🍦 Мороженое</option></select></div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><label style="font-size:12px;color:var(--t2);font-weight:600;flex:1">Бонус % от цены</label><input class="set-input" type="number" inputmode="numeric" min="0" id="npBonus" placeholder="5" value="5" style="width:120px;text-align:center"></div>'
+      +'<button class="add-btn" onclick="addProduct()" style="padding:9px 12px;width:100%">➕ Добавить товар</button>'
     +'</div>';
   } else if(settingsTab==='names'){
     // 🆕 Onay bekleyen yeni başlayanlar — kabul edince 'Все баристы'ye geçer
@@ -4822,10 +4865,11 @@ function saveSalCat(id){
   var act=(document.getElementById('sc_a_'+id)||{}).checked?1:0;
   var kpi=(document.getElementById('sc_k_'+id)||{}).checked?1:0;
   var bsys=((document.getElementById('sc_bs_'+id)||{}).value==='caffelito')?'caffelito':'own';
+  var pb=(document.getElementById('sc_pb_'+id)||{}).checked?1:0;
   // Optimistik: yerel SAL_CATS güncelle
   var c=(SAL_CATS||[]).find(function(x){return x.id===id});
-  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys}))}catch(e){}}
+  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;c.product_bonus=pb;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys,product_bonus:pb}))}catch(e){}}
   toast('💾 Категория сохранена');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 function addSalCat(){
@@ -4834,9 +4878,10 @@ function addSalCat(){
   var rate=parseInt((document.getElementById('ncRate')||{}).value)||0;
   var kpi=(document.getElementById('ncKpi')||{}).checked?1:0;
   var bsys=((document.getElementById('ncBsys')||{}).value==='caffelito')?'caffelito':'own';
+  var pb=(document.getElementById('ncPb')||{}).checked?1:0;
   // Optimistik: geçici id ile listeye ekle (sunucu gerçek id ile refreshState'te düzeltir)
-  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys});
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys}))}catch(e){}}
+  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys,product_bonus:pb});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys,product_bonus:pb}))}catch(e){}}
   toast('✅ Категория создана');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 async function deleteSalCat(id){
@@ -4863,6 +4908,40 @@ function saveOvertime(){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'overtime_settings',hours:hours,type:type,value:value}))}catch(e){}}
   toast(hours>0?'⏱ Переработка сохранена':'⏱ Переработка выключена');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
+}
+// ── Ürün bonusu kataloğu (Product Bonus Engine) ──
+function prodSetType(id,t){ // tip toggle — girilen değerleri koru, re-render
+  var p=(PRODUCTS||[]).find(function(x){return x.id===id});if(!p)return;
+  p.name=((document.getElementById('pr_n_'+id)||{}).value||p.name);
+  p.price=parseInt((document.getElementById('pr_p_'+id)||{}).value)||0;
+  p.bonus_value=parseInt((document.getElementById('pr_b_'+id)||{}).value)||0;
+  p.bonus_type=(t==='fixed')?'fixed':'percent';render();
+}
+function saveProduct(id){
+  var nm=((document.getElementById('pr_n_'+id)||{}).value||'').trim();if(!nm){toast('Укажите название');return}
+  var price=Math.max(0,parseInt((document.getElementById('pr_p_'+id)||{}).value)||0);
+  var bval=Math.max(0,parseInt((document.getElementById('pr_b_'+id)||{}).value)||0);
+  var act=(document.getElementById('pr_a_'+id)||{}).checked?1:0;
+  var p=(PRODUCTS||[]).find(function(x){return x.id===id});var btype=(p&&p.bonus_type==='fixed')?'fixed':'percent';
+  if(p){p.name=nm;p.price=price;p.bonus_value=bval;p.active=act;p.bonus_type=btype;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'product_save',id:id,name:nm,price:price,bonus_type:btype,bonus_value:bval,active:act,category:(p&&p.category)||'food'}))}catch(e){}}
+  toast('💾 Товар сохранён');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
+}
+function addProduct(){
+  var nm=((document.getElementById('npName')||{}).value||'').trim();if(!nm){toast('Укажите название');return}
+  var price=Math.max(0,parseInt((document.getElementById('npPrice')||{}).value)||0);
+  var bval=Math.max(0,parseInt((document.getElementById('npBonus')||{}).value)||0);
+  var cat=((document.getElementById('npCat')||{}).value)||'food';
+  PRODUCTS=PRODUCTS||[];PRODUCTS.push({id:('tmp'+Date.now()),name:nm,price:price,bonus_type:'percent',bonus_value:bval,category:cat,active:1});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'product_save',name:nm,price:price,bonus_type:'percent',bonus_value:bval,category:cat,active:1}))}catch(e){}}
+  toast('✅ Товар добавлен');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
+}
+async function deleteProduct(id){
+  var p=(PRODUCTS||[]).find(function(x){return x.id===id});
+  if(!(await cfAsk('Удалить товар «'+((p&&p.name)||'')+'»?',{danger:true,okText:'Удалить'})))return;
+  PRODUCTS=(PRODUCTS||[]).filter(function(x){return x.id!==id});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'product_delete',id:id}))}catch(e){}}
+  toast('🗑 Товар удалён');render();
 }
 function saveCaffelitoBonus(drinkId){
   var el=document.getElementById('cb_'+drinkId);if(!el)return;

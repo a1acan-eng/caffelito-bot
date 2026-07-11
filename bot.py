@@ -376,6 +376,38 @@ def get_db():
                            (_did, int(_amt)))
     except sqlite3.OperationalError:
         pass
+    # ═══ ÜRÜN BONUSU MOTORU (Product Bonus Engine) — bardak bonusundan TAMAMEN AYRI ═══
+    # Yapılandırılabilir ürün kataloğu: perakende + gıda satışları. Kod-sabit ürün YOK.
+    db.execute("""CREATE TABLE IF NOT EXISTS product_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        price INTEGER DEFAULT 0,
+        bonus_type TEXT DEFAULT 'percent',
+        bonus_value INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'food',
+        active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT)""")
+    # Maaş kategorisi ürün-bonusu UYGUNLUĞU (stajyer=0). Varsayılan 0 = opt-in (sessiz
+    # ödeme olmasın); owner Barista 1/2/3 için açar.
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN product_bonus INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    # İlk kurulum: katalog boşsa kullanıcının örnek ürünleriyle tohumla (hepsi düzenlenebilir).
+    try:
+        _pcc = db.execute("SELECT COUNT(*) AS c FROM product_catalog").fetchone()
+        if (_pcc["c"] or 0) == 0:
+            _so = 0
+            for _cat, _items in PRODUCT_SEED:
+                for _nm, _pr in _items:
+                    db.execute(
+                        "INSERT INTO product_catalog (name, price, bonus_type, bonus_value, category, active, sort_order, created_at) "
+                        "VALUES (?,?,?,?,?,1,?,?)",
+                        (_nm, int(_pr), "percent", 5, _cat, _so, datetime.now(TZ).isoformat()))
+                    _so += 1
+    except sqlite3.OperationalError:
+        pass
     # İlk kurulum: hiç kategori yoksa mevcut global ставка ile "Базовая ставка" tohumla.
     # (Baristalar otomatik atanmaz → atanmayan global ставка kullanır, davranış değişmez.)
     try:
@@ -505,7 +537,8 @@ def get_pay_cfg(db):
 def get_salary_categories(db, only_active=False):
     """Maaş kategorileri listesi (dict)."""
     q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,"
-         "COALESCE(bonus_system,'own') AS bonus_system,active,sort_order "
+         "COALESCE(bonus_system,'own') AS bonus_system,COALESCE(product_bonus,0) AS product_bonus,"
+         "active,sort_order "
          "FROM salary_categories")
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
@@ -514,6 +547,56 @@ def get_salary_categories(db, only_active=False):
         return [dict(r) for r in db.execute(q).fetchall()]
     except Exception:
         return []
+
+
+def get_product_catalog(db, only_active=False):
+    """Ürün bonusu kataloğu (dict listesi). Bardak/tatlı bonusundan AYRI motor."""
+    q = ("SELECT id,name,price,COALESCE(bonus_type,'percent') AS bonus_type,"
+         "COALESCE(bonus_value,0) AS bonus_value,COALESCE(category,'food') AS category,"
+         "COALESCE(active,1) AS active,sort_order FROM product_catalog")
+    if only_active:
+        q += " WHERE COALESCE(active,1)=1"
+    q += " ORDER BY sort_order, id"
+    try:
+        return [dict(r) for r in db.execute(q).fetchall()]
+    except Exception:
+        return []
+
+
+def product_bonus_per_unit(prod):
+    """Bir ürünün BİRİM bonusu: percent → price*value/100, fixed → value."""
+    try:
+        if (prod.get("bonus_type") or "percent") == "fixed":
+            return int(prod.get("bonus_value") or 0)
+        return int(int(prod.get("price") or 0) * int(prod.get("bonus_value") or 0) / 100)
+    except Exception:
+        return 0
+
+
+def calc_product_bonus(db, sales, eligible=True):
+    """sales={product_id: qty} → {revenue, bonus, lines:[{id,name,qty,price,unit,revenue,bonus}]}.
+    eligible=False (ör. stajyer/uygun olmayan kategori) → bonus 0 (ciro yine hesaplanır)."""
+    out = {"revenue": 0, "bonus": 0, "lines": []}
+    if not sales:
+        return out
+    by_id = {p["id"]: p for p in get_product_catalog(db)}
+    for pid, qty in sales.items():
+        try:
+            p = by_id.get(int(pid))
+            q = int(qty or 0)
+        except Exception:
+            continue
+        if not p or q <= 0:
+            continue
+        rev = int(p.get("price") or 0) * q
+        unit = product_bonus_per_unit(p)
+        bon = (unit * q) if eligible else 0
+        out["revenue"] += rev
+        out["bonus"] += bon
+        out["lines"].append({"id": p["id"], "name": p["name"], "qty": q,
+                             "price": p.get("price") or 0, "unit": unit,
+                             "revenue": rev, "bonus": bon})
+    return out
 
 
 def get_caffelito_bonus(db):
@@ -531,17 +614,19 @@ def barista_pay_info(db, user_id):
     """Baristanın maaş bilgisi: {rate, use_kpi, bonus_system, cat_id, cat_name}.
     Kategori atanmış VE aktifse onun ставка'sı+bonus sistemi; yoksa global (geriye uyumlu)."""
     info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
-            "use_kpi": 0, "bonus_system": "own", "cat_id": None, "cat_name": None}
+            "use_kpi": 0, "bonus_system": "own", "product_ok": 0, "cat_id": None, "cat_name": None}
     try:
         r = db.execute(
             "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
-            "COALESCE(c.bonus_system,'own') AS bsys, c.active AS active FROM users u "
+            "COALESCE(c.bonus_system,'own') AS bsys, COALESCE(c.product_bonus,0) AS pb, "
+            "c.active AS active FROM users u "
             "JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
             (user_id,)).fetchone()
         if r and (r["active"] is None or r["active"] == 1):
             info["rate"] = int(r["rate"] or 0)
             info["use_kpi"] = int(r["kpi"] or 0)
             info["bonus_system"] = r["bsys"] or "own"
+            info["product_ok"] = int(r["pb"] or 0)
             info["cat_id"] = r["cid"]
             info["cat_name"] = r["cname"]
     except Exception:
@@ -618,6 +703,16 @@ CAFFELITO_BONUS_DEFAULTS = {
     "dome300": 300,
     "dome400": 700,
 }
+
+# Ürün bonusu kataloğu ilk kurulum tohumu (kullanıcının örnekleri; hepsi panelden
+# düzenlenebilir/silinebilir). (kategori, [(ad, fiyat), ...]). Bonus varsayılan %5.
+PRODUCT_SEED = [
+    ("food",     [("Сэндвич", 38000), ("Чиабатта", 35000), ("Круассан", 22000), ("Чизкейк", 30000)]),
+    ("snack",    [("Печенье", 20000), ("Вафли", 15000), ("Стропвафли", 18000), ("Шоколадные шарики", 25000),
+                  ("Дубайский шоколад", 45000), ("Mini Pops", 12000)]),
+    ("coffee",   [("Кофе в зёрнах", 120000), ("Дрип-кофе", 25000)]),
+    ("icecream", [("Мороженое", 20000)]),
+]
 
 # Tatlılar — her biri 500 сум sabit
 DESSERT_RATE = 500
@@ -1271,6 +1366,8 @@ def build_hash_payload(db, user_id, name):
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
+        f"products={quote(json.dumps(get_product_catalog(db) if role == 'owner' else get_product_catalog(db, only_active=True), ensure_ascii=False))}",
+        f"my_product_ok={_my_pi['product_ok']}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
         f"ts={ts}",
     ]
@@ -3438,24 +3535,72 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             kpi = 1 if int(data.get("use_kpi", 0) or 0) else 0
             act = 0 if int(data.get("active", 1) or 0) == 0 else 1
             bsys = "caffelito" if (data.get("bonus_system") == "caffelito") else "own"
+            pb = 1 if int(data.get("product_bonus", 0) or 0) else 0
             cid = data.get("id")
             if cid:
                 db.execute(
                     "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
-                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=? WHERE id=?",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, int(cid)))
+                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=? WHERE id=?",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, int(cid)))
                 msg = f"✅ Категория «{nm}» обновлена."
             else:
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
                 db.execute(
                     "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
-                    "description, use_kpi, active, bonus_system, sort_order, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, (_mo["s"] if _mo else 0),
+                    "description, use_kpi, active, bonus_system, product_bonus, sort_order, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, (_mo["s"] if _mo else 0),
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
             await update.message.reply_text(msg)
+
+        elif action == "product_save":
+            # Owner: ürün kataloğu — oluştur/güncelle (id verilirse update)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            nm = (data.get("name") or "").strip()[:60]
+            if not nm:
+                await update.message.reply_text("❌ Укажите название товара.")
+                return
+            def _pi2(v, lo, hi, d=0):
+                try:
+                    return max(lo, min(hi, int(v)))
+                except Exception:
+                    return d
+            price = _pi2(data.get("price"), 0, 100000000, 0)
+            btype = "fixed" if (data.get("bonus_type") == "fixed") else "percent"
+            bval = _pi2(data.get("bonus_value"), 0, (100000000 if btype == "fixed" else 100), 0)
+            pcat = (data.get("category") or "food").strip()[:20]
+            pact = 0 if int(data.get("active", 1) or 0) == 0 else 1
+            pid = data.get("id")
+            if pid:
+                db.execute("UPDATE product_catalog SET name=?, price=?, bonus_type=?, bonus_value=?, "
+                           "category=?, active=? WHERE id=?",
+                           (nm, price, btype, bval, pcat, pact, int(pid)))
+                _pmsg = f"✅ Товар «{nm}» обновлён."
+            else:
+                _pmo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM product_catalog").fetchone()
+                db.execute("INSERT INTO product_catalog (name, price, bonus_type, bonus_value, category, "
+                           "active, sort_order, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                           (nm, price, btype, bval, pcat, pact, (_pmo["s"] if _pmo else 0),
+                            datetime.now(TZ).isoformat()))
+                _pmsg = f"✅ Товар «{nm}» добавлен."
+            db.commit()
+            await update.message.reply_text(_pmsg)
+
+        elif action == "product_delete":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _pd = data.get("id")
+            if _pd:
+                db.execute("DELETE FROM product_catalog WHERE id=?", (int(_pd),))
+                db.commit()
+            await update.message.reply_text("🗑 Товар удалён.")
 
         elif action == "overtime_settings":
             # Owner: fazla mesai (сверхурочные) — aylık norm + ek ödeme
