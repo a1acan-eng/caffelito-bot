@@ -394,6 +394,12 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN product_bonus INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    # Vardiya kapatmada bardak/kasa sayımı yapılsın mı? 1=evet (barista) · 0=stajyer atlar.
+    # Varsayılan 1 → mevcut TÜM kategoriler eskisi gibi kasa sayar (geriye tam uyumlu).
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN does_kasa INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     # Ürün satış kayıtları (ödeme anında girilir): dönemin gross'una ürün bonusu ekler.
     db.execute("""CREATE TABLE IF NOT EXISTS product_sales (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -435,6 +441,19 @@ def get_db():
                 "VALUES (?,?,0,1,?)",
                 ("Базовая ставка", int(_r0), datetime.now(TZ).isoformat()))
     except sqlite3.OperationalError:
+        pass
+    # Stajyer kategorisi — bir kez tohumla (meta bayrağı). does_kasa=0 (bardak/kasa yok),
+    # ürün bonusu yok. Owner ставка'yı sonra düzenler; silinirse tekrar gelmez.
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='stajyer_seeded'").fetchone():
+            if not db.execute("SELECT 1 FROM salary_categories WHERE name=?", ("Стажёр",)).fetchone():
+                _mos = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
+                db.execute(
+                    "INSERT INTO salary_categories (name, hourly_rate, use_kpi, active, product_bonus, does_kasa, sort_order, created_at) "
+                    "VALUES (?,?,0,1,0,0,?,?)",
+                    ("Стажёр", int(HOURLY_RATE), (_mos["s"] if _mos else 1), datetime.now(TZ).isoformat()))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('stajyer_seeded', ?)", (datetime.now(TZ).isoformat(),))
+    except Exception:
         pass
     db.commit()
     return db
@@ -548,6 +567,7 @@ def get_salary_categories(db, only_active=False):
     """Maaş kategorileri listesi (dict)."""
     q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,"
          "COALESCE(bonus_system,'own') AS bonus_system,COALESCE(product_bonus,0) AS product_bonus,"
+         "COALESCE(does_kasa,1) AS does_kasa,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -674,11 +694,13 @@ def barista_pay_info(db, user_id):
     """Baristanın maaş bilgisi: {rate, use_kpi, bonus_system, cat_id, cat_name}.
     Kategori atanmış VE aktifse onun ставка'sı+bonus sistemi; yoksa global (geriye uyumlu)."""
     info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
-            "use_kpi": 0, "bonus_system": "own", "product_ok": 0, "cat_id": None, "cat_name": None}
+            "use_kpi": 0, "bonus_system": "own", "product_ok": 0, "does_kasa": 1,
+            "cat_id": None, "cat_name": None}
     try:
         r = db.execute(
             "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
             "COALESCE(c.bonus_system,'own') AS bsys, COALESCE(c.product_bonus,0) AS pb, "
+            "COALESCE(c.does_kasa,1) AS dk, "
             "c.active AS active FROM users u "
             "JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
             (user_id,)).fetchone()
@@ -687,6 +709,7 @@ def barista_pay_info(db, user_id):
             info["use_kpi"] = int(r["kpi"] or 0)
             info["bonus_system"] = r["bsys"] or "own"
             info["product_ok"] = int(r["pb"] or 0)
+            info["does_kasa"] = int(r["dk"] if r["dk"] is not None else 1)
             info["cat_id"] = r["cid"]
             info["cat_name"] = r["cname"]
     except Exception:
@@ -1304,8 +1327,6 @@ def build_hash_payload(db, user_id, name):
         "fines_list": s["fines_list"][-5:],
         "active": s["active"],
     }
-    # Tatlı kataloğu — owner hepsini görsün (yönetim için), barista sadece aktifleri
-    desserts_cat = get_dessert_catalog(db, only_active=(role != "owner"))
     # Avans talepleri — barista kendisininkiler, owner pending olanların hepsi
     if role == "owner":
         loan_rows = db.execute(
@@ -1421,7 +1442,6 @@ def build_hash_payload(db, user_id, name):
         f"std_ack={1 if std_acked else 0}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
-        f"desserts={quote(json.dumps(desserts_cat, ensure_ascii=False))}",
         f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
         f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
@@ -1433,7 +1453,8 @@ def build_hash_payload(db, user_id, name):
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
         f"my_rate={int(_my_pi['rate'])}",
-        f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi']}, ensure_ascii=False))}",
+        f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi'], 'does_kasa': _my_pi['does_kasa']}, ensure_ascii=False))}",
+        f"my_does_kasa={int(_my_pi['does_kasa'])}",
         f"my_bonus_sys={_my_pi['bonus_system']}",
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
@@ -3626,20 +3647,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             act = 0 if int(data.get("active", 1) or 0) == 0 else 1
             bsys = "caffelito" if (data.get("bonus_system") == "caffelito") else "own"
             pb = 1 if int(data.get("product_bonus", 0) or 0) else 0
+            dk = 0 if int(data.get("does_kasa", 1) or 0) == 0 else 1  # varsayılan 1 (kasa sayar)
             cid = data.get("id")
             if cid:
                 db.execute(
                     "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
-                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=? WHERE id=?",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, int(cid)))
+                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=?, does_kasa=? WHERE id=?",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, int(cid)))
                 msg = f"✅ Категория «{nm}» обновлена."
             else:
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
                 db.execute(
                     "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
-                    "description, use_kpi, active, bonus_system, product_bonus, sort_order, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, (_mo["s"] if _mo else 0),
+                    "description, use_kpi, active, bonus_system, product_bonus, does_kasa, sort_order, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, (_mo["s"] if _mo else 0),
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
@@ -3899,72 +3921,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "delete_record", user.id, user.first_name, None, None, {"kind": kind, "id": rid})
                 except Exception as ex:
                     logger.warning(f"delete_record {kind}/{rid}: {ex}")
-
-        # ─── Tatlı kataloğu yönetimi (owner) ───
-        elif action == "dessert_save":
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец.")
-                return
-            did = (data.get("id") or "").strip().lower()
-            label = (data.get("label") or "").strip()
-            icon = (data.get("icon") or "🍮").strip()[:4]
-            try:
-                price = max(0, int(data.get("price", 500) or 0))
-            except Exception:
-                price = 500
-            try:
-                sort_order = int(data.get("sort_order", 50) or 50)
-            except Exception:
-                sort_order = 50
-            active = 1 if data.get("active", 1) else 0
-            if not did or not label:
-                await update.message.reply_text("❌ ID и название обязательны.")
-                return
-            # ID'de sadece harf/rakam/_
-            import re
-            if not re.match(r"^[a-z0-9_]+$", did):
-                await update.message.reply_text("❌ ID: только латинские буквы, цифры, _ (например: tiramisu)")
-                return
-            now_iso = datetime.now(TZ).isoformat()
-            db.execute(
-                "INSERT INTO desserts_catalog (id,label,icon,price,sort_order,active,updated_by,updated_by_name,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET label=excluded.label, icon=excluded.icon, "
-                "price=excluded.price, sort_order=excluded.sort_order, active=excluded.active, "
-                "updated_by=excluded.updated_by, updated_by_name=excluded.updated_by_name, "
-                "updated_at=excluded.updated_at",
-                (did, label, icon, price, sort_order, active, user.id, user.first_name, now_iso))
-            db.commit()
-            log_action(db, "dessert_save", user.id, user.first_name, None, None,
-                       {"id": did, "label": label, "price": price, "active": active})
-            await update.message.reply_text(
-                f"🍰 Десерт сохранён: *{icon} {label}* — {fmt_sum(price)} сум",
-                parse_mode="Markdown")
-            await refresh_webapp_keyboard(update, context, db, user,
-                "🔄 Каталог десертов обновлён 👇")
-
-        elif action == "dessert_delete":
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец.")
-                return
-            did = (data.get("id") or "").strip().lower()
-            if not did:
-                await update.message.reply_text("❌ ID обязателен.")
-                return
-            row = db.execute("SELECT label FROM desserts_catalog WHERE id=?", (did,)).fetchone()
-            if not row:
-                await update.message.reply_text("❌ Десерт не найден.")
-                return
-            # Tam silme — kataloğdan kaldırılır. Eski vardiyalar JSON içinde
-            # snapshot tuttuğu için geçmiş veriler bozulmaz.
-            db.execute("DELETE FROM desserts_catalog WHERE id=?", (did,))
-            db.commit()
-            log_action(db, "dessert_delete", user.id, user.first_name, None, None, {"id": did, "label": row["label"]})
-            await update.message.reply_text(f"🗑 Десерт «{row['label']}» удалён из каталога.")
-            await refresh_webapp_keyboard(update, context, db, user,
-                "🔄 Каталог десертов обновлён 👇")
 
         # ─── Şifre yönetimi (owner-only) ───
         elif action == "set_password":

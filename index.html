@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070157;
+var APP_BUILD=2026070158;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1578,6 +1578,10 @@ let SAL_CATS=[];
 try{SAL_CATS=JSON.parse((HP.get('sal_cats')||'[]'))||[]}catch(e){SAL_CATS=[]}
 let MY_CAT={};
 try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
+// Bu kullanıcı vardiya kapatmada bardak/kasa sayımı yapsın mı? (stajyer=false → atlar).
+// Varsayılan true → mevcut baristalar eskisi gibi (geriye tam uyumlu).
+let MY_DOES_KASA=true;
+try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
 let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
 HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
 // Fazla mesai (сверхурочные) ayarı — owner
@@ -3361,6 +3365,8 @@ async function startShiftCustomTime(){
 function rMShiftEnd(m,b){
   const active=(SUMMARY||{}).active;
   if(!active){mView='main';render();return}
+  // Stajyer (kategori does_kasa=0) → bardak/kasa YOK, sadece saatlik. Ayrı sade ekran.
+  if(!MY_DOES_KASA)return rMShiftEndTrainee(m,b);
   const startStr=fmtTime(active.start_time);
   const dayStr=fmtDay(active.start_time);
   // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
@@ -3623,6 +3629,115 @@ async function endShiftSave(){
     }
   }catch(e){console.warn('kasa send',e)}
   // 2) Vardiyayı kapat (sendData override → /api/action + reload)
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
+}
+
+// ═══ STAJYER vardiya-kapatma — bardak/kasa YOK, sadece saatlik ═══
+// (does_kasa=0 kategori). Barista akışına HİÇ dokunmaz — tamamen ayrı sade ekran.
+function rMShiftEndTrainee(m,b){
+  const active=(SUMMARY||{}).active;
+  if(!active){mView='main';render();return}
+  const startStr=fmtTime(active.start_time);
+  const dayStr=fmtDay(active.start_time);
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;
+  const hourly=Math.round(liveH*HOURLY_RATE);
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🔴 Завершить смену · '+dayStr+'</div>';
+  h+='<div class="sf-card sf-card-green" style="background:linear-gradient(135deg,#ecfdf5,#d1fae5);border-color:#6ee7b7">'
+    +'<div class="det-times">'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">Пришли</div><div class="det-time-v">'+startStr+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">'+(endDraft.endTime?'Уйдёт в':'Сейчас')+'</div><div class="det-time-v" id="seNow">'+fmtTime(effEnd.toISOString())+'</div></div>'
+      +'<div class="det-time-box" style="background:rgba(255,255,255,.75)"><div class="det-time-l">К оплате</div><div class="det-time-v" id="seDur">'+fmtH(liveH)+'</div></div>'
+    +'</div>'
+  +'</div>';
+  h+='<div id="seBreak">'+endBreakdownHTML(_ph)+'</div>';
+  const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
+  const curDate=effEnd.getFullYear()+'-'+String(effEnd.getMonth()+1).padStart(2,'0')+'-'+String(effEnd.getDate()).padStart(2,'0');
+  h+='<button onclick="shiftMoreOpen=!shiftMoreOpen;render()" style="width:100%;margin:8px 0 4px;padding:8px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:'+(endDraft.endTime?'var(--gold2)':'var(--t3)')+';font-size:12px;font-weight:600;cursor:pointer">'+(shiftMoreOpen?'▴ Скрыть':(endDraft.endTime?('⚙️ Уход: '+fmtTime(endDraft.endTime)):'⚙️ Другое время ухода'))+'</button>';
+  if(shiftMoreOpen){
+    h+='<div style="margin-bottom:6px;padding:10px 12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        +'<input type="date" id="cstEndDate" value="'+curDate+'" onchange="applyEndDT()" style="flex:1;min-width:130px;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:14px;font-family:inherit;background:transparent;color:var(--t1)">'
+        +'<input type="time" id="cstEnd" value="'+curHHMM+'" oninput="applyEndDT()" style="flex:1;min-width:110px;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:14px;font-family:inherit;background:transparent;color:var(--t1)">'
+        +(endDraft.endTime?'<button onclick="endDraft.endTime=\'\';render()" style="padding:9px 12px;background:#ef4444;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer">⟲ Сейчас</button>':'')
+      +'</div>'
+      +'<div id="cstEndDay" style="font-size:11px;color:var(--t2);font-weight:700;margin-top:5px"></div>'
+    +'</div>';
+  }
+  h+='<div class="refresh-hint" style="margin:6px 0">🎓 Стажёр — стаканы и касса не заполняются. Оплата только по часам.</div>';
+  h+='<div class="sec">📝 Заметка (необязательно)</div>'
+    +'<textarea class="sf-note" rows="2" placeholder="например: стажировка" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+' <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(hourly)+'</span></div>'
+    +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span id="seTotal">'+fmt(hourly)+' сум</span></div>'
+  +'</div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  b.innerHTML='<button class="mbtn grn" onclick="endShiftSaveTrainee()">🔴 Завершить смену</button>';
+  recalcEndTrainee();
+  if(window._endTimer)clearInterval(window._endTimer);
+  window._endTimer=setInterval(function(){
+    if(!document.getElementById('seNow')){clearInterval(window._endTimer);window._endTimer=null;return}
+    recalcEndTrainee();
+  },1000);
+}
+function recalcEndTrainee(){
+  const active=(SUMMARY||{}).active;if(!active)return;
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;const hourly=Math.round(liveH*HOURLY_RATE);
+  var e;
+  e=document.getElementById('seDur');if(e)e.textContent=fmtH(liveH);
+  e=document.getElementById('seNow');if(e)e.textContent=fmtTime(effEnd.toISOString());
+  e=document.getElementById('seHourly');if(e)e.textContent=fmt(hourly);
+  e=document.getElementById('seTotal');if(e)e.textContent=fmt(hourly)+' сум';
+  e=document.getElementById('seBreak');if(e)e.innerHTML=endBreakdownHTML(_ph);
+  const cd=document.getElementById('cstEndDay');
+  if(cd){
+    if(endDraft.endTime){
+      var _td=new Date();var _sameDay=(effEnd.getFullYear()===_td.getFullYear()&&effEnd.getMonth()===_td.getMonth()&&effEnd.getDate()===_td.getDate());
+      cd.textContent='→ уход: '+fmtDay(effEnd.toISOString()).slice(0,5)+' в '+fmtTime(effEnd.toISOString())+(_sameDay?' (сегодня)':' (вчера/ранее)');
+    }else cd.textContent='';
+  }
+}
+async function endShiftSaveTrainee(){
+  const active=(SUMMARY||{}).active;
+  if(!active){toast('Нет активной смены');return}
+  const effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  const _ph=paidHours(active.start_time, effEnd.toISOString());
+  const liveH=_ph.paid;
+  const hourly=Math.round(liveH*HOURLY_RATE);
+  const total=hourly;
+  const payload={action:'shift_end',drinks:{},desserts:{},note:endDraft.note};
+  if(endDraft.endTime)payload.end_time=endDraft.endTime;
+  const finishedShift={
+    start_time:active.start_time,end_time:effEnd.toISOString(),
+    hours:Math.round(liveH*100)/100,drinks:'{}',desserts:'{}',
+    bonus:0,dessert_bonus:0,hourly_pay:hourly,overtime:0,total:total,
+    note:endDraft.note,created_at:active.start_time
+  };
+  SUMMARY.shifts=SUMMARY.shifts||[];
+  SUMMARY.shifts.push(finishedShift);
+  SUMMARY.shifts_count=(SUMMARY.shifts_count||0)+1;
+  SUMMARY.hours=(SUMMARY.hours||0)+finishedShift.hours;
+  SUMMARY.hourly=(SUMMARY.hourly||0)+hourly;
+  SUMMARY.bonus=(SUMMARY.bonus||0);
+  SUMMARY.gross=(SUMMARY.hourly)+(SUMMARY.bonus)+(SUMMARY.overtime||0);
+  SUMMARY.fines=SUMMARY.fines||0;SUMMARY.paid=SUMMARY.paid||0;
+  SUMMARY.net=SUMMARY.gross-SUMMARY.fines-SUMMARY.paid;
+  SUMMARY.active=null;
+  if(window._endTimer){clearInterval(window._endTimer);window._endTimer=null}
+  if(window._actTimer){clearInterval(window._actTimer);window._actTimer=null}
+  toast('🔴 Смена закрыта · '+fmt(total)+' сум');
+  cfCelebrateShiftEnd(total,hourly,0,liveH,0);
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  mView='main';
+  render();
+  // Kasa raporu GÖNDERİLMEZ (stajyer) — sadece vardiyayı kapat.
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
 }
 // Birleşik kapanış — harcama satırları (kasa)
@@ -4566,7 +4681,7 @@ async function decideLoan(id,decision){
 function rMSettings(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
-  const stTitle={prices:'Цены и десерты',desserts:'Цены и десерты',cats:'Категории зарплат',products:'Товары (бонус)',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
+  const stTitle={prices:'Цены',desserts:'Цены',cats:'Категории зарплат',products:'Товары (бонус)',names:'Люди',passwords:'Люди',logs:'Логи',reset:'Сброс'}[settingsTab]||'';
   h+='<div class="sec">⚙️ Настройки · '+stTitle+'</div>';
   // Mini tabs (alt sekmeler — yeni sayfa açmıyoruz)
   h+='<div class="set-tabs" style="flex-wrap:wrap;gap:4px">'
@@ -4607,39 +4722,6 @@ function rMSettings(m,b){
         +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveCaffelitoBonus(\''+d.id+'\')">💾</button>'
       +'</div>';
     });
-    // ── Десерты (каталог) — Цены sekmesiyle birleştirildi (tek yer) ──
-    h+='<div class="sec" style="margin-top:18px">🍰 Десерты (каталог)</div>';
-    h+='<div class="refresh-hint" style="margin-top:0">Стаканы — фиксированы (меняется только цена сверху). Десерты — добавляйте, редактируйте цены, удаляйте. Изменения сразу для всех.</div>';
-    // Mevcut tatlılar (DESSERT_CAT — owner için tüm tatlılar geliyor, aktif/pasif dahil)
-    if(!DESSERT_CAT||!DESSERT_CAT.length){
-      h+='<div class="empty-mini">Десертов пока нет.</div>';
-    } else {
-      DESSERT_CAT.forEach(function(d){
-        const active=d.active!==0;
-        h+='<div class="set-row" style="flex-wrap:wrap;gap:6px;'+(active?'':'opacity:.55')+'">'
-          +'<div class="set-row-l" style="min-width:110px">'
-            +'<div class="set-row-t">'+(d.icon||'🍮')+' '+escH(d.label||'')+'</div>'
-            +'<div class="set-row-s">id: '+escH(d.id)+(active?'':' · скрыт')+'</div>'
-          +'</div>'
-          +'<input class="set-input" type="text" maxlength="2" id="dic_'+d.id+'" value="'+escH(d.icon||'🍮')+'" style="width:48px;text-align:center;font-size:18px" title="Эмодзи">'
-          +'<input class="set-input wide" type="text" id="dlb_'+d.id+'" value="'+escH(d.label||'')+'" placeholder="название">'
-          +'<input class="set-input" type="number" inputmode="numeric" min="0" id="dpr_'+d.id+'" value="'+(d.price||0)+'" style="width:80px" title="Цена">'
-          +'<button class="add-btn" style="padding:7px 10px;font-size:11px" onclick="saveDessert(\''+d.id+'\')">💾</button>'
-          +'<button class="add-btn" style="padding:7px 10px;font-size:11px;background:#ef4444" onclick="deleteDessert(\''+d.id+'\')" title="Скрыть">🗑</button>'
-        +'</div>';
-      });
-    }
-    // Yeni tatlı ekleme formu — basit, id otomatik
-    h+='<div style="margin-top:14px;padding:12px;border:2px dashed #cbd5e1;border-radius:12px;background:#f8fafc">'
-      +'<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:var(--t1)">➕ Добавить новый десерт</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
-        +'<input class="set-input" type="text" id="ndIc" placeholder="🍰" maxlength="2" style="width:48px;text-align:center;font-size:18px">'
-        +'<input class="set-input wide" type="text" id="ndLb" placeholder="название (например: Сэндвич)" style="flex:1;min-width:140px">'
-        +'<input class="set-input" type="number" inputmode="numeric" min="0" id="ndPr" placeholder="цена" value="500" style="width:80px">'
-        +'<button class="add-btn" onclick="addNewDessert()" style="padding:8px 12px">➕ Добавить</button>'
-      +'</div>'
-      +'<div style="font-size:10px;color:var(--t3);margin-top:6px">id создаётся автоматически из названия</div>'
-    +'</div>';
   } else if(settingsTab==='cats'){
     // ── Fazla mesai (сверхурочные) ──
     OT_CFG=OT_CFG||{};var _ot=OT_CFG;var _oth=(_ot.hours!=null?_ot.hours:0);var _otp=(_ot.type==='percent');var _otv=(_ot.value!=null?_ot.value:0);
@@ -4686,6 +4768,7 @@ function rMSettings(m,b){
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_a_'+c.id+'" '+(act?'checked':'')+'> Активна</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_k_'+c.id+'" '+(c.use_kpi?'checked':'')+'> KPI (без бонуса за стаканы)</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_pb_'+c.id+'" '+(c.product_bonus?'checked':'')+'> 🛍 Бонус за товары</label>'
+          +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_dk_'+c.id+'" '+((c.does_kasa==null||c.does_kasa)?'checked':'')+'> 🥤 Считает кассу при закрытии</label>'
         +'</div>'
         +'<div style="display:flex;gap:8px">'
           +'<button class="mbtn" style="flex:1" onclick="saveSalCat('+c.id+')">💾 Сохранить</button>'
@@ -4707,6 +4790,7 @@ function rMSettings(m,b){
       +'</div>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKpi"> KPI-категория</label>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncPb"> 🛍 Бонус за товары</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKasa" checked> 🥤 Считает кассу при закрытии <span style="color:var(--t3);font-weight:500">(выкл. для стажёра)</span></label>'
       +'<button class="add-btn" onclick="addSalCat()" style="padding:9px 12px;width:100%">➕ Создать категорию</button>'
     +'</div>';
   } else if(settingsTab==='products'){
@@ -4950,10 +5034,11 @@ function saveSalCat(id){
   var kpi=(document.getElementById('sc_k_'+id)||{}).checked?1:0;
   var bsys=((document.getElementById('sc_bs_'+id)||{}).value==='caffelito')?'caffelito':'own';
   var pb=(document.getElementById('sc_pb_'+id)||{}).checked?1:0;
+  var dk=(document.getElementById('sc_dk_'+id)||{}).checked?1:0;
   // Optimistik: yerel SAL_CATS güncelle
   var c=(SAL_CATS||[]).find(function(x){return x.id===id});
-  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;c.product_bonus=pb;}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys,product_bonus:pb}))}catch(e){}}
+  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;c.product_bonus=pb;c.does_kasa=dk;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk}))}catch(e){}}
   toast('💾 Категория сохранена');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 function addSalCat(){
@@ -4963,9 +5048,10 @@ function addSalCat(){
   var kpi=(document.getElementById('ncKpi')||{}).checked?1:0;
   var bsys=((document.getElementById('ncBsys')||{}).value==='caffelito')?'caffelito':'own';
   var pb=(document.getElementById('ncPb')||{}).checked?1:0;
+  var dk=(document.getElementById('ncKasa')||{}).checked?1:0;
   // Optimistik: geçici id ile listeye ekle (sunucu gerçek id ile refreshState'te düzeltir)
-  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys,product_bonus:pb});
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys,product_bonus:pb}))}catch(e){}}
+  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys,product_bonus:pb,does_kasa:dk}))}catch(e){}}
   toast('✅ Категория создана');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 async function deleteSalCat(id){
@@ -5168,38 +5254,6 @@ function deleteUserConfirmed(uid,nm,hasData){
 }
 
 // ── Tatlı kataloğu CRUD (owner) ──
-function saveDessert(id){
-  const ic=(document.getElementById('dic_'+id)||{}).value||'🍮';
-  const lb=((document.getElementById('dlb_'+id)||{}).value||'').trim();
-  const pr=parseInt((document.getElementById('dpr_'+id)||{}).value)||0;
-  if(!lb){toast('❌ Название обязательно');return}
-  if(pr<0){toast('❌ Неверная цена');return}
-  // Optimistik güncelle
-  const d=DESSERT_CAT.find(function(x){return x.id===id});
-  if(d){d.icon=ic;d.label=lb;d.price=pr}
-  const dl=DESSERT_LIST.find(function(x){return x.id===id});
-  if(dl){dl.c=ic;dl.l=lb;dl.r=pr}
-  persistDesserts();  // localStorage'a yaz — app kapanırsa veri kaybolmasın
-  toast('💾 Десерт сохранён');
-  if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
-  render();
-}
-
-async function deleteDessert(id){
-  const d=DESSERT_CAT.find(function(x){return x.id===id});
-  if(!d)return;
-  if(!(await cfAsk('🗑 Удалить десерт «'+(d.label||id)+'» из каталога?\n\nЕго больше не будет ни у баристов, ни у вас.\nИстория старых смен сохранится.',{danger:true,okText:'Удалить'})))return;
-  // Hem owner katalog listesinden hem aktif listeden çıkar (artık tamamen silinmiş gibi)
-  for(let i=DESSERT_CAT.length-1;i>=0;i--){if(DESSERT_CAT[i].id===id)DESSERT_CAT.splice(i,1)}
-  for(let i=DESSERT_LIST.length-1;i>=0;i--){if(DESSERT_LIST[i].id===id)DESSERT_LIST.splice(i,1)}
-  persistDesserts();  // localStorage'a yaz
-  toast('🗑 Удалён');
-  if(tg)tg.HapticFeedback?.notificationOccurred('warning');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_delete',id:id}))}catch(e){console.warn(e)}}
-  render();
-}
-
 // Cyrillic → latin transliteration (id otomatik üretmek için)
 function translit(s){
   const map={
@@ -5218,32 +5272,6 @@ function translit(s){
   // Birden fazla _ olmasın
   out=out.replace(/_+/g,'_').replace(/^_|_$/g,'');
   return out||'item';
-}
-
-function addNewDessert(){
-  const ic=((document.getElementById('ndIc')||{}).value||'🍮').trim()||'🍮';
-  const lb=((document.getElementById('ndLb')||{}).value||'').trim();
-  const pr=Math.max(0,parseInt((document.getElementById('ndPr')||{}).value)||500);
-  if(!lb){toast('❌ Введите название');return}
-  // id otomatik: isimden transliteration
-  let id=translit(lb);
-  // Eğer aynı id varsa numaralandır: tiramisu, tiramisu_2, tiramisu_3...
-  let base=id,n=2;
-  while(DESSERT_CAT.some(function(x){return x.id===id})){
-    id=base+'_'+n;n++;
-  }
-  // Optimistik
-  const newD={id:id,label:lb,icon:ic,price:pr,sort_order:50,active:1};
-  DESSERT_CAT.push(newD);
-  DESSERT_LIST.push({id:id,l:lb,c:ic,r:pr,active:true});
-  persistDesserts();  // localStorage'a yaz — app kapanırsa veri kaybolmasın
-  // Inputları temizle
-  ['ndIc','ndLb'].forEach(function(x){const el=document.getElementById(x);if(el)el.value=''});
-  const pe=document.getElementById('ndPr');if(pe)pe.value='500';
-  toast('➕ Добавлен: '+ic+' '+lb);
-  if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'dessert_save',id:id,label:lb,icon:ic,price:pr,active:1}))}catch(e){console.warn(e)}}
-  render();
 }
 
 /* ═══════════════════════════════════════
