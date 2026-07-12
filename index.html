@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070160;
+var APP_BUILD=2026070161;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4225,24 +4225,21 @@ function rMBaristas(m,b){
         +'<div class="bcard-stat"><span>Смен в месяце</span><span>'+(brs.sc||0)+'</span></div>';
       // Son vardiyalar (in/out times) — küçük liste
       if(brs.recent&&brs.recent.length){
-        h+='<div class="bcard-stat" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:8px;flex-direction:column;align-items:stretch"><span style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Последние смены</span>';
-        brs.recent.slice(0,3).forEach(function(r){
-          const day=String(new Date(r.start_time).getDate()).padStart(2,'0')+'.'+String(new Date(r.start_time).getMonth()+1).padStart(2,'0');
+        h+='<div class="bcard-stat" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:8px;flex-direction:column;align-items:stretch"><span style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">📅 Смены в этом месяце ('+brs.recent.length+')</span>';
+        brs.recent.forEach(function(r){
+          const dt=new Date(r.start_time);
+          const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+          const wd=['ВС','ПН','ВТ','СР','ЧТ','ПТ','СБ'][dt.getDay()];
           const open=!r.end_time;
-          h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span>'+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</span></div>';
+          h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span><b style="color:var(--t1)">'+wd+'</b> '+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</span></div>';
         });
         h+='</div>';
       }
       h+='<div class="bcard-actions">'
         +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')" style="flex:1">✅ Выплатить</button>'
       +'</div>';
-      // Çok şube: baristanın ev şubesi (owner değiştirebilir)
-      if((BRANCHES||[]).length>1 && brs.r!=='owner'){
-        h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏢 Филиал:'
-          +'<select onchange="assignBranch('+brs.id+',this.value)" style="flex:1;padding:6px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12px;font-family:inherit">'
-          +BRANCHES.map(function(bb){return '<option value="'+bb.id+'"'+((brs.bid||1)===bb.id?' selected':'')+'>'+escH(bb.name)+'</option>'}).join('')
-          +'</select></div>';
-      }
+      // Şube seçici KALDIRILDI (kullanıcı isteği): barista şubeyi vardiya başlatırken
+      // kendisi seçiyor → burada ayrıca seçim gereksiz. assignBranch tanımı dead (zararsız).
       // Maaş kategorisi (owner dahil herkes) — kategoriler tanımlıysa
       if((SAL_CATS||[]).length){
         h+='<div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--t2)">🏷️ Категория:'

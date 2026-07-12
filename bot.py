@@ -1515,6 +1515,14 @@ def build_hash_payload(db, user_id, name):
         baristas = []
         for b in rows:
             bs = calc_summary(db, b["user_id"])
+            # Bu baristanın bu ayki bitmiş vardiyaları (owner "kim, ne zaman çalıştı" görsün)
+            _rsh = db.execute(
+                "SELECT start_time, end_time, hours FROM shifts "
+                "WHERE user_id=? AND period=? AND end_time IS NOT NULL "
+                "ORDER BY COALESCE(start_time, created_at) DESC LIMIT 40",
+                (b["user_id"], current_period())).fetchall()
+            _recent = [{"start_time": r["start_time"], "end_time": r["end_time"],
+                        "hours": r["hours"] or 0} for r in _rsh]
             real_name = (b["display_name"] or b["name"] or "?").strip()
             # Recipe trainer progress for this barista
             rtp = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (b["user_id"],)).fetchone()
@@ -1549,7 +1557,7 @@ def build_hash_payload(db, user_id, name):
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
                 "cat": b["salary_cat_id"],
-                "recent": [],
+                "recent": _recent,
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
