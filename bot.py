@@ -1517,12 +1517,14 @@ def build_hash_payload(db, user_id, name):
             bs = calc_summary(db, b["user_id"])
             # Bu baristanın bu ayki bitmiş vardiyaları (owner "kim, ne zaman çalıştı" görsün)
             _rsh = db.execute(
-                "SELECT start_time, end_time, hours FROM shifts "
+                "SELECT id, start_time, end_time, hours, hourly_pay, bonus, "
+                "COALESCE(overtime,0) AS ot FROM shifts "
                 "WHERE user_id=? AND period=? AND end_time IS NOT NULL "
                 "ORDER BY COALESCE(start_time, created_at) DESC LIMIT 40",
                 (b["user_id"], current_period())).fetchall()
-            _recent = [{"start_time": r["start_time"], "end_time": r["end_time"],
-                        "hours": r["hours"] or 0} for r in _rsh]
+            _recent = [{"sid": r["id"], "start_time": r["start_time"], "end_time": r["end_time"],
+                        "hours": r["hours"] or 0, "hp": r["hourly_pay"] or 0,
+                        "b": r["bonus"] or 0, "ot": r["ot"] or 0} for r in _rsh]
             # Bu ayki ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görüp siler (balans düzelir)
             _pays = db.execute(
                 "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",

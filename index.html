@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070163;
+var APP_BUILD=2026070164;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2073,6 +2073,24 @@ async function delPay(uid,id,amount){
   if(typeof REP!=='undefined'&&REP&&REP.pays)REP.pays=REP.pays.filter(function(x){return x.id!==id});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:'pay',id:id}))}catch(e){}}
   toast('🗑 Выплата удалена');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
+}
+// «Все баристы» kartından vardiya sil (yönetici odası, tam temizlik): kazanç da düşer →
+// silinen ödeme «к выплате» olarak GERİ DÖNMEZ. Sistemden kalıcı silinir (delete_record shift).
+async function delShiftFromCard(uid,sid){
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});
+  var r=b?(b.recent||[]).find(function(x){return x.sid===sid}):null;
+  if(!(await cfAsk('Удалить эту смену из системы?\nЧасы и бонус за неё исчезнут из расчёта. Нельзя отменить.',{danger:true,okText:'Удалить'})))return;
+  if(b&&r){
+    b.recent=(b.recent||[]).filter(function(x){return x.sid!==sid});
+    b.sc=Math.max(0,(b.sc||0)-1);
+    b.h=Math.max(0,(b.h||0)-(r.hours||0));
+    b.hp=Math.max(0,(b.hp||0)-(r.hp||0));
+    b.b=Math.max(0,(b.b||0)-(r.b||0));
+    b.net=(b.net||0)-((r.hp||0)+(r.b||0)+(r.ot||0));
+  }
+  if(typeof REP!=='undefined'&&REP&&REP.shifts)REP.shifts=REP.shifts.filter(function(s){return s.sid!==sid});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:'shift',id:sid}))}catch(e){}}
+  toast('🗑 Смена удалена');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
 }
 async function deleteShift(id){
   if(!(await cfAsk('Удалить эту смену?\nДействие нельзя отменить.',{danger:true,okText:'Удалить'})))return;
@@ -4245,7 +4263,7 @@ function rMBaristas(m,b){
             const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
             const wd=['ВС','ПН','ВТ','СР','ЧТ','ПТ','СБ'][dt.getDay()];
             const open=!r.end_time;
-            h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span><b style="color:var(--t1)">'+wd+'</b> '+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</span></div>';
+            h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:2px 0;color:var(--t2)"><span><b style="color:var(--t1)">'+wd+'</b> '+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="display:flex;align-items:center;gap:8px"><b style="color:var(--t1)">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</b>'+((edit&&!open&&r.sid)?'<button onclick="delShiftFromCard('+brs.id+','+r.sid+')" title="Удалить смену" style="width:24px;height:24px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:12px;cursor:pointer">🗑</button>':'')+'</span></div>';
           });
           h+='</div>';
         }
