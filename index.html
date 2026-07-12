@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070158;
+var APP_BUILD=2026070159;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1582,6 +1582,8 @@ try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
 // Varsayılan true → mevcut baristalar eskisi gibi (geriye tam uyumlu).
 let MY_DOES_KASA=true;
 try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
+// Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
+var TIPS_ON=false;
 let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
 HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
 // Fazla mesai (сверхурочные) ayarı — owner
@@ -2988,24 +2990,9 @@ function rMMain(m,b){
   h+=rolePill;
   if(MY_ROLE==='owner')h+='<div style="text-align:center;font-size:10px;color:var(--t3);margin:-2px 0 8px;letter-spacing:.5px">версия '+(typeof APP_BUILD!=='undefined'?APP_BUILD:'?')+'</div>';
 
-  // ── Owner: şube seçici + "kim çalışıyor" (Управление'nin en üstü) ──
-  if(MY_ROLE==='owner' && (BRANCHES||[]).length){
-    var _bopts=[{id:0,name:'Все'}].concat(BRANCHES.map(function(b){return {id:b.id,name:b.name}}));
-    var _activeHere=(BARISTAS||[]).filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
-    var _names=_activeHere.map(function(x){return escH(x.n)+(!ACTIVE_BRANCH&&(BRANCHES||[]).length>1?'<span style="color:var(--t3);font-size:11px"> ·'+escH(branchName((x.active&&x.active.branch_id)||x.bid))+'</span>':'')}).join(', ');
-    h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:9px 11px;margin-bottom:10px">'
-      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-        +'<span style="font-size:12px;font-weight:800;color:var(--t2)">🏢</span>'
-        +_bopts.map(function(o){var on=o.id===ACTIVE_BRANCH;return '<button onclick="setActiveBranchUI('+o.id+')" style="padding:5px 11px;border-radius:var(--rp);border:1px solid '+(on?'var(--gold)':'var(--border2)')+';background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#1a1a1a':'var(--t1)')+';font-weight:700;font-size:12px;cursor:pointer">'+escH(o.name)+'</button>'}).join('')
-        +'<button onclick="mView=\'branches\';render()" title="Изменить филиалы" style="margin-left:auto;padding:5px 8px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:13px;cursor:pointer">✏️</button>'
-      +'</div>'
-      +'<div style="margin-top:8px;font-size:12.5px;line-height:1.45">'
-      +(_activeHere.length
-          ? '<span style="color:var(--green);font-weight:700">🟢 В смене'+(ACTIVE_BRANCH?' ('+escH(branchName(ACTIVE_BRANCH))+')':'')+':</span> '+_names
-          : '<span style="color:var(--t3)">Никого нет в смене'+(ACTIVE_BRANCH?' · '+escH(branchName(ACTIVE_BRANCH)):'')+'</span>')
-      +'</div>'
-    +'</div>';
-  }
+  // ── Şube seçici kartı KALDIRILDI (kullanıcı isteği). Филиалы own-grid'deki
+  //    «🏢 Филиалы» butonunda; "kim çalışıyor" own-grid «🟢 В смене» butonunda.
+  //    Управление artık her zaman tüm şubeleri gösterir (ACTIVE_BRANCH filtresi arayüzden çıktı).
 
   // Сертификация бариста — экзамен/сертификат (barista ana ekrandan; owner — из Бухгалтерии)
   if(MY_ROLE!=='owner'){
@@ -3055,10 +3042,10 @@ function rMMain(m,b){
     var myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
     var _cc='flex:1;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:8px 11px;display:flex;align-items:center;gap:7px';
     h+='<div style="display:flex;gap:8px;margin-top:10px">'
-      +'<div style="'+_cc+'"><span style="font-size:15px">💝</span><span style="font-size:11px;color:var(--t3)">Чаевые</span><span style="font-weight:800;color:#10b981;margin-left:auto;font-size:13px">+'+fmt(tips)+'</span></div>'
+      +(TIPS_ON?'<div style="'+_cc+'"><span style="font-size:15px">💝</span><span style="font-size:11px;color:var(--t3)">Чаевые</span><span style="font-weight:800;color:#10b981;margin-left:auto;font-size:13px">+'+fmt(tips)+'</span></div>':'')
       +'<div onclick="'+(myPending?'':'openLoanRequest()')+'" style="'+_cc+';cursor:pointer"><span style="font-size:15px">💸</span><span style="font-size:11px;color:var(--t3)">Аванс</span><span style="font-size:11px;font-weight:700;margin-left:auto;color:'+(myPending?'#f59e0b':'var(--t2)')+'">'+(myPending?'⏳':'запросить ›')+'</span></div>'
     +'</div>';
-  } else {
+  } else if(TIPS_ON) {
     // Owner: чаевые dağıtımı zaten Бухгалтерия panelinde — burada tek kompakt buton
     h+='<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;display:flex;align-items:center;justify-content:space-between">'
       +'<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">💝</span><span style="font-size:13px;color:var(--t2)">Чаевые: <b style="color:#10b981">+'+fmt(tips)+'</b></span></div>'
@@ -3076,7 +3063,7 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+((BARISTAS.filter(function(x){return !x.arch}).length)?'<div class="own-btn-s">'+BARISTAS.filter(function(x){return !x.arch}).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
         +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
-        +'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>'
+        +(TIPS_ON?'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>':'')
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
         +'<div class="own-btn" onclick="mView=\'branches\';render()"><div class="own-btn-i">🏢</div><div class="own-btn-t">Филиалы</div></div>'
@@ -3118,9 +3105,9 @@ function rMMain(m,b){
     });
   }
 
-  // Bahşiş tarihçesi (kendi)
+  // Bahşiş tarihçesi (kendi) — TIPS_ON kapalıysa gizli
   const tipsList=(s.tips_list||[]).slice().reverse();
-  if(tipsList.length){
+  if(TIPS_ON && tipsList.length){
     h+='<div class="sec">💝 Чаевые ('+(s.tips_count||0)+')</div>';
     tipsList.forEach(function(t){
       const dt=new Date(t.created_at||Date.now());
