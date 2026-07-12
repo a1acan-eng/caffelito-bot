@@ -1523,6 +1523,11 @@ def build_hash_payload(db, user_id, name):
                 (b["user_id"], current_period())).fetchall()
             _recent = [{"start_time": r["start_time"], "end_time": r["end_time"],
                         "hours": r["hours"] or 0} for r in _rsh]
+            # Bu ayki ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görüp siler (balans düzelir)
+            _pays = db.execute(
+                "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",
+                (b["user_id"], current_period())).fetchall()
+            _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]} for r in _pays]
             real_name = (b["display_name"] or b["name"] or "?").strip()
             # Recipe trainer progress for this barista
             rtp = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (b["user_id"],)).fetchone()
@@ -1558,6 +1563,7 @@ def build_hash_payload(db, user_id, name):
                 "bid": b["branch_id"] or 1,
                 "cat": b["salary_cat_id"],
                 "recent": _recent,
+                "pays": _pay_list,
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,

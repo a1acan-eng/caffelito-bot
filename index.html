@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070161;
+var APP_BUILD=2026070162;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2063,6 +2063,16 @@ async function delRec(kind,id){
   if(kind==='cash'&&typeof KASA_REPORTS!=='undefined')KASA_REPORTS=KASA_REPORTS.filter(function(x){return x.id!==id});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:kind,id:id}))}catch(e){}}
   toast('🗑 Удалено');render();
+}
+// «Все баристы» kartından bir ödeme kaydını sil → o kişinin balansı düzelir (net += tutar).
+// Vardiya/çalışma geçmişi KALIR; sadece bu ödeme kaydı silinir.
+async function delPay(uid,id,amount){
+  if(!(await cfAsk('Удалить эту выплату?\nСмены и часы сотрудника останутся — пересчитается только баланс.',{danger:true,okText:'Удалить'})))return;
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});
+  if(b){b.pays=(b.pays||[]).filter(function(p){return p.id!==id});b.paid=Math.max(0,(b.paid||0)-amount);b.net=(b.net||0)+amount;}
+  if(typeof REP!=='undefined'&&REP&&REP.pays)REP.pays=REP.pays.filter(function(x){return x.id!==id});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:'pay',id:id}))}catch(e){}}
+  toast('🗑 Выплата удалена');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
 }
 async function deleteShift(id){
   if(!(await cfAsk('Удалить эту смену?\nДействие нельзя отменить.',{danger:true,okText:'Удалить'})))return;
@@ -4232,6 +4242,17 @@ function rMBaristas(m,b){
           const wd=['ВС','ПН','ВТ','СР','ЧТ','ПТ','СБ'][dt.getDay()];
           const open=!r.end_time;
           h+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0;color:var(--t2)"><span><b style="color:var(--t1)">'+wd+'</b> '+day+' · '+fmtTime(r.start_time)+(open?' → <b style=\"color:#059669\">в смене</b>':' → '+fmtTime(r.end_time))+'</span><span style="color:var(--t1);font-weight:700">'+(open?(liveDur(r.start_time)):fmtH(r.hours||0))+'</span></div>';
+        });
+        h+='</div>';
+      }
+      // 💵 Ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görür ve siler → balans düzelir
+      if(brs.pays&&brs.pays.length){
+        h+='<div class="bcard-stat" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:8px;flex-direction:column;align-items:stretch"><span style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">💵 Выплаты в этом месяце ('+brs.pays.length+')</span>';
+        brs.pays.forEach(function(p){
+          var dt=new Date(p.at||Date.now());
+          var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+          var tm=String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
+          h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 0;color:var(--t2)"><span>'+day+' · '+tm+'</span><span style="display:flex;align-items:center;gap:8px"><b style="color:var(--t1)">'+fmt(p.amount)+'</b><button onclick="delPay('+brs.id+','+p.id+','+(parseInt(p.amount)||0)+')" title="Удалить выплату" style="width:24px;height:24px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:12px;cursor:pointer">🗑</button></span></div>';
         });
         h+='</div>';
       }
