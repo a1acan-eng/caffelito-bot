@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070159;
+var APP_BUILD=2026070160;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -4349,6 +4349,8 @@ function rMPay(m,b){
   if(MY_ROLE!=='owner'){mView='main';render();return}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">✅ Выплатить зарплату · '+escH(fmtMonth(curPeriod()))+'</div>';
+  // Bahşiş dağıtımı buraya gizlendi (ana ekranda görünmüyor). Owner isteyince buradan ulaşır.
+  h+='<button onclick="openTips()" style="width:100%;margin:0 0 8px;padding:10px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:13px;font-weight:700;cursor:pointer">💝 Раздать чаевые</button>';
   if(!BARISTAS.length){
     h+='<div class="empty-mini">Нет сотрудников</div>';
     m.innerHTML=h;b.style.display='none';return;
