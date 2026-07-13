@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070164;
+var APP_BUILD=2026070165;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1702,9 +1702,11 @@ function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
 // owner:true → sadece owner görür. salary owner'da 'Управление' olarak gösterilir.
-const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'uborka',l:'ЧИСТОТА',i:'🫧'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'ЗП',i:'💰'}];
+// ЧИСТОТА ayrı sekme DEĞİL artık — Задачи içinde alt bölüm (rTaskHub). tab='uborka' state'i
+// dahili olarak yaşıyor (rTM/rTL aynen çalışsın diye); tab barda Задачи vurgulanır.
+const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'ЗП',i:'💰'}];
 function visTabs(){return TABS.filter(function(t){return !t.owner||MY_ROLE==='owner'}).map(function(t){var o={id:t.id,l:t.l,i:t.i};if(t.id==='salary'&&MY_ROLE==='owner'){o.l='Управление';o.i='🛠'}return o})}
-function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){return '<div class="tab '+(tab===t.id?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
+function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){var on=(tab===t.id)||(t.id==='zadachi'&&tab==='uborka');return '<div class="tab '+(on?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
 // ── Soldan sağa kaydırma = geri (OS-tarzı jest) ──
 function goBack(){
   if(typeof orderExport!=='undefined'&&orderExport){orderExport=false;render();return true}
@@ -1714,6 +1716,8 @@ function goBack(){
   if(tab==='zadachi'&&sub==='__game__'&&typeof certBack!=='undefined'&&certBack){certBackGo();return true}
   if(typeof sub!=='undefined'&&sub){sub=null;render();return true}
   if(typeof cat!=='undefined'&&cat){cat=null;render();return true}
+  // Задачи/Чистота alt bölümünden hub'a dön
+  if((tab==='zadachi'||tab==='uborka')&&typeof taskSec!=='undefined'&&taskSec){taskSecBack();return true}
   return false;
 }
 (function(){
@@ -1774,7 +1778,7 @@ function go(t){
   if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   // Yön bazlı geçiş: hedef sekme mevcuttan sağda mı solda mı?
   try{var _vt=visTabs().map(function(x){return x.id});var _oi=_vt.indexOf(tab),_ni=_vt.indexOf(t);window._cfTabDir=(_oi>=0&&_ni>=0&&_ni!==_oi)?(_ni>_oi?1:-1):0;}catch(_e){window._cfTabDir=0;}
-  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;reportRoom=null;orderSearch='';shiftMoreOpen=false;brSwitchOpen=false;dT();render();
+  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;reportRoom=null;orderSearch='';shiftMoreOpen=false;brSwitchOpen=false;taskSec=null;dT();render();
   // Sekme değiştiğinde sayfayı her zaman yukarı kaydır — kullanıcı önceki sekmeyi
   // aşağı kaydırmış olabilir, yeni sekmenin başını görmeli.
   scrollTopAll();
@@ -1830,13 +1834,13 @@ function render(){
   if(eBtn)eBtn.style.display=(MY_ROLE==='owner')?'flex':'none';
   if(tab==='shift'){rShift(m,b)}
   else if(tab==='order'){cat?rOC(m,b):rOCs(m,b)}
-  else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub==='__ref__'?rReference(m,b):(sub?rTL(m,b):rTM(m,b)))}
+  else if(tab==='zadachi'||tab==='uborka'){sub==='__game__'?rGame(m,b):(sub==='__ref__'?rReference(m,b):(sub?rTL(m,b):((tab==='zadachi'&&!taskSec)?rTaskHub(m,b):rTM(m,b))))}
   else if(tab==='salary'){rM(m,b)}
   else rR(m,b);
   // View/sub-view/tab değiştiyse sayfayı en üste kaydır —
   // (aynı view'da küçük render'larda scroll'u bozma, sadece navigasyon değişimlerinde)
   try{
-    const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'')+'|'+((typeof kasaDetail!=='undefined'&&kasaDetail)?'k':'')+'|'+(typeof reportRoom!=='undefined'?(reportRoom||''):'');
+    const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'')+'|'+((typeof kasaDetail!=='undefined'&&kasaDetail)?'k':'')+'|'+(typeof reportRoom!=='undefined'?(reportRoom||''):'')+'|'+(typeof taskSec!=='undefined'?(taskSec||''):'');
     if(key!==_lastViewKey){
       // Giden görünümün scroll'unu hatırla, gelen görünümün kayıtlı scroll'unu geri yükle
       if(_prevKey)_scrollMem[_prevKey]=_prevScroll;
@@ -2105,10 +2109,31 @@ async function cancelScheduled(id){
   toast('Отменено');render();
 }
 
+// ═══ Задачи HUB — Задачи смены + Чистота TEK sekmede (alt alta, içine girilir) ═══
+// taskSec: null=hub | 'tasks'=Задачи смены | 'clean'=Чистота. tab='uborka' dahili state
+// olarak yaşamaya devam eder (rTM/rTL/ts anahtarları aynen çalışsın — sıfır veri kaybı).
+var taskSec=null;
+function taskSecBack(){taskSec=null;tab='zadachi';dT();render();scrollTopAll();}
+function openTaskSec(s){taskSec=s;tab=(s==='clean')?'uborka':'zadachi';dT();render();scrollTopAll();}
+function rTaskHub(m,b){
+  // Задачи смены toplam ilerleme (tüm bölümler)
+  var zsrc=T['zadachi']||{},zd=0,zt=0;
+  Object.keys(zsrc).forEach(function(k){var st=ts['zadachi_'+k]||[];zd+=st.filter(Boolean).length;zt+=(zsrc[k]||[]).length;});
+  // Чистота: bugün zorunlu olanlar (Ежедневно + bugünün günü)
+  var usrc=T['uborka']||{},t=gT(),todayKey=DAY_MAP[t.getDay()];
+  var ud=0,ut=0;['Ежедневно',todayKey].forEach(function(k){if(!usrc[k])return;var st=ts['uborka_'+k]||[];ud+=st.filter(Boolean).length;ut+=(usrc[k]||[]).length;});
+  var h='';
+  h+='<div class="card" onclick="openTaskSec(\'tasks\')"><div class="card-left"><div class="card-icon">📋</div><div class="card-info"><div class="card-title">Задачи смены</div><div class="card-sub">Открытие · днём · закрытие · '+zd+'/'+zt+'</div></div></div><div class="card-right">'+(zt>0&&zd===zt?'<span class="badge badge-green">&#10003;</span>':'')+'<span class="arrow">&#8250;</span></div></div>';
+  h+='<div class="card" onclick="openTaskSec(\'clean\')"><div class="card-left"><div class="card-icon">🫧</div><div class="card-info"><div class="card-title">Чистота</div><div class="card-sub">Сегодня обязательно: '+ud+'/'+ut+'</div></div></div><div class="card-right">'+(ut>0&&ud===ut?'<span class="badge badge-green">&#10003;</span>':'')+'<span class="arrow">&#8250;</span></div></div>';
+  // Справочник — hub seviyesinde (eskiden Задачи kökündeydi, aynı görünürlük korundu)
+  h+='<div class="card" onclick="sub=\'__ref__\';render()" style="margin-top:14px;border:1px solid var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты · подготовка</div></div></div><div class="card-right"><span class="arrow">&#8250;</span></div></div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+}
 // ── Уборка — bugünü öne çıkar ──
 function rTM(m,b){
   const src=T[tab]||{},t=gT(),dow=t.getDay(),todayKey=DAY_MAP[dow];
-  let h='';
+  let h='<button class="back" onclick="taskSecBack()">‹ Назад</button>';
   if(tab==='uborka'){
     // Uborka'da edit modu yoktur — add-row gösterilmez
     const allKeys=Object.keys(src);
@@ -2131,8 +2156,7 @@ function rTM(m,b){
       const sk=tab+'_'+k,st=ts[sk]||[],done=st.filter(Boolean).length,total=st.length,ok=done===total&&total>0;
       h+='<div class="card" onclick="sub=\''+esc(k)+'\';render()"><div class="card-left"><div class="card-info"><div class="card-title">'+k+'</div><div class="card-sub">'+done+'/'+total+'</div></div></div><div class="card-right">'+(ok?'<span class="badge badge-green">&#10003;</span>':'')+(edit?'<button class="xbtn" onclick="event.stopPropagation();dSe(\''+esc(k)+'\')">&#10005;</button>':'<span class="arrow">&#8250;</span>')+'</div></div>';
     });
-    // Справочник — подготовка к экзамену (сам экзамен/Сертификация — на главной)
-    h+='<div class="card" onclick="sub=\'__ref__\';render()" style="margin-top:14px;border:1px solid var(--gold-border);background:var(--gold-bg)"><div class="card-left"><div class="card-icon">📖</div><div class="card-info"><div class="card-title">Справочник Caffelito</div><div class="card-sub">Рецепты · сроки хранения · стандарты · подготовка</div></div></div><div class="card-right"><span class="arrow">›</span></div></div>';
+    // Справочник kartı hub'a taşındı (rTaskHub) — burada tekrarı yok.
   }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
@@ -3090,7 +3114,8 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="mView=\'activeBaristas\';render()"><div class="own-btn-i">🟢</div><div class="own-btn-t">В смене</div>'+(activeCount?'<div class="own-btn-s">'+activeCount+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+((BARISTAS.filter(function(x){return !x.arch}).length)?'<div class="own-btn-s">'+BARISTAS.filter(function(x){return !x.arch}).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
-        +'<div class="own-btn" onclick="mView=\'pay\';payTarget=0;render()"><div class="own-btn-i">✅</div><div class="own-btn-t">Выплатить</div></div>'
+        // «Выплатить» ayrı kutu KALDIRILDI (kullanıcı isteği) — ödeme artık barista
+        // kartının içinden: Все баристы → kişi → ✅ Выплатить (quickPay). rMPay aynen duruyor.
         +(TIPS_ON?'<div class="own-btn" onclick="openTips()"><div class="own-btn-i">💝</div><div class="own-btn-t">Чаевые</div></div>':'')
         +'<div class="own-btn" onclick="mView=\'loanReview\';render()"><div class="own-btn-i">💸</div><div class="own-btn-t">Авансы</div>'+(LOANS&&LOANS.length?'<div class="own-btn-s">'+LOANS.length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openCert()"><div class="own-btn-i">🎓</div><div class="own-btn-t">Сертификация</div></div>'
