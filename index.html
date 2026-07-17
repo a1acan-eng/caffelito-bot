@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070170;
+var APP_BUILD=2026070171;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2523,10 +2523,17 @@ function openRoom(id,n){
   try{var s=JSON.parse(localStorage.getItem('cf_roomseen')||'{}');s[id]=n;localStorage.setItem('cf_roomseen',JSON.stringify(s));}catch(e){}
   reportRoom=id;payDetail=null;shiftDetOpen=null;render();
 }
+// Профиль/Управление'den vardiya geçmişine tek atlama: Отчёт → Мои смены/Смены.
+// (go() reportRoom'u sıfırlar → openRoom SONRA çağrılır.)
+function openMyShiftsReport(){
+  go('report');
+  openRoom('shifts',((REP&&REP.shifts)||[]).length);
+}
 function rReportRoom(m,b){
   b.style.display='none';
   var room=reportRoom;
   var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',products:'🛍 Бонусы за товары',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
+  if(MY_ROLE!=='owner'){titles.shifts='📊 Мои смены';titles.orders='📦 Мои заказы';}
   var h='<button class="back" onclick="reportRoom=null;render()">‹ Назад</button>';
   h+='<div class="sec">'+(titles[room]||'Отчёт')+'</div>';
   if(MY_ROLE==='owner'&&edit)h+='<div class="refresh-hint" style="margin:0 0 8px;color:var(--red)">✏️ Режим редактирования: нажмите 🗑 у записи, чтобы удалить её.</div>';
@@ -2591,11 +2598,17 @@ function rReportRoom(m,b){
           var kr=hasRep?KASA_REPORTS[kri]:null;
           var _sOpen=(!hasRep&&shiftDetOpen===s.start_time);
           var _clk=hasRep?('kasaDetail=KASA_REPORTS['+kri+'];render()'):('shiftDetOpen=(shiftDetOpen===\''+esc(s.start_time)+'\'?null:\''+esc(s.start_time)+'\');render()');
+          // Satır: Saat aralığı · süre · şube · KAZANÇ (barista kendi listesinde isim yerine).
+          // Detay (rol/kategori/ставка/bonus) tıklayınca — progressive disclosure.
+          var _earn=(s.total||0)+(s.overtime||0);
+          var _brTag=((BRANCHES||[]).length>1&&s.bid)?' · 🏢 '+escH(branchName(s.bid)):'';
           h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer" onclick="'+_clk+'">'
             +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">👤</div>'
-            +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>'
-            +'<div style="font-size:11px;color:var(--t2)">⏰ '+fmtTime(s.start_time)+' → '+outTxt+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':(s.end_time?' · <span style="color:var(--t3)">'+(_sOpen?'▾':'▸')+' детали</span>':''))+'</div></div>'
-            +(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
+            +'<div style="flex:1;min-width:0">'+(MY_ROLE==='owner'?'<div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>':'<div style="font-weight:700;font-size:13px">'+fmtTime(s.start_time)+' → '+outTxt+'</div>')
+            +'<div style="font-size:11px;color:var(--t2)">'+(MY_ROLE==='owner'?('⏰ '+fmtTime(s.start_time)+' → '+outTxt):fmtH(s.hours||0))+_brTag+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':(s.end_time?' · <span style="color:var(--t3)">'+(_sOpen?'▾':'▸')+' детали</span>':''))+'</div></div>'
+            +(MY_ROLE==='owner'
+               ?(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
+               :'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+(s.end_time?('+'+fmt(_earn)):fmtH(s.hours||0))+'</div></div>')
             +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
           if(_sOpen){
@@ -2776,6 +2789,9 @@ function rShift(m,b){
       +'<div class="act-sub">прошло с начала смены</div>'
       +'<div class="act-row"><span>Пришли в</span><b>'+startStr+'</b></div>'
       +((BRANCHES||[]).length>1?'<div class="act-row"><span>🏢 Филиал</span><b>'+escH(branchName(curSB))+'</b></div>':'')
+      // Rol — AKTİF vardiyanın snapshot'ından (yoksa şubedeki etkin rolüm)
+      +(function(){var _ar=(active&&active.shift_role)||((SLOTS||{})[String(curSB)]||{}).my_role||'';
+        return _ar?'<div class="act-row"><span>Роль</span><b>'+(_ar==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста')+'</b></div>':''})()
       +'<button class="btn-end" onclick="openShiftEnd()">🔴 Завершить смену</button>'
       +((BRANCHES||[]).length>1?(
           '<button onclick="brSwitchOpen=!brSwitchOpen;render()" style="width:100%;margin-top:8px;padding:10px;border-radius:var(--rp);border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;font-size:13px;font-weight:600;cursor:pointer">🔁 Сменить филиал</button>'
@@ -2794,6 +2810,9 @@ function rShift(m,b){
     if((BRANCHES||[]).length>1 && (!startBranch||!BRANCHES.some(function(b){return b.id===startBranch})))startBranch=(BRANCHES[0]&&BRANCHES[0].id)||1;
     // Sade: sadece «Начать смену». Diğer her şey ⚙️ içinde gizli.
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
+    // Nerede + hangi rolle başlayacağı (SLOTS'tan; şube ⚙️'den değiştirilir)
+    (function(){var _sb=startBranch||MY_BRANCH||1;var _mr=((SLOTS||{})[String(_sb)]||{}).my_role||'';
+      h+='<div style="text-align:center;font-size:11.5px;color:var(--t3);margin-top:8px">🏢 '+escH(branchName(_sb))+(_mr?' · '+(_mr==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста'):'')+'</div>';})();
     h+='<button onclick="shiftMoreOpen=!shiftMoreOpen;render()" style="width:100%;margin-top:8px;padding:9px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t3);font-size:12.5px;font-weight:600;cursor:pointer">'+(shiftMoreOpen?'▴ Скрыть':'⚙️ Другое время / филиал')+'</button>';
     if(shiftMoreOpen){
       h+='<div style="margin-top:10px;padding:12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">';
@@ -2845,20 +2864,8 @@ function rShift(m,b){
     if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   }
 
-  // Kendi son vardiyaları (kısa)
-  const myShifts=(s.shifts||[]).slice(-3).reverse();
-  if(myShifts.length){
-    h+='<div class="sec">📊 Ваши последние смены</div>';
-    myShifts.forEach(function(sh){
-      const dt=new Date(sh.start_time||sh.created_at||Date.now());
-      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
-      const tm=sh.start_time?(fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
-      h+='<div class="hist">'
-        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+fmtH(sh.hours||0)+' · '+fmt(sh.total||0)+' сум</div></div>'
-        +'<div class="hist-r">+'+fmt(sh.total||0)+'</div>'
-      +'</div>';
-    });
-  }
+  // «Ваши последние смены» KALDIRILDI (kullanıcı isteği): vardiya geçmişinin TEK
+  // adresi artık Отчёт → Мои смены. Bu ekran sadece başlat/aktif/şube/rol/bitir.
 
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
@@ -3159,24 +3166,12 @@ function rMMain(m,b){
     +'</div>';
   }
 
-  // Vardiya geçmişi (tıklanabilir)
-  const shifts=(s.shifts||[]).slice().reverse();
-  h+='<div class="sec-link"><span>📊 Мои смены ('+(s.shifts_count||0)+')</span></div>';
-  if(shifts.length){
-    shifts.forEach(function(sh,idx){
-      const dt=new Date(sh.start_time||sh.created_at||sh.date||Date.now());
-      const day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
-      let drinkSum=0;try{const d=typeof sh.drinks==='string'?JSON.parse(sh.drinks):sh.drinks||{};Object.values(d).forEach(function(v){drinkSum+=parseInt(v)||0})}catch(e){}
-      const tm=sh.start_time?(' · '+fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
-      h+='<div class="hist click" onclick="openShiftDetail('+(s.shifts.length-1-idx)+')">'
-        +'<div class="hist-l"><div class="hist-d">'+day+tm+' · '+(sh.hours%1===0?sh.hours:Number(sh.hours).toFixed(1))+'h '+(drinkSum?'· '+drinkSum+' шт':'')+'</div><div class="hist-m">часы '+fmt(sh.hourly_pay||0)+' + бонус '+fmt(sh.bonus||0)+'</div></div>'
-        +'<div class="hist-r">+'+fmt(sh.total||0)+'</div>'
-        +'<span class="hist-arr">›</span>'
-      +'</div>';
-    });
-  } else if(!active) {
-    h+='<div class="empty-mini">Смен ещё нет — нажмите «Начать смену»</div>';
-  }
+  // «Мои смены» LİSTESİ KALDIRILDI (kullanıcı isteği): vardiya geçmişinin TEK adresi
+  // Отчёт → Мои смены. Burada sadece oraya götüren sade bir satır var (progressive disclosure).
+  h+='<div class="hist click" onclick="openMyShiftsReport()">'
+    +'<div class="hist-l"><div class="hist-d">📊 Мои смены'+((s.shifts_count||0)?' ('+s.shifts_count+')':'')+'</div><div class="hist-m">как заработана зарплата — подробности в Отчёте</div></div>'
+    +'<span class="hist-arr">›</span>'
+  +'</div>';
 
   // Cezalar (sadece kendi cezalarını görür — bot zaten kendi user_id'sine göre filtreliyor)
   const fl=(s.fines_list||[]).slice().reverse();
