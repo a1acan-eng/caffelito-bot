@@ -313,6 +313,13 @@ def get_db():
             db.execute(f"ALTER TABLE branches ADD COLUMN {_bc2} {_bd2}")
         except sqlite3.OperationalError:
             pass
+    # Şube işgücü ayarı: «Ассистент/стажёр» pozisyonu bu şubede açık mı?
+    # 0 (varsayılan) = tek aktif barista slotu; 1 = barista + asistan İKİ bağımsız slot.
+    # Şube adına göre DEĞİL — her şube kendi ayarını taşır (gelecekteki şubeler dahil).
+    try:
+        db.execute("ALTER TABLE branches ADD COLUMN trainee_enabled INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     # Şubelenen tablolara branch_id kolonu (eski DB'lerde yoksa ekle; hepsi ana şubeye = 1).
     # SQLite ALTER ADD COLUMN ... DEFAULT 1 mevcut satırları da 1 yapar.
     for _bt in ("users", "shifts", "cashreports", "orders", "std_acks"):
@@ -400,6 +407,27 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN does_kasa INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # Kategorinin işgal ettiği SLOT: 'barista' (varsayılan) | 'assistant' (ассистент/стажёр).
+    # Şubede trainee_enabled=1 ise iki slot bağımsız çalışır; kapalıysa herkes barista slotu.
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN slot_role TEXT DEFAULT 'barista'")
+    except sqlite3.OperationalError:
+        pass
+    # Vardiya SNAPSHOT kolonları: başlangıçta rol+kategori+ставка dondurulur —
+    # kategori/ücret sonradan değişse TARİHSEL vardiyalar asla etkilenmez.
+    for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
+                       ("cat_name", "TEXT"), ("rate", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
+        except sqlite3.OperationalError:
+            pass
+    # Kişi × şube kategori ataması (opsiyonel override): aynı kişi bir şubede stajyer,
+    # diğerinde Barista 1 çalışabilir. Satır yoksa global (users.salary_cat_id) geçerli.
+    db.execute("""CREATE TABLE IF NOT EXISTS branch_staff (
+        user_id INTEGER,
+        branch_id INTEGER,
+        salary_cat_id INTEGER,
+        PRIMARY KEY (user_id, branch_id))""")
     # Ürün satış kayıtları (ödeme anında girilir): dönemin gross'una ürün bonusu ekler.
     db.execute("""CREATE TABLE IF NOT EXISTS product_sales (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -453,6 +481,15 @@ def get_db():
                     "VALUES (?,?,0,1,0,0,?,?)",
                     ("Стажёр", int(HOURLY_RATE), (_mos["s"] if _mos else 1), datetime.now(TZ).isoformat()))
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('stajyer_seeded', ?)", (datetime.now(TZ).isoformat(),))
+    except Exception:
+        pass
+    # Bir kez: daha önce tohumlanan «Стажёр» kategorisini assistant slotuna işaretle
+    # (kolon yeni eklendi; owner sonradan istediği kategoriyi işaretleyebilir).
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='slotrole_seeded'").fetchone():
+            db.execute("UPDATE salary_categories SET slot_role='assistant' "
+                       "WHERE name=? AND COALESCE(slot_role,'barista')='barista'", ("Стажёр",))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('slotrole_seeded', ?)", (datetime.now(TZ).isoformat(),))
     except Exception:
         pass
     db.commit()
@@ -567,7 +604,7 @@ def get_salary_categories(db, only_active=False):
     """Maaş kategorileri listesi (dict)."""
     q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,"
          "COALESCE(bonus_system,'own') AS bonus_system,COALESCE(product_bonus,0) AS product_bonus,"
-         "COALESCE(does_kasa,1) AS does_kasa,"
+         "COALESCE(does_kasa,1) AS does_kasa,COALESCE(slot_role,'barista') AS slot_role,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -690,31 +727,93 @@ def get_caffelito_bonus(db):
     return out
 
 
-def barista_pay_info(db, user_id):
-    """Baristanın maaş bilgisi: {rate, use_kpi, bonus_system, cat_id, cat_name}.
-    Kategori atanmış VE aktifse onun ставка'sı+bonus sistemi; yoksa global (geriye uyumlu)."""
+def barista_pay_info(db, user_id, branch_id=None):
+    """Baristanın maaş bilgisi: {rate, use_kpi, bonus_system, cat_id, cat_name, slot_role}.
+    branch_id verilirse ÖNCE kişi×şube ataması (branch_staff) bakılır — aynı kişi farklı
+    şubede farklı kategoriyle çalışabilir. Yoksa global kategori (geriye tam uyumlu)."""
     info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
             "use_kpi": 0, "bonus_system": "own", "product_ok": 0, "does_kasa": 1,
-            "cat_id": None, "cat_name": None}
+            "slot_role": "barista", "cat_id": None, "cat_name": None}
     try:
-        r = db.execute(
-            "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
-            "COALESCE(c.bonus_system,'own') AS bsys, COALESCE(c.product_bonus,0) AS pb, "
-            "COALESCE(c.does_kasa,1) AS dk, "
-            "c.active AS active FROM users u "
-            "JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
-            (user_id,)).fetchone()
+        _cols = ("id AS cid, name AS cname, hourly_rate AS rate, use_kpi AS kpi, "
+                 "COALESCE(bonus_system,'own') AS bsys, COALESCE(product_bonus,0) AS pb, "
+                 "COALESCE(does_kasa,1) AS dk, COALESCE(slot_role,'barista') AS sr, active")
+        r = None
+        if branch_id:
+            _ov = db.execute(
+                "SELECT salary_cat_id FROM branch_staff WHERE user_id=? AND branch_id=?",
+                (user_id, int(branch_id))).fetchone()
+            if _ov and _ov["salary_cat_id"]:
+                r = db.execute(f"SELECT {_cols} FROM salary_categories WHERE id=?",
+                               (_ov["salary_cat_id"],)).fetchone()
+        if not r:
+            r = db.execute(
+                "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
+                "COALESCE(c.bonus_system,'own') AS bsys, COALESCE(c.product_bonus,0) AS pb, "
+                "COALESCE(c.does_kasa,1) AS dk, COALESCE(c.slot_role,'barista') AS sr, "
+                "c.active AS active "
+                "FROM users u JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
+                (user_id,)).fetchone()
         if r and (r["active"] is None or r["active"] == 1):
             info["rate"] = int(r["rate"] or 0)
             info["use_kpi"] = int(r["kpi"] or 0)
             info["bonus_system"] = r["bsys"] or "own"
             info["product_ok"] = int(r["pb"] or 0)
             info["does_kasa"] = int(r["dk"] if r["dk"] is not None else 1)
+            info["slot_role"] = r["sr"] or "barista"
             info["cat_id"] = r["cid"]
             info["cat_name"] = r["cname"]
     except Exception:
         pass
     return info
+
+
+def branch_trainee_enabled(db, branch_id):
+    """Bu şubede «Ассистент/стажёр» pozisyonu açık mı? (şube-bazlı ayar, hardcode yok)"""
+    try:
+        r = db.execute("SELECT COALESCE(trainee_enabled,0) AS t FROM branches WHERE id=?",
+                       (int(branch_id or 1),)).fetchone()
+        return bool(r and r["t"])
+    except Exception:
+        return False
+
+
+def slot_occupant(db, branch_id, role):
+    """Bu şubede bu rol pozisyonunu tutan AÇIK vardiya → {uid, nm, st} veya None.
+    Eski açık vardiyalarda shift_role NULL → 'barista' sayılır (geriye uyumlu)."""
+    try:
+        r = db.execute(
+            "SELECT s.user_id AS uid, s.start_time AS st, "
+            "COALESCE(u.display_name,u.name,'?') AS nm "
+            "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
+            "WHERE s.end_time IS NULL AND s.start_time IS NOT NULL "
+            "AND COALESCE(s.branch_id,1)=? AND COALESCE(s.shift_role,'barista')=? "
+            "ORDER BY s.id DESC LIMIT 1",
+            (int(branch_id or 1), role)).fetchone()
+        return dict(r) if r else None
+    except Exception:
+        return None
+
+
+def slot_block_reason(db, user_id, branch_id):
+    """Kullanıcı bu şubede vardiya başlatabilir mi? None=serbest, str=dostça engel mesajı.
+    Trainee kapalı → tek barista slotu (herkes onu kullanır). Açık → rolüne göre slot."""
+    bid = int(branch_id or 1)
+    pi = barista_pay_info(db, user_id, branch_id=bid)
+    tr_on = branch_trainee_enabled(db, bid)
+    role = (pi.get("slot_role") or "barista") if tr_on else "barista"
+    occ = slot_occupant(db, bid, role)
+    if occ and occ["uid"] != user_id:
+        st = ""
+        try:
+            st = datetime.fromisoformat(occ["st"]).strftime("%H:%M")
+        except Exception:
+            pass
+        rl = "ассистента/стажёра" if role == "assistant" else "бариста"
+        return (f"Позиция {rl} сейчас занята — {occ['nm']}"
+                + (f" (на смене с {st})" if st else "")
+                + ". Пожалуйста, дождитесь завершения текущей смены — тогда можно будет начать свою.")
+    return None
 
 
 def paid_hours(start_dt, end_dt, cfg):
@@ -1193,12 +1292,18 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
         bid = None
     if not bid:
         bid = user_branch_id(db, user_id)
+    # ── SNAPSHOT: rol + kategori + ставка başlangıçta dondurulur ──
+    # Kategori/ücret sonradan değişse bu vardiya ASLA yeniden hesaplanmaz.
+    _pi = barista_pay_info(db, user_id, branch_id=bid)
+    _role = (_pi.get("slot_role") or "barista") if branch_trainee_enabled(db, bid) else "barista"
     cur = db.execute(
-        "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note, branch_id) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note, branch_id, "
+        "shift_role, cat_id, cat_name, rate) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, 0.0, json.dumps({}), 0, 0, 0,
          start_dt.strftime("%Y-%m-%d"), period, now.isoformat(),
-         start_dt.isoformat(), None, "", bid))
+         start_dt.isoformat(), None, "", bid,
+         _role, _pi.get("cat_id"), _pi.get("cat_name") or "", int(_pi.get("rate") or 0)))
     db.commit()
     return db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
 
@@ -1228,7 +1333,17 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
     # ise satış (bardak+tatlı) bonusundan etkilenmez. Bardak bonus değerleri
     # kategorinin bonus sistemine göre: 'caffelito' preset'i veya 'own' (bizim/Цены).
-    _pi = barista_pay_info(db, user_id)
+    _pi = barista_pay_info(db, user_id, branch_id=_bid)
+    # SNAPSHOT ставка: vardiya BAŞLANGICINDA donduruldu (shifts.rate). Varsa onu kullan —
+    # kategori/ücret vardiya sırasında değişse bile bu vardiya başlangıçtaki kurallarla ödenir.
+    # Eski açık vardiyalarda (snapshot'sız, bu build'den önce başlamış) mevcut bilgiye düşer.
+    _snap_rate = None
+    try:
+        if "rate" in active.keys() and active["rate"] is not None and int(active["rate"]) > 0:
+            _snap_rate = int(active["rate"])
+    except Exception:
+        _snap_rate = None
+    _rate = _snap_rate if _snap_rate is not None else int(_pi["rate"])
     _bonus_prices = get_caffelito_bonus(db) if _pi["bonus_system"] == "caffelito" else get_prices(db)
     drinks_bonus = calc_bonus(drinks, _bonus_prices)
     dessert_bonus = calc_dessert_bonus(desserts, get_dessert_prices(db))
@@ -1236,7 +1351,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
         drinks_bonus = 0
         dessert_bonus = 0
     bonus = drinks_bonus + dessert_bonus
-    hourly_pay = int(hours * int(_pi["rate"]))
+    hourly_pay = int(hours * _rate)
     total = hourly_pay + bonus
     # ── Fazla mesai (сверхурочные): KAPANIŞ ANINDA dondurulur (geriye dönük DEĞİL) ──
     # Norm VARDİYA BAŞINA (ör. 8ч/смена): bu vardiyanın ödenecek saati (kapalı
@@ -1250,7 +1365,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
             ot_h = round(hours - _thr, 2)  # bu vardiyanın norm-üstü saati
             _val = int(_otc.get("value") or 0)
             if _otc.get("type") == "percent":
-                ot_shift = int(ot_h * int(_pi["rate"]) * (_val / 100.0))
+                ot_shift = int(ot_h * _rate * (_val / 100.0))
             else:
                 ot_shift = int(ot_h * _val)
     except Exception:
@@ -1407,7 +1522,8 @@ def build_hash_payload(db, user_id, name):
                              "active": int(b["active"] or 0), "sort": b["sort_order"] or 0,
                              "open": (b["open_hour"] if b["open_hour"] is not None else 7),
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
-                             "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1)}
+                             "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
+                             "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
                             for b in get_branches(db, only_active=False)]
         else:
             branches_out = [{"id": b["id"], "name": b["name"]} for b in get_branches(db, only_active=True)]
@@ -1429,8 +1545,25 @@ def build_hash_payload(db, user_id, name):
                           "at": r["send_at"], "bid": r["branch_id"] or 1} for r in _srows]
     except Exception:
         scheduled_out = []
-    # Bu kullanıcının maaş bilgisi (canlı saatlik hesap kategorisine göre olsun)
-    _my_pi = barista_pay_info(db, user_id)
+    # Bu kullanıcının maaş bilgisi (canlı saatlik hesap kategorisine göre olsun).
+    # ŞUBE-FARKINDA: aktif/seçili şubede kişi×şube ataması varsa onun kategorisi geçerli.
+    _my_pi = barista_pay_info(db, user_id, branch_id=acting_branch_id(db, user_id))
+    # ── SLOT durumu (şube başına pozisyon doluluğu) — client vardiya-başlatma ön kontrolü.
+    # Kesin karar backend'de (slot_block_reason); bu sadece anında dostça uyarı için.
+    slots_out = {}
+    try:
+        for _sb in get_branches(db, only_active=True):
+            _sbid = _sb["id"]
+            _spi = barista_pay_info(db, user_id, branch_id=_sbid)
+            _str = branch_trainee_enabled(db, _sbid)
+            slots_out[str(_sbid)] = {
+                "trainee": 1 if _str else 0,
+                "my_role": (_spi.get("slot_role") or "barista") if _str else "barista",
+                "barista": slot_occupant(db, _sbid, "barista"),
+                "assistant": (slot_occupant(db, _sbid, "assistant") if _str else None),
+            }
+    except Exception:
+        slots_out = {}
     # Bu kullanıcının şubesinin ödeme penceresi (open/close/unpaid/max) — client
     # canlı vardiya saatini backend paid_hours ile AYNI hesaplasın (raw değil).
     _my_win = branch_pay_window(db, acting_branch_id(db, user_id))
@@ -1463,6 +1596,7 @@ def build_hash_payload(db, user_id, name):
         f"my_product_ok={_my_pi['product_ok']}",
         f"prod_report={quote(json.dumps(get_product_report(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
+        f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
@@ -1530,6 +1664,13 @@ def build_hash_payload(db, user_id, name):
                 "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",
                 (b["user_id"], current_period())).fetchall()
             _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]} for r in _pays]
+            # Kişi × şube kategori atamaları (owner UI: «bu şubede farklı kategori»)
+            try:
+                _broles = {str(r["branch_id"]): r["salary_cat_id"] for r in db.execute(
+                    "SELECT branch_id, salary_cat_id FROM branch_staff WHERE user_id=?",
+                    (b["user_id"],)).fetchall()}
+            except Exception:
+                _broles = {}
             real_name = (b["display_name"] or b["name"] or "?").strip()
             # Recipe trainer progress for this barista
             rtp = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (b["user_id"],)).fetchone()
@@ -1566,6 +1707,7 @@ def build_hash_payload(db, user_id, name):
                 "cat": b["salary_cat_id"],
                 "recent": _recent,
                 "pays": _pay_list,
+                "broles": _broles,
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
@@ -3106,6 +3248,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             custom_start = data.get("start_time") or data.get("custom_start")
             # Barista'nın seçtiği şube (çok şube). Yoksa ev şubesi.
             sel_branch = data.get("branch") or data.get("branch_id")
+            # ── SLOT kontrolü: bu şubede rol pozisyonu doluysa başlatma (dostça mesaj) ──
+            _bid_chk = None
+            try:
+                if sel_branch and get_branch(db, sel_branch):
+                    _bid_chk = int(sel_branch)
+            except Exception:
+                _bid_chk = None
+            if not _bid_chk:
+                _bid_chk = user_branch_id(db, user.id)
+            _blk = slot_block_reason(db, user.id, _bid_chk)
+            if _blk:
+                await update.message.reply_text("🚧 " + _blk)
+                await refresh_webapp_keyboard(update, context, db, user,
+                    "🔄 Обновите приложение — смена не была начата 👇")
+                return
             sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch)
             # Vardiya artık açık → duyuru bu vardiyanın şubesinin grubuna gitsin.
             group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
@@ -3664,20 +3821,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             bsys = "caffelito" if (data.get("bonus_system") == "caffelito") else "own"
             pb = 1 if int(data.get("product_bonus", 0) or 0) else 0
             dk = 0 if int(data.get("does_kasa", 1) or 0) == 0 else 1  # varsayılan 1 (kasa sayar)
+            sr = "assistant" if (data.get("slot_role") == "assistant") else "barista"
             cid = data.get("id")
             if cid:
                 db.execute(
                     "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
-                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=?, does_kasa=? WHERE id=?",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, int(cid)))
+                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=?, does_kasa=?, slot_role=? WHERE id=?",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, sr, int(cid)))
                 msg = f"✅ Категория «{nm}» обновлена."
             else:
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
                 db.execute(
                     "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
-                    "description, use_kpi, active, bonus_system, product_bonus, does_kasa, sort_order, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, (_mo["s"] if _mo else 0),
+                    "description, use_kpi, active, bonus_system, product_bonus, does_kasa, slot_role, sort_order, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, sr, (_mo["s"] if _mo else 0),
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
@@ -3897,6 +4055,126 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("UPDATE branches SET open_hour=?, close_hour=?, unpaid_win=? WHERE id=?",
                        (oh, ch, uw, bid))
             db.commit()
+
+        elif action == "branch_trainee":
+            # Owner: bu şubede «Ассистент/стажёр» pozisyonunu aç/kapat (şube-bazlı işgücü ayarı)
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            if not get_branch(db, bid):
+                await update.message.reply_text("❌ Филиал не найден.")
+                return
+            en = 1 if int(data.get("enabled", 0) or 0) else 0
+            db.execute("UPDATE branches SET trainee_enabled=? WHERE id=?", (en, bid))
+            db.commit()
+            log_action(db, "branch_trainee", user.id, user.first_name, None, None,
+                       {"branch_id": bid, "enabled": en})
+
+        elif action == "branch_role_save":
+            # Owner: kişi × şube kategori ataması. cat_id boş → override silinir (global geçerli).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                target_id, bid = 0, 0
+            if not target_id or not get_branch(db, bid):
+                await update.message.reply_text("❌ Сотрудник/филиал не найден.")
+                return
+            cid = data.get("cat_id")
+            if cid in (None, "", 0, "0"):
+                db.execute("DELETE FROM branch_staff WHERE user_id=? AND branch_id=?", (target_id, bid))
+            else:
+                if not db.execute("SELECT 1 FROM salary_categories WHERE id=?", (int(cid),)).fetchone():
+                    await update.message.reply_text("❌ Категория не найдена.")
+                    return
+                db.execute("INSERT OR REPLACE INTO branch_staff (user_id, branch_id, salary_cat_id) VALUES (?,?,?)",
+                           (target_id, bid, int(cid)))
+            db.commit()
+            log_action(db, "branch_role_save", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id), {"branch_id": bid, "cat_id": cid})
+
+        elif action == "force_end_shift":
+            # Owner: çalışanın vardiyasını elle kapat (kapatmayı unuttuysa).
+            # Snapshot kurallarıyla hesaplanır (end_shift); bardak/kasa girilmez.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            if not target_id or not get_active_shift(db, target_id):
+                await update.message.reply_text("ℹ️ У сотрудника нет открытой смены.")
+                return
+            sh = end_shift(db, target_id, {}, note="закрыто владельцем")
+            if not sh:
+                await update.message.reply_text("❌ Не удалось закрыть смену.")
+                return
+            _nm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "force_end_shift", user.id, user.first_name, target_id, _nm,
+                       {"hours": sh["hours"], "total": sh["total"]})
+            await update.message.reply_text(
+                f"🔴 Смена *{_nm}* закрыта владельцем.\n"
+                f"⏱ {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум",
+                parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"ℹ️ Ваша смена была закрыта владельцем.\n⏱ Часы: {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум")
+            except Exception:
+                pass
+
+        elif action == "force_start_shift":
+            # Owner: çalışan adına vardiya başlat (slot kuralları yine geçerli).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            if not target_id:
+                await update.message.reply_text("❌ Выберите сотрудника.")
+                return
+            if get_active_shift(db, target_id):
+                await update.message.reply_text("ℹ️ У сотрудника уже есть открытая смена.")
+                return
+            _fbid = None
+            try:
+                if data.get("branch_id") and get_branch(db, data.get("branch_id")):
+                    _fbid = int(data.get("branch_id"))
+            except Exception:
+                _fbid = None
+            if not _fbid:
+                _fbid = user_branch_id(db, target_id)
+            _blk = slot_block_reason(db, target_id, _fbid)
+            if _blk:
+                await update.message.reply_text("🚧 " + _blk)
+                return
+            sh = start_shift(db, target_id, branch_id=_fbid)
+            _nm = display_name_for(db, target_id, fallback="?")
+            _st = datetime.fromisoformat(sh["start_time"]).strftime("%H:%M")
+            log_action(db, "force_start_shift", user.id, user.first_name, target_id, _nm,
+                       {"branch_id": _fbid})
+            await update.message.reply_text(
+                f"🟢 Смена *{_nm}* начата владельцем в {_st}.", parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"ℹ️ Владелец начал вашу смену в {_st}. Не забудьте закрыть её в конце дня.")
+            except Exception:
+                pass
 
         elif action == "delete_shift":
             # Owner: yanlış/kazara vardiyayı sil (barista hatalarını düzeltme)

@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070166;
+var APP_BUILD=2026070167;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1019,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1584,6 +1584,10 @@ let MY_DOES_KASA=true;
 try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
 // Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
 var TIPS_ON=false;
+// Şube slot durumu: {bid:{trainee,my_role,barista:{uid,nm,st}|null,assistant:...}} —
+// vardiya-başlatma ön kontrolü (kesin karar backend'de slot_block_reason).
+let SLOTS={};
+try{SLOTS=JSON.parse((HP.get('slots')||'{}'))||{}}catch(e){SLOTS={}}
 let MY_RATE=parseInt(HP.get('my_rate'))||HOURLY_RATE;
 HOURLY_RATE=MY_RATE; // canlı kişisel hesap kategori ставка'sına göre
 // Fazla mesai (сверхурочные) ayarı — owner
@@ -2097,6 +2101,24 @@ async function delShiftFromCard(uid,sid){
   if(typeof REP!=='undefined'&&REP&&REP.shifts)REP.shifts=REP.shifts.filter(function(s){return s.sid!==sid});
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:'shift',id:sid}))}catch(e){}}
   toast('🗑 Смена удалена');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
+}
+// ── Owner: çalışanın vardiyasını ELLE kapat (kapatmayı unuttuysa). Snapshot
+// kurallarıyla hesaplanır (backend end_shift); bardak/kasa girilmez. ──
+async function ownerEndShift(uid,nm){
+  if(!(await cfAsk('Завершить смену «'+nm+'» сейчас?\nЧасы будут посчитаны по правилам филиала; стаканы/касса не заполняются.',{danger:true,okText:'Завершить',icon:'🔴'})))return;
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.active=null;
+  // SLOTS optimistik: bu kişinin tuttuğu slotu boşalt
+  try{Object.keys(SLOTS||{}).forEach(function(k){var s=SLOTS[k];['barista','assistant'].forEach(function(r){if(s[r]&&s[r].uid===uid)s[r]=null;});});}catch(e){}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'force_end_shift',target:uid}))}catch(e){}}
+  toast('🔴 Смена закрывается…');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
+}
+// ── Owner: çalışan adına vardiya başlat (slot kuralları backend'de yine geçerli) ──
+function ownerStartShift(){
+  var uid=parseInt((document.getElementById('fsEmp')||{}).value)||0;
+  var bid=parseInt((document.getElementById('fsBr')||{}).value)||0;
+  if(!uid){toast('Выберите сотрудника');return}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'force_start_shift',target:uid,branch_id:bid}))}catch(e){}}
+  toast('▶ Смена запускается…');if(tg)tg.HapticFeedback?.impactOccurred('light');
 }
 async function deleteShift(id){
   if(!(await cfAsk('Удалить эту смену?\nДействие нельзя отменить.',{danger:true,okText:'Удалить'})))return;
@@ -3228,7 +3250,24 @@ function calcQuickStats(shifts){
 }
 
 // ── Vardiyayı şimdi başlat ──
+// ── Slot ön kontrolü: seçilen şubede benim rol pozisyonum doluysa dostça engel. ──
+// Kesin karar backend'de (slot_block_reason) — bu, anında geri bildirim için.
+function slotBlockMsg(bid){
+  var s=(SLOTS||{})[String(bid||MY_BRANCH||1)];
+  if(!s)return null;
+  var role=s.my_role||'barista';
+  var occ=(role==='assistant')?s.assistant:s.barista;
+  if(occ&&occ.uid!==MY_UID){
+    var st='';try{st=fmtTime(occ.st)}catch(e){}
+    var rl=(role==='assistant')?'ассистента/стажёра':'бариста';
+    return 'Позиция '+rl+' сейчас занята — '+escH(occ.nm||'')+(st?' (на смене с '+st+')':'')
+      +'.\n\nДождитесь, пока текущая смена будет завершена — тогда можно будет начать свою.';
+  }
+  return null;
+}
 async function startShiftNow(){
+  var _blk=slotBlockMsg(startBranch||MY_BRANCH);
+  if(_blk){await cfAsk('🚧 '+_blk,{okText:'Понятно',icon:'⏳'});return}
   if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(new Date().toISOString()),{okText:'Начать',icon:'🟢'})))return;
   const nowIso=gT().toISOString();
   // Optimistik
@@ -3379,6 +3418,8 @@ function cfPrompt(msg,cur,opts){opts=opts||{};opts.kind='text';opts.msg=msg;opts
 
 // ── Vardiyayı geriye dönük başlat (HH:MM girişi) ──
 async function startShiftCustomTime(){
+  var _blk=slotBlockMsg(startBranch||MY_BRANCH);
+  if(_blk){await cfAsk('🚧 '+_blk,{okText:'Понятно',icon:'⏳'});return}
   const inp=document.getElementById('cstStart');
   if(!inp||!inp.value){toast('Укажите время');return}
   const hhmm=inp.value; // 'HH:MM'
@@ -3967,10 +4008,14 @@ function rMActiveBaristas(m,b){
   } else {
     activeList.forEach(function(brs){
       const dur=liveDur(brs.active.start_time);
+      var _role=(brs.active&&brs.active.shift_role)||'barista';
       h+='<div class="act-mini" id="amini_'+brs.id+'">'
         +'<div class="act-mini-dot"></div>'
-        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
-        +'<div class="act-mini-r" id="amini_d_'+brs.id+'">'+dur+'</div>'
+        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)
+          +' <span style="font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:8px;background:'+(_role==='assistant'?'#fef3c7;color:#b45309':'#dbeafe;color:#1d4ed8')+'">'+(_role==='assistant'?'🎓 ассистент':'☕ бариста')+'</span>'
+          +((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
+        +'<div style="display:flex;align-items:center;gap:8px"><div class="act-mini-r" id="amini_d_'+brs.id+'">'+dur+'</div>'
+        +'<button onclick="ownerEndShift('+brs.id+',\''+esc(brs.n)+'\')" title="Завершить смену" style="flex-shrink:0;padding:6px 9px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--red);font-size:11px;font-weight:700;cursor:pointer">🔴 Закрыть</button></div>'
       +'</div>';
     });
     if(window._anyActTimer)clearInterval(window._anyActTimer);
@@ -3982,6 +4027,42 @@ function rMActiveBaristas(m,b){
       });
       if(!any){clearInterval(window._anyActTimer)}
     },1000);
+  }
+  // ── Şube pozisyon durumu: hangi slot dolu/boş (SLOTS payload'ından) ──
+  var _slotKeys=Object.keys(SLOTS||{});
+  if(_slotKeys.length){
+    h+='<div class="sec">🧩 Позиции по филиалам</div>';
+    _slotKeys.forEach(function(k){
+      var s=SLOTS[k];var bnm=branchName(parseInt(k));
+      function slotLine(label,occ){
+        return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span style="color:var(--t2)">'+label+'</span>'
+          +(occ?'<span style="font-weight:700">'+escH(occ.nm||'?')+' <span style="color:var(--t3);font-weight:500">с '+fmtTime(occ.st)+'</span></span>'
+               :'<span style="color:#059669;font-weight:700">свободно</span>')+'</div>';
+      }
+      h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:9px 12px;margin-bottom:8px">'
+        +'<div style="font-size:12px;font-weight:800;margin-bottom:4px">🏢 '+escH(bnm)+(s.trainee?'':' <span style="font-size:10px;color:var(--t3);font-weight:500">· одна позиция</span>')+'</div>'
+        +slotLine('☕ Бариста',s.barista)
+        +(s.trainee?slotLine('🎓 Ассистент/стажёр',s.assistant):'')
+      +'</div>';
+    });
+  }
+  // ── Elle vardiya başlat (çalışan unuttuysa / owner adına) ──
+  var _idleEmps=BARISTAS.filter(function(x){return !x.arch&&!x.active});
+  if(_idleEmps.length){
+    h+='<div class="sec">▶️ Начать смену за сотрудника</div>';
+    h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px">'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +'<select id="fsEmp" style="flex:2;min-width:120px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
+        +'<option value="" selected disabled>— сотрудник —</option>'
+        +_idleEmps.map(function(x){return '<option value="'+x.id+'">'+escH(x.n)+'</option>'}).join('')
+      +'</select>'
+      +'<select id="fsBr" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
+        +(BRANCHES||[]).map(function(bb){return '<option value="'+bb.id+'">'+escH(bb.name)+'</option>'}).join('')
+      +'</select>'
+      +'<button class="add-btn" style="padding:9px 14px" onclick="ownerStartShift()">▶ Начать</button>'
+      +'</div>'
+      +'<div style="font-size:10.5px;color:var(--t3);margin-top:6px">Правила позиций действуют и здесь: если позиция занята — смена не начнётся.</div>'
+    +'</div>';
   }
   // Son vardiyalar (kim ne zaman geldi/gitti)
   h+='<div class="sec">📜 Последние смены сотрудников</div>';
@@ -4319,6 +4400,18 @@ function rMBaristas(m,b){
             +(brs.cat==null?'<option value="" selected disabled>— выберите категорию —</option>':'')
             +SAL_CATS.filter(function(c){return c.active!==0||c.id===brs.cat}).map(function(c){return '<option value="'+c.id+'"'+(brs.cat===c.id?' selected':'')+'>'+escH(c.name)+' ('+fmt(c.hourly_rate||0)+')'+(c.use_kpi?' · KPI':'')+'</option>'}).join('')
             +'</select></div>';
+          // Kişi × şube: bu şubede FARKLI kategoriyle çalışsın (opsiyonel; boş=global).
+          // Aynı kişi bir şubede stajyer, diğerinde Barista 1 olabilir.
+          if((BRANCHES||[]).length>1){
+            (BRANCHES||[]).forEach(function(bb){
+              var cur=(brs.broles||{})[String(bb.id)]||'';
+              h+='<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11.5px;color:var(--t3)">↳ '+escH(bb.name)+':'
+                +'<select onchange="assignBranchRole('+brs.id+','+bb.id+',this.value)" style="flex:1;padding:5px 8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:'+(cur?'var(--t1)':'var(--t3)')+';font-size:11.5px;font-family:inherit">'
+                +'<option value=""'+(cur?'':' selected')+'>— как глобально —</option>'
+                +SAL_CATS.filter(function(c){return c.active!==0||c.id===cur}).map(function(c){return '<option value="'+c.id+'"'+(cur===c.id?' selected':'')+'>'+escH(c.name)+' ('+fmt(c.hourly_rate||0)+')'+((c.slot_role||'barista')==='assistant'?' · 🎓':'')+'</option>'}).join('')
+                +'</select></div>';
+            });
+          }
         }
       }
       h+='</div>';
@@ -4378,6 +4471,14 @@ function rMBranches(m,b){
           +'<button class="add-btn" style="padding:9px 12px" onclick="saveBranchHours('+br.id+')">💾</button>'
         +'</div>'
         +'<label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12px;cursor:pointer"><input type="checkbox" id="bu_'+br.id+'" '+((br.unpaid==null||br.unpaid)?'checked':'')+' style="width:16px;height:16px;accent-color:var(--gold)"> Не оплачивать закрытые часы</label>'
+      +'</div>'
+      // İşgücü ayarı: Ассистент/стажёр pozisyonu (şube-bazlı, hardcode yok)
+      +'<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border2)">'
+        +'<div style="font-size:11px;color:var(--t2);font-weight:600;margin-bottom:6px">👥 Персонал на смене</div>'
+        +'<label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input type="checkbox" id="btr_'+br.id+'" '+(br.trainee?'checked':'')+' onchange="saveBranchTrainee('+br.id+',this.checked?1:0)" style="width:16px;height:16px;accent-color:var(--gold)"> 🎓 Позиция ассистента/стажёра</label>'
+        +'<div style="font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.45">'+(br.trainee
+            ?'Две независимые позиции: <b>бариста</b> + <b>ассистент/стажёр</b> могут работать одновременно (по одной смене на позицию).'
+            :'Одна активная смена бариста за раз. Следующий сможет начать после завершения текущей.')+'</div>'
       +'</div></div>';
   });
   h+='<button class="btn-start" style="margin-top:12px" onclick="createBranch()"><span class="ic">＋</span>Добавить филиал</button>';
@@ -4397,6 +4498,15 @@ function saveBranchHours(id){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'branch_hours',branch_id:id,open:o,close:c,unpaid:u}))}catch(e){}}
   toast('🕐 Часы филиала сохранены');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
+}
+// Şube işgücü ayarı: Ассистент/стажёр pozisyonu aç/kapat (anında kaydeder)
+function saveBranchTrainee(id,v){
+  var br=(BRANCHES||[]).find(function(x){return x.id===id});if(br)br.trainee=v;
+  if((SLOTS||{})[String(id)])SLOTS[String(id)].trainee=v;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'branch_trainee',branch_id:id,enabled:v}))}catch(e){}}
+  toast(v?'🎓 Позиция ассистента включена':'Позиция ассистента выключена');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  render();
 }
 async function createBranch(){
   var name=((await cfPrompt('Название нового филиала:','',{placeholder:'напр. Чиланзар',okText:'Создать',icon:'🏢'}))||'').trim();
@@ -4832,6 +4942,7 @@ function rMSettings(m,b){
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_k_'+c.id+'" '+(c.use_kpi?'checked':'')+'> KPI (без бонуса за стаканы)</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_pb_'+c.id+'" '+(c.product_bonus?'checked':'')+'> 🛍 Бонус за товары</label>'
           +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_dk_'+c.id+'" '+((c.does_kasa==null||c.does_kasa)?'checked':'')+'> 🥤 Считает кассу при закрытии</label>'
+          +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer"><input type="checkbox" id="sc_sr_'+c.id+'" '+((c.slot_role||'barista')==='assistant'?'checked':'')+'> 🎓 Ассистент/стажёр (отдельная позиция на смене)</label>'
         +'</div>'
         +'<div style="display:flex;gap:8px">'
           +'<button class="mbtn" style="flex:1" onclick="saveSalCat('+c.id+')">💾 Сохранить</button>'
@@ -4854,6 +4965,7 @@ function rMSettings(m,b){
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKpi"> KPI-категория</label>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncPb"> 🛍 Бонус за товары</label>'
       +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncKasa" checked> 🥤 Считает кассу при закрытии <span style="color:var(--t3);font-weight:500">(выкл. для стажёра)</span></label>'
+      +'<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:10px"><input type="checkbox" id="ncSr"> 🎓 Ассистент/стажёр <span style="color:var(--t3);font-weight:500">(отдельная позиция на смене)</span></label>'
       +'<button class="add-btn" onclick="addSalCat()" style="padding:9px 12px;width:100%">➕ Создать категорию</button>'
     +'</div>';
   } else if(settingsTab==='products'){
@@ -5098,10 +5210,11 @@ function saveSalCat(id){
   var bsys=((document.getElementById('sc_bs_'+id)||{}).value==='caffelito')?'caffelito':'own';
   var pb=(document.getElementById('sc_pb_'+id)||{}).checked?1:0;
   var dk=(document.getElementById('sc_dk_'+id)||{}).checked?1:0;
+  var sr=(document.getElementById('sc_sr_'+id)||{}).checked?'assistant':'barista';
   // Optimistik: yerel SAL_CATS güncelle
   var c=(SAL_CATS||[]).find(function(x){return x.id===id});
-  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;c.product_bonus=pb;c.does_kasa=dk;}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk}))}catch(e){}}
+  if(c){c.name=nm;c.hourly_rate=rate;c.description=desc;c.active=act;c.use_kpi=kpi;c.bonus_system=bsys;c.product_bonus=pb;c.does_kasa=dk;c.slot_role=sr;}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',id:id,name:nm,rate:rate,description:desc,active:act,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk,slot_role:sr}))}catch(e){}}
   toast('💾 Категория сохранена');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 function addSalCat(){
@@ -5112,9 +5225,10 @@ function addSalCat(){
   var bsys=((document.getElementById('ncBsys')||{}).value==='caffelito')?'caffelito':'own';
   var pb=(document.getElementById('ncPb')||{}).checked?1:0;
   var dk=(document.getElementById('ncKasa')||{}).checked?1:0;
+  var sr=(document.getElementById('ncSr')||{}).checked?'assistant':'barista';
   // Optimistik: geçici id ile listeye ekle (sunucu gerçek id ile refreshState'te düzeltir)
-  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk});
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys,product_bonus:pb,does_kasa:dk}))}catch(e){}}
+  SAL_CATS=SAL_CATS||[];SAL_CATS.push({id:('tmp'+Date.now()),name:nm,hourly_rate:rate,description:'',active:1,use_kpi:kpi,bonus_system:bsys,product_bonus:pb,does_kasa:dk,slot_role:sr});
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_save',name:nm,rate:rate,use_kpi:kpi,active:1,bonus_system:bsys,product_bonus:pb,does_kasa:dk,slot_role:sr}))}catch(e){}}
   toast('✅ Категория создана');if(tg)tg.HapticFeedback?.notificationOccurred('success');render();
 }
 async function deleteSalCat(id){
@@ -5132,6 +5246,16 @@ function assignSalCat(uid,catId){
   var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.cat=cid;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'salcat_assign',target:uid,cat_id:cid}))}catch(e){}}
   toast('🏷️ Категория назначена');if(tg)tg.HapticFeedback?.impactOccurred('light');render();
+}
+// Kişi × şube kategori ataması: boş='как глобально' (override silinir). Tarihsel
+// vardiyalar etkilenmez (snapshot) — sadece SONRAKİ vardiyalar bu kategoriyle başlar.
+function assignBranchRole(uid,bid,catId){
+  var cid=(catId===''||catId==null)?null:(parseInt(catId)||null);
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});
+  if(b){b.broles=b.broles||{};if(cid)b.broles[String(bid)]=cid;else delete b.broles[String(bid)];}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'branch_role_save',target:uid,branch_id:bid,cat_id:cid}))}catch(e){}}
+  toast(cid?'🏷️ Роль на филиале назначена':'↩️ Филиал: как глобально');
+  if(tg)tg.HapticFeedback?.impactOccurred('light');render();
 }
 function saveOvertime(){
   var hours=Math.max(0,parseInt((document.getElementById('otHours')||{}).value)||0);
