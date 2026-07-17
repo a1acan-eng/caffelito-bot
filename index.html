@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070169;
+var APP_BUILD=2026070170;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1892,6 +1892,20 @@ function drinkRate(d){
   if(MY_BONUS_SYS==='caffelito'){var v=CAFFELITO_BONUS&&CAFFELITO_BONUS[d.id];return (v!=null&&v!=='')?(parseInt(v)||0):(d.r||0);}
   return d.r||0;
 }
+// TARİHSEL vardiyanın saatlik ücreti — SADECE vardiyanın kendi verisinden:
+// önce SNAPSHOT (sh.rate, başlangıçta donduruldu), yoksa stored hourly_pay/hours'tan
+// türetilir. ASLA kişinin GÜNCEL kategorisi/ücreti kullanılmaz (terfi geçmişi bozmasın).
+function shiftRate(sh){
+  var r=parseInt(sh&&sh.rate)||0;
+  if(r>0)return r;
+  var hz=parseFloat(sh&&sh.hours)||0,hp=parseInt(sh&&sh.hourly_pay)||0;
+  return (hz>0.01&&hp>0)?Math.round(hp/hz):0;
+}
+// Vardiyanın rol etiketi (snapshot'tan) — yoksa boş (eski vardiyalar)
+function shiftRoleLabel(sh){
+  if(!sh||!sh.shift_role)return '';
+  return sh.shift_role==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста';
+}
 // Bir baristanın saatlik ücreti: kategorisi varsa onunki, yoksa global (PAY_CFG.rate).
 function baristaRate(b){
   if(b&&b.cat){var c=(SAL_CATS||[]).find(function(x){return x.id===b.cat});if(c)return parseInt(c.hourly_rate)||0;}
@@ -2586,12 +2600,15 @@ function rReportRoom(m,b){
           +'</div>';
           if(_sOpen){
             var _shp=(s.hourly_pay!=null?s.hourly_pay:(s.total||0)),_sbn=(s.bonus||0),_sot=(s.overtime||0);
-            var _srate=((s.hours||0)>0)?Math.round(_shp/s.hours):0;
+            // Ставка: SNAPSHOT (s.rate) öncelikli; eski vardiyada stored'dan türet — ASLA güncel değil
+            var _srate=shiftRate(s);
+            var _sAsst=(s.shift_role==='assistant');
             var _sfull=_shp+_sbn+_sot;
             h+='<div style="margin:0 0 6px;padding:9px 11px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
               +'<div style="display:flex;justify-content:space-between;padding:1px 0 4px;color:var(--t3);font-size:11px"><span>⏰ '+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+'</span><span>'+fmtH(s.hours||0)+'</span></div>'
+              +((s.shift_role||s.cat_name)?('<div style="display:flex;justify-content:space-between;padding:1px 0 4px;color:var(--t3);font-size:11px"><span>'+(shiftRoleLabel(s)||'')+'</span><span>'+escH(s.cat_name||'')+'</span></div>'):'')
               +'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;opacity:.72"><span>💵 Часы'+(_srate?' × '+fmt(_srate):'')+' <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">'+fmt(_shp)+'</span></div>'
-              +'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0"><span>🥤 Бонус <span style="font-size:9px;color:var(--t3)">из кассы, за день</span></span><span style="font-weight:700;color:#059669">+'+fmt(_sbn)+'</span></div>'
+              +(_sAsst?'':'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0"><span>🥤 Бонус <span style="font-size:9px;color:var(--t3)">из кассы, за день</span></span><span style="font-weight:700;color:#059669">+'+fmt(_sbn)+'</span></div>')
               +(_sot>0?'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;color:#7c3aed"><span>⏱ Переработка <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">+'+fmt(_sot)+'</span></div>':'')
               +'<div style="display:flex;justify-content:space-between;padding:5px 0 0;border-top:1px dashed var(--border2);margin-top:4px;font-weight:800"><span>Итого за смену</span><span style="color:var(--gold)">'+fmt(_sfull)+'</span></div>'
             +'</div>';
@@ -3093,7 +3110,7 @@ function rMMain(m,b){
         +'<div class="sal-comp-lg"><span><i class="gold"></i>Ставка '+fmt(hourly)+'</span><span><i class="grn"></i>Бонус +'+fmt(bonus)+'</span></div>'
       +'</div>'
     ):'')
-    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка ('+fmt(s.overtime_hours||0)+'ч × '+fmt((OT_CFG&&OT_CFG.type==='percent')?Math.round(HOURLY_RATE*(parseInt(OT_CFG.value)||0)/100):((OT_CFG&&parseInt(OT_CFG.value))||0))+'/ч)</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
+    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка ('+fmt(s.overtime_hours||0)+'ч'+(((s.overtime_hours||0)>0)?(' × '+fmt(Math.round((s.overtime||0)/(s.overtime_hours||1)))+'/ч'):'')+')</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
   +'</div>';
 
   // Чаевые + Аванс kartları aşağıya (istatistiklerin altına) kompakt yan yana taşındı.
@@ -3872,7 +3889,19 @@ function rMShiftDetail(m,b){
     +(lt2?'<div class="det-row" style="border-top:1px dashed var(--border);margin-top:8px;padding-top:8px"><span style="color:#dc2626;font-weight:700">⏰ Опоздание к открытию (07:00)</span><span style="color:#dc2626;font-weight:800">'+lateLabel(lt2)+'</span></div>':'')
   +'</div>';
 
-  // İçecekler
+  // ── Vardiya bilgisi — SNAPSHOT'tan (şube/rol/kategori/ставка). Terfi sonrası
+  //    bile bu vardiya HEP kendi çalışıldığı değerlerini gösterir. ──
+  var _isAsst=(sh.shift_role==='assistant');
+  var _srate2=shiftRate(sh);
+  var _infoRows='';
+  if((BRANCHES||[]).length>1&&sh.branch_id)_infoRows+='<div class="det-row"><span>🏢 Филиал</span><span>'+escH(branchName(sh.branch_id))+'</span></div>';
+  if(shiftRoleLabel(sh))_infoRows+='<div class="det-row"><span>Роль в смене</span><span>'+shiftRoleLabel(sh)+'</span></div>';
+  if(sh.cat_name)_infoRows+='<div class="det-row"><span>🏷️ Категория</span><span>'+escH(sh.cat_name)+'</span></div>';
+  if(_srate2)_infoRows+='<div class="det-row"><span>Ставка (в эту смену)</span><span>'+fmt(_srate2)+' / ч</span></div>';
+  if(_infoRows)h+='<div class="det-card"><div class="det-h">👤 Смена</div>'+_infoRows+'</div>';
+
+  // İçecekler — ASİSTAN vardiyasında bardak bölümü TAMAMEN gizli (katılmıyor; "0 шт" da yok)
+  if(!_isAsst){
   h+='<div class="det-card">'
     +'<div class="det-h">🥤 Напитки ('+cups+' шт)</div>';
   if(cups===0){
@@ -3885,6 +3914,7 @@ function rMShiftDetail(m,b){
     });
   }
   h+='</div>';
+  }
 
   // Tatlılar
   if(sweets>0){
@@ -3899,11 +3929,11 @@ function rMShiftDetail(m,b){
     h+='</div>';
   }
 
-  // Hesap
+  // Hesap — ставка SNAPSHOT'tan (bu vardiyada çalışılan), ASLA güncel kategoriden
   h+='<div class="det-card">'
     +'<div class="det-h">💰 Расчёт</div>'
-    +'<div class="det-row"><span>Часы '+fmtH(sh.hours||0)+' × '+fmt(HOURLY_RATE)+'</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
-    +'<div class="det-row"><span>Бонус — напитки</span><span>+'+fmt(drinkBonus)+'</span></div>';
+    +'<div class="det-row"><span>Часы '+fmtH(sh.hours||0)+(_srate2?' × '+fmt(_srate2):'')+'</span><span>'+fmt(sh.hourly_pay||0)+'</span></div>'
+    +(_isAsst?'':'<div class="det-row"><span>Бонус — напитки</span><span>+'+fmt(drinkBonus)+'</span></div>');
   if(desBonus>0)h+='<div class="det-row"><span>Бонус — десерты</span><span>+'+fmt(desBonus)+'</span></div>';
   h+='<div class="det-total"><span>ИТОГО</span><span>'+fmt(sh.total||0)+' сум</span></div>'
   +'</div>';
@@ -4366,7 +4396,9 @@ function rMBaristas(m,b){
         +'</div>';
       // ── Detay (sadece açıkken): rakamlar + смены + выплаты + işlemler ──
       if(isOpen){
-        h+='<div class="bcard-stat"><span>Часы</span><span>'+fmtH(brs.h||0)+' × '+fmt(baristaRate(brs))+' = '+fmt(brs.hp||0)+'</span></div>'
+        // Aylık toplam = SAKLANAN vardiya kazançlarının toplamı (karışık ставка olabilir —
+        // «saat × güncel ücret» İMASI YOK; her vardiyanın kendi snapshot'ı detayında).
+        h+='<div class="bcard-stat"><span>Часы</span><span>'+fmtH(brs.h||0)+' · '+fmt(brs.hp||0)+'</span></div>'
           +'<div class="bcard-stat"><span>Бонус</span><span>+'+fmt(brs.b||0)+'</span></div>'
           +'<div class="bcard-stat"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(brs.f||0)+'</span></div>'
           +(brs.paid?'<div class="bcard-stat"><span>Выплачено</span><span style="color:var(--t3)">-'+fmt(brs.paid)+'</span></div>':'')
@@ -4583,7 +4615,7 @@ function rMPay(m,b){
         h+='<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:2px 0"><span style="color:var(--t2)">🛍 Бонус за товары</span><span id="payProdBon" style="font-weight:800;color:#059669">+'+fmt(pcalc.bonus)+'</span></div>';
       }
       h+='<div class="sf-total">'
-        +'<div class="sf-tot-row"><span>Часы '+(t.h||0)+'h × '+fmt(baristaRate(t))+'</span><span>+'+fmt(t.hp||0)+'</span></div>'
+        +'<div class="sf-tot-row"><span>Часы '+fmtH(t.h||0)+'</span><span>+'+fmt(t.hp||0)+'</span></div>'
         +'<div class="sf-tot-row"><span>Бонус</span><span>+'+fmt(t.b||0)+'</span></div>'
         +(elig?'<div class="sf-tot-row" style="color:#059669"><span>🛍 Бонус за товары</span><span id="payProdBon2">+'+fmt(pcalc.bonus)+'</span></div>':'')
         +'<div class="sf-tot-row"><span>Штрафы</span><span style="color:var(--red)">-'+fmt(t.f||0)+'</span></div>'
