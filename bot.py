@@ -1387,8 +1387,23 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Bitiş başlangıçtan önce olamaz
     if end_dt < start:
         end_dt = now
-    # Ödenecek saat: ŞUBEYE ÖZEL kapalı pencere düşülür + max ile sınırlı.
     _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
+    # ── DEVİR BÜTÜNLÜĞÜ (evrensel): bu vardiyanın bitişi, aynı şube + aynı rol
+    # pozisyonundaki SONRAKİ vardiyanın başlangıcını GEÇEMEZ — aynı slotta çakışan
+    # ödenmiş süre imkânsız (elle geç kapatma / owner düzeltmesi dahil).
+    try:
+        _my_role = active["shift_role"] if ("shift_role" in active.keys() and active["shift_role"]) else "barista"
+        _nx = db.execute(
+            "SELECT MIN(start_time) AS st FROM shifts WHERE COALESCE(branch_id,1)=? "
+            "AND COALESCE(shift_role,'barista')=? AND start_time > ? AND id != ?",
+            (int(_bid or 1), _my_role, active["start_time"], active["id"])).fetchone()
+        if _nx and _nx["st"]:
+            _nxdt = datetime.fromisoformat(_nx["st"])
+            if end_dt > _nxdt:
+                end_dt = _nxdt
+    except Exception:
+        pass
+    # Ödenecek saat: ŞUBEYE ÖZEL kapalı pencere düşülür + max ile sınırlı.
     _pc = branch_pay_window(db, _bid)
     hours = paid_hours(start, end_dt, _pc)
     # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
@@ -1672,6 +1687,7 @@ def build_hash_payload(db, user_id, name):
                     "COALESCE(s.hourly_pay,0) AS hourly_pay, COALESCE(s.bonus,0) AS bonus, "
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
+                    "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
                     "COALESCE(u.display_name,u.name) AS nm "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
@@ -1690,6 +1706,7 @@ def build_hash_payload(db, user_id, name):
                     "COALESCE(s.hourly_pay,0) AS hourly_pay, COALESCE(s.bonus,0) AS bonus, "
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
+                    "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
                     "? AS nm FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
@@ -1697,7 +1714,7 @@ def build_hash_payload(db, user_id, name):
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or ""} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
@@ -4209,16 +4226,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not target_id or not get_active_shift(db, target_id):
                 await update.message.reply_text("ℹ️ У сотрудника нет открытой смены.")
                 return
-            sh = end_shift(db, target_id, {}, note="закрыто владельцем")
+            # Opsiyonel kapanış saati (owner düzeltmesi): 'HH:MM' veya ISO. end_shift
+            # doğrular: başlangıçtan önce olamaz + SONRAKİ aynı-rol vardiyasına taşamaz
+            # (devir bütünlüğü) + ödeme şube kapanış penceresine göre.
+            _req_end = data.get("end_time") or None
+            sh = end_shift(db, target_id, {}, note="закрыто владельцем", custom_end=_req_end)
             if not sh:
                 await update.message.reply_text("❌ Не удалось закрыть смену.")
                 return
             _nm = display_name_for(db, target_id, fallback="?")
             log_action(db, "force_end_shift", user.id, user.first_name, target_id, _nm,
-                       {"hours": sh["hours"], "total": sh["total"]})
+                       {"shift_id": sh["id"], "branch_id": sh["branch_id"],
+                        "requested_end": _req_end, "actual_end": sh["end_time"],
+                        "hours": sh["hours"], "total": sh["total"]})
+            _adj = ""
+            try:
+                _rq = _parse_user_time(_req_end)
+                _ae = datetime.fromisoformat(sh["end_time"])
+                if _rq and abs((_rq - _ae).total_seconds()) > 60:
+                    _adj = (f"\n⚠️ Время скорректировано до {_ae.strftime('%H:%M')} — "
+                            "позиция передана следующей смене (пересечение недопустимо).")
+            except Exception:
+                pass
             await update.message.reply_text(
                 f"🔴 Смена *{_nm}* закрыта владельцем.\n"
-                f"⏱ {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум",
+                f"⏱ {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум{_adj}",
                 parse_mode="Markdown")
             try:
                 await context.bot.send_message(
@@ -4255,7 +4287,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if _blk:
                 await update.message.reply_text(_blk)
                 return
-            sh = start_shift(db, target_id, branch_id=_fbid)
+            # Opsiyonel başlangıç saati (çalışan Nero'yu açmayı unuttuysa gerçek geliş saati).
+            # start_shift doğrular: gelecek clamp + AYNI ROL devir klampesi (önceki bitişten
+            # önceye yazılamaz) + rol/kategori/ставка şube-etkin konfigürasyondan SNAPSHOT.
+            _req_st = data.get("start_time") or None
+            sh = start_shift(db, target_id, custom_start=_req_st, branch_id=_fbid)
             # Audit: owner-elle-başlatma vardiya notuna da işlensin (log_action'a ek)
             try:
                 db.execute("UPDATE shifts SET note=? WHERE id=?", ("начато владельцем", sh["id"]))
@@ -4263,11 +4299,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 pass
             _nm = display_name_for(db, target_id, fallback="?")
-            _st = datetime.fromisoformat(sh["start_time"]).strftime("%H:%M")
+            _stdt = datetime.fromisoformat(sh["start_time"])
+            _st = _stdt.strftime("%H:%M")
             log_action(db, "force_start_shift", user.id, user.first_name, target_id, _nm,
-                       {"branch_id": _fbid})
+                       {"shift_id": sh["id"], "branch_id": _fbid,
+                        "requested_start": _req_st, "actual_start": sh["start_time"],
+                        "role": sh["shift_role"], "cat": sh["cat_name"], "rate": sh["rate"]})
+            _adj = ""
+            try:
+                _rq = _parse_user_time(_req_st)
+                if _rq and (_stdt - _rq).total_seconds() > 60:
+                    _adj = (f"\n⚠️ Позиция была занята — время скорректировано до {_st} "
+                            "(передача смены, пересечение недопустимо).")
+            except Exception:
+                pass
             await update.message.reply_text(
-                f"🟢 Смена *{_nm}* начата владельцем в {_st}.", parse_mode="Markdown")
+                f"🟢 Смена *{_nm}* начата владельцем в {_st}.\n"
+                f"🏷️ {sh['cat_name'] or '—'} · {fmt_sum(sh['rate'] or 0)}/ч"
+                f"{_adj}", parse_mode="Markdown")
             try:
                 await context.bot.send_message(
                     chat_id=target_id,

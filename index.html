@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070171;
+var APP_BUILD=2026070172;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1716,6 +1716,7 @@ function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function
 // ── Soldan sağa kaydırma = geri (OS-tarzı jest) ──
 function goBack(){
   if(typeof orderExport!=='undefined'&&orderExport){orderExport=false;render();return true}
+  if(typeof repShiftDet!=='undefined'&&repShiftDet){repShiftDet=null;render();return true}
   if(typeof reportRoom!=='undefined'&&reportRoom){reportRoom=null;render();return true}
   if(typeof kasaDetail!=='undefined'&&kasaDetail){kasaDetail=null;render();return true}
   if(typeof mView!=='undefined'&&mView&&mView!=='main'){mView='main';render();return true}
@@ -1784,7 +1785,7 @@ function go(t){
   if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   // Yön bazlı geçiş: hedef sekme mevcuttan sağda mı solda mı?
   try{var _vt=visTabs().map(function(x){return x.id});var _oi=_vt.indexOf(tab),_ni=_vt.indexOf(t);window._cfTabDir=(_oi>=0&&_ni>=0&&_ni!==_oi)?(_ni>_oi?1:-1):0;}catch(_e){window._cfTabDir=0;}
-  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;reportRoom=null;orderSearch='';shiftMoreOpen=false;brSwitchOpen=false;taskSec=null;dT();render();
+  tab=t;cat=null;sub=null;mView='main';kasaDetail=null;reportRoom=null;repShiftDet=null;orderSearch='';shiftMoreOpen=false;brSwitchOpen=false;taskSec=null;dT();render();
   // Sekme değiştiğinde sayfayı her zaman yukarı kaydır — kullanıcı önceki sekmeyi
   // aşağı kaydırmış olabilir, yeni sekmenin başını görmeli.
   scrollTopAll();
@@ -1846,7 +1847,7 @@ function render(){
   // View/sub-view/tab değiştiyse sayfayı en üste kaydır —
   // (aynı view'da küçük render'larda scroll'u bozma, sadece navigasyon değişimlerinde)
   try{
-    const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'')+'|'+((typeof kasaDetail!=='undefined'&&kasaDetail)?'k':'')+'|'+(typeof reportRoom!=='undefined'?(reportRoom||''):'')+'|'+(typeof taskSec!=='undefined'?(taskSec||''):'');
+    const key=tab+'|'+(typeof mView!=='undefined'?mView:'')+'|'+(typeof settingsTab!=='undefined'?settingsTab:'')+'|'+(sub||'')+'|'+(cat||'')+'|'+((typeof kasaDetail!=='undefined'&&kasaDetail)?'k':'')+'|'+(typeof reportRoom!=='undefined'?(reportRoom||''):'')+'|'+(typeof taskSec!=='undefined'?(taskSec||''):'')+'|'+((typeof repShiftDet!=='undefined'&&repShiftDet)?('d'+repShiftDet):'');
     if(key!==_lastViewKey){
       // Giden görünümün scroll'unu hatırla, gelen görünümün kayıtlı scroll'unu geri yükle
       if(_prevKey)_scrollMem[_prevKey]=_prevScroll;
@@ -2119,19 +2120,53 @@ async function delShiftFromCard(uid,sid){
 // ── Owner: çalışanın vardiyasını ELLE kapat (kapatmayı unuttuysa). Snapshot
 // kurallarıyla hesaplanır (backend end_shift); bardak/kasa girilmez. ──
 async function ownerEndShift(uid,nm){
-  if(!(await cfAsk('Завершить смену «'+nm+'» сейчас?\nЧасы будут посчитаны по правилам филиала; стаканы/касса не заполняются.',{danger:true,okText:'Завершить',icon:'🔴'})))return;
+  if(!(await cfAsk('Завершить смену «'+nm+'»?\nЧасы будут посчитаны по правилам филиала; стаканы/касса не заполняются.',{danger:true,okText:'Завершить',icon:'🔴'})))return;
+  // Opsiyonel kapanış saati (unutulan vardiya düzeltmesi). Backend doğrular:
+  // başlangıçtan önce olamaz + SONRAKİ aynı-rol vardiyasına taşamaz (devir bütünlüğü).
+  var t=((await cfPrompt('Время закрытия (ЧЧ:ММ, сегодня).\nПусто или отмена — закрыть СЕЙЧАС.','',{placeholder:'напр. 17:05',okText:'Закрыть',icon:'🕐'}))||'').trim();
+  var payload={action:'force_end_shift',target:uid};
+  if(/^\d{1,2}:\d{2}$/.test(t))payload.end_time=t;
   var b=(BARISTAS||[]).find(function(x){return x.id===uid});if(b)b.active=null;
   // SLOTS optimistik: bu kişinin tuttuğu slotu boşalt
   try{Object.keys(SLOTS||{}).forEach(function(k){var s=SLOTS[k];['barista','assistant'].forEach(function(r){if(s[r]&&s[r].uid===uid)s[r]=null;});});}catch(e){}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'force_end_shift',target:uid}))}catch(e){}}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){}}
   toast('🔴 Смена закрывается…');if(tg)tg.HapticFeedback?.notificationOccurred('warning');render();
 }
-// ── Owner: çalışan adına vardiya başlat (slot kuralları backend'de yine geçerli) ──
+// Hedef çalışanın SEÇİLEN şubedeki etkin kategorisi/rolü (broles override → global) —
+// owner elle başlatırken ne uygulanacağını GÖRSÜN (sessizce global kullanılmaz).
+function fsHint(){
+  var el=document.getElementById('fsHintBox');if(!el)return;
+  var uid=parseInt((document.getElementById('fsEmp')||{}).value)||0;
+  var bid=parseInt((document.getElementById('fsBr')||{}).value)||0;
+  var b=(BARISTAS||[]).find(function(x){return x.id===uid});
+  if(!b){el.textContent='';return}
+  var ov=((b.broles||{})[String(bid)])||null;
+  var cid=ov||b.cat;
+  var c=(SAL_CATS||[]).find(function(x){return x.id===cid});
+  if(!c){el.innerHTML='🏷️ Категория не назначена — будет глобальная ставка';return}
+  var role=((c.slot_role||'barista')==='assistant')?'🎓 ассистент/стажёр':'☕ бариста';
+  el.innerHTML='🏷️ '+escH(c.name)+' · '+fmt(c.hourly_rate||0)+'/ч · '+role+(ov?' <span style="color:var(--t3);font-weight:500">(назначение для этого филиала)</span>':'');
+}
+// ── Owner: çalışan adına vardiya başlat — opsiyonel GERÇEK geliş tarihi/saati.
+// Backend: slot + devir klampesi + rol/kategori/ставка şube-etkin SNAPSHOT + audit. ──
 function ownerStartShift(){
   var uid=parseInt((document.getElementById('fsEmp')||{}).value)||0;
   var bid=parseInt((document.getElementById('fsBr')||{}).value)||0;
   if(!uid){toast('Выберите сотрудника');return}
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'force_start_shift',target:uid,branch_id:bid}))}catch(e){}}
+  var payload={action:'force_start_shift',target:uid,branch_id:bid};
+  var _t=((document.getElementById('fsTime')||{}).value||'').trim();
+  var _d=((document.getElementById('fsDate')||{}).value||'').trim();
+  if(_t){
+    try{
+      var p=_d?_d.split('-'):null;var hm=_t.split(':');
+      var dt=p?new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2]),parseInt(hm[0]),parseInt(hm[1]),0,0)
+              :new Date();
+      if(!p){dt.setHours(parseInt(hm[0]),parseInt(hm[1]),0,0);}
+      if(dt>new Date())dt=new Date();
+      payload.start_time=dt.toISOString();  // mevcut akışlarla aynı format (UTC ISO)
+    }catch(e){}
+  }
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){}}
   toast('▶ Смена запускается…');if(tg)tg.HapticFeedback?.impactOccurred('light');
 }
 async function deleteShift(id){
@@ -2521,16 +2556,82 @@ function rR(m,b){b.style.display='none';
 }
 function openRoom(id,n){
   try{var s=JSON.parse(localStorage.getItem('cf_roomseen')||'{}');s[id]=n;localStorage.setItem('cf_roomseen',JSON.stringify(s));}catch(e){}
-  reportRoom=id;payDetail=null;shiftDetOpen=null;render();
+  reportRoom=id;payDetail=null;shiftDetOpen=null;repShiftDet=null;render();
 }
+// ═══ TEK TİP vardiya detayı — TÜM roller için AYNI etkileşim: satıra dokun → detay.
+// («отчёт» / «детали» ikiliği kaldırıldı.) repShiftDet = açık vardiyanın sid'i.
+var repShiftDet=null;
+function openRepShift(sid){repShiftDet=sid;render();scrollTopAll();}
 // Профиль/Управление'den vardiya geçmişine tek atlama: Отчёт → Мои смены/Смены.
 // (go() reportRoom'u sıfırlar → openRoom SONRA çağrılır.)
 function openMyShiftsReport(){
   go('report');
   openRoom('shifts',((REP&&REP.shifts)||[]).length);
 }
+// ── TEK TİP VARDİYA DETAY SAYFASI (tüm roller) — her şey SNAPSHOT'tan.
+// Barista: bardak satışları+bonus görünür. Asistan: bardak bölümleri TAMAMEN gizli.
+function rRepShiftDetail(m,b){
+  b.style.display='none';
+  var s=(REP.shifts||[]).find(function(x){return x.sid===repShiftDet});
+  if(!s){repShiftDet=null;return rReportRoom(m,b)}
+  var isAsst=(s.shift_role==='assistant');
+  var rate=shiftRate(s);
+  var isOpenSh=!s.end_time;
+  var earn=(s.total||0)+(s.overtime||0);
+  var h='<button class="back" onclick="repShiftDet=null;render()">‹ Назад</button>';
+  h+='<div class="sec">📊 Смена · '+fmtDay(s.start_time)+'</div>';
+  // Kim / nerede / hangi rol+kategori+ставка (hepsi bu vardiyanın snapshot'ı)
+  var info='';
+  if(MY_ROLE==='owner')info+='<div class="det-row"><span>👤 Сотрудник</span><span>'+escH(s.nm||'')+'</span></div>';
+  if((BRANCHES||[]).length>1&&s.bid)info+='<div class="det-row"><span>🏢 Филиал</span><span>'+escH(branchName(s.bid))+'</span></div>';
+  if(shiftRoleLabel(s))info+='<div class="det-row"><span>Роль в смене</span><span>'+shiftRoleLabel(s)+'</span></div>';
+  if(s.cat_name)info+='<div class="det-row"><span>🏷️ Категория</span><span>'+escH(s.cat_name)+'</span></div>';
+  if(rate)info+='<div class="det-row"><span>Ставка (в эту смену)</span><span>'+fmt(rate)+' / ч</span></div>';
+  if(info)h+='<div class="det-card"><div class="det-h">👤 Смена</div>'+info+'</div>';
+  // Zaman: gerçek geliş/gidiş + ödenen süre; fark varsa şube penceresi düşümü notu
+  h+='<div class="det-card"><div class="det-h">⏰ Время</div><div class="det-times">'
+    +'<div class="det-time-box"><div class="det-time-l">Пришли</div><div class="det-time-v">'+fmtTime(s.start_time)+'</div></div>'
+    +'<div class="det-time-box"><div class="det-time-l">'+(isOpenSh?'Сейчас':'Ушли')+'</div><div class="det-time-v">'+(isOpenSh?'<span style="color:#059669">●</span>':fmtTime(s.end_time))+'</div></div>'
+    +'<div class="det-time-box"><div class="det-time-l">К оплате</div><div class="det-time-v">'+fmtH(s.hours||0)+'</div></div>'
+  +'</div>';
+  try{
+    if(!isOpenSh){
+      var _raw=(new Date(s.end_time)-new Date(s.start_time))/3600000;
+      if(_raw-(s.hours||0)>0.03)h+='<div class="det-row" style="border-top:1px dashed var(--border);margin-top:8px;padding-top:8px"><span style="color:var(--t3)">Вне рабочих часов филиала (не оплачивается)</span><span style="color:var(--red)">−'+fmtH(_raw-(s.hours||0))+'</span></div>';
+    }
+  }catch(e){}
+  h+='</div>';
+  // 🥤 Bardak satışları — SADECE bardağa katılan roller (asistan: bölüm tamamen yok)
+  if(!isAsst){
+    var drinks={};try{drinks=typeof s.drinks==='string'?JSON.parse(s.drinks):(s.drinks||{})}catch(e){drinks={}}
+    var cups=0;Object.values(drinks).forEach(function(v){cups+=parseInt(v)||0});
+    if(cups>0){
+      h+='<div class="det-card"><div class="det-h">🥤 Продажи ('+cups+' шт)</div>';
+      DRINK_LIST.forEach(function(d){var q=parseInt(drinks[d.id])||0;if(q)h+='<div class="det-row"><span>'+d.c+' '+d.l+'</span><span>× '+q+'</span></div>';});
+      Object.keys(drinks).forEach(function(k){if(DRINK_LIST.some(function(d){return d.id===k}))return;var q=parseInt(drinks[k])||0;if(q)h+='<div class="det-row"><span>'+escH(k)+'</span><span>× '+q+'</span></div>';});
+      h+='</div>';
+    }
+  }
+  // 💰 Расчёт — saklanan değerler (asla yeniden hesaplanmaz)
+  var desB=parseInt(s.dessert_bonus)||0,drB=Math.max(0,(s.bonus||0)-desB);
+  h+='<div class="det-card"><div class="det-h">💰 Расчёт</div>'
+    +'<div class="det-row"><span>Часы '+fmtH(s.hours||0)+(rate?' × '+fmt(rate):'')+'</span><span>'+fmt(s.hourly_pay||0)+'</span></div>'
+    +((!isAsst&&(s.bonus||0)>0)?('<div class="det-row"><span>🥤 Бонус — напитки</span><span>+'+fmt(drB)+'</span></div>'+(desB>0?'<div class="det-row"><span>🍰 Бонус — десерты</span><span>+'+fmt(desB)+'</span></div>':'')):'')
+    +(((s.overtime||0)>0)?'<div class="det-row"><span>⏱ Переработка</span><span>+'+fmt(s.overtime)+'</span></div>':'')
+    +'<div class="det-total"><span>ИТОГО'+(isOpenSh?' (пока)':'')+'</span><span>'+fmt(earn)+' сум</span></div>'
+  +'</div>';
+  if(s.note)h+='<div class="det-card"><div class="det-h">📝 Заметка</div><div style="font-size:13px;color:var(--t1);font-weight:500;line-height:1.5">'+escH(s.note)+'</div></div>';
+  // Kasa raporu varsa — detayın İÇİNDEN tek dokunuş (eski «📋 отчёт» satır etiketi yerine)
+  try{
+    var _ki=-1;(KASA_REPORTS||[]).forEach(function(r,ri){if(r.start_time===s.start_time)_ki=ri;});
+    if(_ki>=0)h+='<button class="mbtn" style="width:100%;margin-top:4px" onclick="kasaDetail=KASA_REPORTS['+_ki+'];render()">📋 Кассовый отчёт этой смены ›</button>';
+  }catch(e){}
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+}
 function rReportRoom(m,b){
   b.style.display='none';
+  if(repShiftDet)return rRepShiftDetail(m,b);
   var room=reportRoom;
   var titles={kasa:'📋 Кассовые отчёты',orders:'📦 Заказы',shifts:'🥤 Смены и кассы',analytics:'📊 Аналитика бариста',tips:'💝 Чаевые',pays:'💵 Выплачено',products:'🛍 Бонусы за товары',fines:'⚠️ Штрафы',loans:'💸 Авансы'};
   if(MY_ROLE!=='owner'){titles.shifts='📊 Мои смены';titles.orders='📦 Мои заказы';}
@@ -2596,36 +2697,23 @@ function rReportRoom(m,b){
           var kri=(s.start_time&&kByStart[s.start_time]!=null)?kByStart[s.start_time]:null;
           var hasRep=(kri!=null);
           var kr=hasRep?KASA_REPORTS[kri]:null;
-          var _sOpen=(!hasRep&&shiftDetOpen===s.start_time);
-          var _clk=hasRep?('kasaDetail=KASA_REPORTS['+kri+'];render()'):('shiftDetOpen=(shiftDetOpen===\''+esc(s.start_time)+'\'?null:\''+esc(s.start_time)+'\');render()');
-          // Satır: Saat aralığı · süre · şube · KAZANÇ (barista kendi listesinde isim yerine).
-          // Detay (rol/kategori/ставка/bonus) tıklayınca — progressive disclosure.
+          // TEK ETKİLEŞİM (tüm roller): satıra dokun → tek tip vardiya detayı.
+          // Kasa raporu artık detayın İÇİNDEN açılır — «отчёт»/«детали» ikiliği yok.
+          var _clk='openRepShift('+s.sid+')';
           var _earn=(s.total||0)+(s.overtime||0);
+          var _roleIco=s.shift_role?(' · '+(s.shift_role==='assistant'?'🎓':'☕')):'';
           var _brTag=((BRANCHES||[]).length>1&&s.bid)?' · 🏢 '+escH(branchName(s.bid)):'';
           h+='<div style="display:flex;align-items:center;gap:9px;padding:7px 0;cursor:pointer" onclick="'+_clk+'">'
-            +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">👤</div>'
+            +'<div style="width:32px;height:32px;border-radius:50%;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">'+(s.shift_role==='assistant'?'🎓':'👤')+'</div>'
             +'<div style="flex:1;min-width:0">'+(MY_ROLE==='owner'?'<div style="font-weight:700;font-size:13px">'+escH(s.nm||'')+'</div>':'<div style="font-weight:700;font-size:13px">'+fmtTime(s.start_time)+' → '+outTxt+'</div>')
-            +'<div style="font-size:11px;color:var(--t2)">'+(MY_ROLE==='owner'?('⏰ '+fmtTime(s.start_time)+' → '+outTxt):fmtH(s.hours||0))+_brTag+(hasRep?' · <span style="color:var(--green);font-weight:700">📋 отчёт ›</span>':(s.end_time?' · <span style="color:var(--t3)">'+(_sOpen?'▾':'▸')+' детали</span>':''))+'</div></div>'
+            +'<div style="font-size:11px;color:var(--t2)">'+(MY_ROLE==='owner'?('⏰ '+fmtTime(s.start_time)+' → '+outTxt):fmtH(s.hours||0))+_brTag+_roleIco+'</div></div>'
             +(MY_ROLE==='owner'
                ?(hasRep?'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div><div style="font-size:11px;color:var(--green);font-weight:800">'+fmt(kr.kassa||0)+'</div></div>':'<div style="font-weight:800;color:var(--gold);font-size:13px">'+fmtH(s.hours||0)+'</div>')
                :'<div style="text-align:right"><div style="font-weight:800;color:var(--gold);font-size:13px">'+(s.end_time?('+'+fmt(_earn)):fmtH(s.hours||0))+'</div></div>')
-            +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
+            +'<span class="arrow" style="flex-shrink:0;margin-left:4px">›</span>'
+            +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:4px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
-          if(_sOpen){
-            var _shp=(s.hourly_pay!=null?s.hourly_pay:(s.total||0)),_sbn=(s.bonus||0),_sot=(s.overtime||0);
-            // Ставка: SNAPSHOT (s.rate) öncelikli; eski vardiyada stored'dan türet — ASLA güncel değil
-            var _srate=shiftRate(s);
-            var _sAsst=(s.shift_role==='assistant');
-            var _sfull=_shp+_sbn+_sot;
-            h+='<div style="margin:0 0 6px;padding:9px 11px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
-              +'<div style="display:flex;justify-content:space-between;padding:1px 0 4px;color:var(--t3);font-size:11px"><span>⏰ '+fmtTime(s.start_time)+' → '+(s.end_time?fmtTime(s.end_time):'—')+'</span><span>'+fmtH(s.hours||0)+'</span></div>'
-              +((s.shift_role||s.cat_name)?('<div style="display:flex;justify-content:space-between;padding:1px 0 4px;color:var(--t3);font-size:11px"><span>'+(shiftRoleLabel(s)||'')+'</span><span>'+escH(s.cat_name||'')+'</span></div>'):'')
-              +'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;opacity:.72"><span>💵 Часы'+(_srate?' × '+fmt(_srate):'')+' <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">'+fmt(_shp)+'</span></div>'
-              +(_sAsst?'':'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0"><span>🥤 Бонус <span style="font-size:9px;color:var(--t3)">из кассы, за день</span></span><span style="font-weight:700;color:#059669">+'+fmt(_sbn)+'</span></div>')
-              +(_sot>0?'<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;color:#7c3aed"><span>⏱ Переработка <span style="font-size:9px;color:var(--t3)">в конце месяца</span></span><span style="font-weight:700">+'+fmt(_sot)+'</span></div>':'')
-              +'<div style="display:flex;justify-content:space-between;padding:5px 0 0;border-top:1px dashed var(--border2);margin-top:4px;font-weight:800"><span>Итого за смену</span><span style="color:var(--gold)">'+fmt(_sfull)+'</span></div>'
-            +'</div>';
-          }
+          // (inline «детали» bloğu KALDIRILDI — tek tip detay sayfası rRepShiftDetail kullanılıyor)
         });
         h+='</div></div>';
       });
@@ -2994,12 +3082,12 @@ function liveHours(startIso){
 // Ödenecek saat — backend paid_hours ile BİREBİR: ham süreden kapalı pencere
 // (закрытие→открытие) düşülür, max ile sınırlanır. {raw, unpaid, paid} döner.
 // PAY_WIN = şubenin {open, close, unpaid, max} penceresi (payload'dan).
-function paidHours(startIso, endIso){
+function paidHours(startIso, endIso, winOpt){
   try{
     var s=new Date(startIso), e=endIso?new Date(endIso):gT();
     if(!(e>s))return {raw:0,unpaid:0,paid:0};
     var raw=(e-s)/3600000;
-    var w=PAY_WIN||{};
+    var w=winOpt||PAY_WIN||{};  // winOpt: başka şubenin penceresi (owner görünümleri)
     // "Не оплачивать" KAPALI → tüm süre ödenir (düşüm+cap yok) — backend ile aynı
     // paid TAM HASSAS (yuvarlama YOK) → canlı hesap her saniye akıcı güncellenir
     if(!w.unpaid)return {raw:raw, unpaid:0, paid:raw};
@@ -4039,14 +4127,33 @@ function rMActiveBaristas(m,b){
     activeList.forEach(function(brs){
       const dur=liveDur(brs.active.start_time);
       var _role=(brs.active&&brs.active.shift_role)||'barista';
+      var _aOpen=(typeof ownerActOpen!=='undefined'&&ownerActOpen===brs.id);
       h+='<div class="act-mini" id="amini_'+brs.id+'">'
         +'<div class="act-mini-dot"></div>'
-        +'<div class="act-mini-l"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)
+        +'<div class="act-mini-l" onclick="toggleOwnerAct('+brs.id+')" style="cursor:pointer"><div class="act-mini-n">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)
           +' <span style="font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:8px;background:'+(_role==='assistant'?'#fef3c7;color:#b45309':'#dbeafe;color:#1d4ed8')+'">'+(_role==='assistant'?'🎓 ассистент':'☕ бариста')+'</span>'
-          +((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+'</div></div>'
+          +((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div><div class="act-mini-t">с '+fmtTime(brs.active.start_time)+' · '+(_aOpen?'▾':'▸')+' детали</div></div>'
         +'<div style="display:flex;align-items:center;gap:8px"><div class="act-mini-r" id="amini_d_'+brs.id+'">'+dur+'</div>'
         +'<button onclick="ownerEndShift('+brs.id+',\''+esc(brs.n)+'\')" title="Завершить смену" style="flex-shrink:0;padding:6px 9px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--red);font-size:11px;font-weight:700;cursor:pointer">🔴 Закрыть</button></div>'
       +'</div>';
+      // ── Aktif vardiya operasyonel detayı (dokununca): hepsi vardiya SNAPSHOT'ından ──
+      if(_aOpen){
+        var _a=brs.active;var _abid=_a.branch_id||brs.bid||1;
+        var _abr=(BRANCHES||[]).find(function(x){return x.id===_abid})||{};
+        var _aw={open:_abr.open,close:_abr.close,unpaid:_abr.unpaid};
+        var _aph=paidHours(_a.start_time,null,_aw);
+        var _arate=parseInt(_a.rate)||0;
+        var _aest=Math.round((_aph.paid||0)*_arate);
+        var _amanual=((_a.note||'')==='начато владельцем');
+        h+='<div style="margin:-4px 0 8px;padding:9px 11px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;font-size:12px">'
+          +(_a.cat_name?'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">🏷️ Категория</span><span style="font-weight:700">'+escH(_a.cat_name)+'</span></div>':'')
+          +(_arate?'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">Ставка (снимок)</span><span style="font-weight:700">'+fmt(_arate)+' / ч</span></div>':'')
+          +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">Начало (факт)</span><span style="font-weight:700">'+fmtDay(_a.start_time).slice(0,5)+' '+fmtTime(_a.start_time)+'</span></div>'
+          +'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">К оплате сейчас</span><span style="font-weight:700">'+fmtH(_aph.paid||0)+(_aph.unpaid>0.01?' <span style="font-size:10px;color:var(--t3)">(−'+fmtH(_aph.unpaid)+' закрытые)</span>':'')+'</span></div>'
+          +(_arate?'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--t2)">≈ Часовая часть</span><span style="font-weight:700;color:var(--gold)">'+fmt(_aest)+'</span></div>':'')
+          +(_amanual?'<div style="padding:4px 0 0;color:#b45309;font-weight:700;font-size:11px">▶️ Смена начата владельцем</div>':'')
+        +'</div>';
+      }
     });
     if(window._anyActTimer)clearInterval(window._anyActTimer);
     window._anyActTimer=setInterval(function(){
@@ -4080,18 +4187,26 @@ function rMActiveBaristas(m,b){
   var _idleEmps=BARISTAS.filter(function(x){return !x.arch&&!x.active});
   if(_idleEmps.length){
     h+='<div class="sec">▶️ Начать смену за сотрудника</div>';
+    var _fsToday=(function(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')})();
     h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px">'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-      +'<select id="fsEmp" style="flex:2;min-width:120px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
+      +'<select id="fsEmp" onchange="fsHint()" style="flex:2;min-width:120px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
         +'<option value="" selected disabled>— сотрудник —</option>'
         +_idleEmps.map(function(x){return '<option value="'+x.id+'">'+escH(x.n)+'</option>'}).join('')
       +'</select>'
-      +'<select id="fsBr" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
+      +'<select id="fsBr" onchange="fsHint()" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
         +(BRANCHES||[]).map(function(bb){return '<option value="'+bb.id+'">'+escH(bb.name)+'</option>'}).join('')
       +'</select>'
+      +'</div>'
+      // Gerçek geliş saati (opsiyonel): boş = şimdi. Devir/açılış kuralları backend'de doğrulanır.
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'
+      +'<input type="date" id="fsDate" value="'+_fsToday+'" max="'+_fsToday+'" style="flex:1;min-width:120px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
+      +'<input type="time" id="fsTime" placeholder="— сейчас —" style="flex:1;min-width:90px;padding:8px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:12.5px;font-family:inherit">'
       +'<button class="add-btn" style="padding:9px 14px" onclick="ownerStartShift()">▶ Начать</button>'
       +'</div>'
-      +'<div style="font-size:10.5px;color:var(--t3);margin-top:6px">Правила позиций действуют и здесь: если позиция занята — смена не начнётся.</div>'
+      // Hedefin bu şubedeki ETKİN kategorisi/rolü (branch_staff override → global) — sessizce global kullanılmaz
+      +'<div id="fsHintBox" style="font-size:11px;color:var(--t2);margin-top:7px;font-weight:600"></div>'
+      +'<div style="font-size:10.5px;color:var(--t3);margin-top:5px">Время пусто — смена начнётся сейчас. Правила позиций и передачи смены действуют и здесь; при пересечении время будет скорректировано.</div>'
     +'</div>';
   }
   // Son vardiyalar (kim ne zaman geldi/gitti)
@@ -4467,6 +4582,9 @@ function quickPay(uid){payTarget=uid;mView='pay';render()}
 // view-key'e BİLEREK eklenmedi → aç/kapa scroll konumunu bozmaz (payDetail/shiftDetOpen gibi).
 var baristaOpen=null;
 function toggleBarista(uid){baristaOpen=(baristaOpen===uid)?null:uid;render()}
+// В смене: aktif vardiya operasyonel detayı aç/kapa (owner)
+var ownerActOpen=null;
+function toggleOwnerAct(uid){ownerActOpen=(ownerActOpen===uid)?null:uid;render()}
 
 // ── Owner: Baristanın ev şubesini değiştir ──
 function assignBranch(uid,bid){
