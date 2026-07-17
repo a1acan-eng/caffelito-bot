@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070165;
+var APP_BUILD=2026070166;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1704,7 +1704,9 @@ function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()
 // owner:true → sadece owner görür. salary owner'da 'Управление' olarak gösterilir.
 // ЧИСТОТА ayrı sekme DEĞİL artık — Задачи içinde alt bölüm (rTaskHub). tab='uborka' state'i
 // dahili olarak yaşıyor (rTM/rTL aynen çalışsın diye); tab barda Задачи vurgulanır.
-const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'ЗП',i:'💰'}];
+// ЗП → «Профиль» (barista; maaş+avans+geçmiş+sertifikasyon hepsi burada). Owner'da visTabs
+// bu sekmeyi «Управление»ye çevirir (değişmedi).
+const TABS=[{id:'shift',l:'Смена',i:'⏱'},{id:'order',l:'Заказ',i:'📋'},{id:'zadachi',l:'Задачи',i:'✅'},{id:'report',l:'Отчёт',i:'📊'},{id:'salary',l:'Профиль',i:'👤'}];
 function visTabs(){return TABS.filter(function(t){return !t.owner||MY_ROLE==='owner'}).map(function(t){var o={id:t.id,l:t.l,i:t.i};if(t.id==='salary'&&MY_ROLE==='owner'){o.l='Управление';o.i='🛠'}return o})}
 function dT(){document.getElementById('tabsEl').innerHTML=visTabs().map(function(t){var on=(tab===t.id)||(t.id==='zadachi'&&tab==='uborka');return '<div class="tab '+(on?'on':'')+'" onclick="go(\''+t.id+'\')"><div class="tab-ic">'+t.i+'</div><div>'+t.l+'</div></div>'}).join('')}
 // ── Soldan sağa kaydırma = geri (OS-tarzı jest) ──
@@ -3046,15 +3048,8 @@ function rMMain(m,b){
   //    «🏢 Филиалы» butonunda; "kim çalışıyor" own-grid «🟢 В смене» butonunda.
   //    Управление artık her zaman tüm şubeleri gösterir (ACTIVE_BRANCH filtresi arayüzden çıktı).
 
-  // Сертификация бариста — экзамен/сертификат (barista ana ekrandan; owner — из Бухгалтерии)
-  if(MY_ROLE!=='owner'){
-    h+='<div class="loan-card" onclick="openCert()" style="border-color:var(--gold);background:var(--gold-bg)">'
-      +'<div class="loan-l"><div class="loan-i">🎓</div>'
-      +'<div><div class="loan-t">Сертификация бариста</div>'
-      +'<div class="loan-s">Экзамен Caffelito · сертификат + 1 000 000</div></div></div>'
-      +'<div class="loan-arr">›</div>'
-    +'</div>';
-  }
+  // Сертификация kartı EN ALTA taşındı (kullanıcı isteği: ayda 1 kullanılıyor,
+  // ana ekranın tepesinde durmasın). Bkz. rMMain sonu.
 
   // (Vardiya bilgilendirme yazıları KALDIRILDI — kullanıcı sadeleştirme istedi.
   //  Vardiya yönetimi «Смена» sekmesinde.)
@@ -3175,6 +3170,16 @@ function rMMain(m,b){
   if(paid>0){
     h+='<div class="sec">💵 Выплачено</div>';
     h+='<div class="hist paid"><div class="hist-l"><div class="hist-d">За '+escH(fmtMonth(period))+'</div></div><div class="hist-r grey">-'+fmt(paid)+'</div></div>';
+  }
+
+  // 🎓 Сертификация — EN ALTTA kompakt satır (ayda 1 kullanım; üstten taşındı, kaybolmadı)
+  if(MY_ROLE!=='owner'){
+    h+='<div class="loan-card" onclick="openCert()" style="margin-top:14px">'
+      +'<div class="loan-l"><div class="loan-i">🎓</div>'
+      +'<div><div class="loan-t">Сертификация бариста</div>'
+      +'<div class="loan-s">Экзамен Caffelito · сертификат + 1 000 000</div></div></div>'
+      +'<div class="loan-arr">›</div>'
+    +'</div>';
   }
 
   h+='<div class="footer">XSYN</div>';
