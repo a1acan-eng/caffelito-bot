@@ -505,8 +505,9 @@ ANON_ADMIN_ID = 1087968824
 
 
 def get_branches(db, only_active=True):
-    """Şubeler listesi (saatlerle)."""
-    q = "SELECT id, name, group_chat_id, sort_order, active, open_hour, close_hour, unpaid_win FROM branches"
+    """Şubeler listesi (saatlerle + işgücü ayarı)."""
+    q = ("SELECT id, name, group_chat_id, sort_order, active, open_hour, close_hour, unpaid_win, "
+         "COALESCE(trainee_enabled,0) AS trainee_enabled FROM branches")
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
     q += " ORDER BY sort_order, id"
@@ -832,6 +833,28 @@ def slot_block_reason(db, user_id, branch_id):
                 + (f" (с {st})" if st else "") + ".\n"
                 "Текущий бариста должен завершить свою смену — после этого вы сможете принять смену.")
     return None
+
+
+def refresh_open_shift_snapshot(db, user_id):
+    """AÇIK vardiyanın rol/kategori/ставка snapshot'ını kişinin GÜNCEL (şube-etkin)
+    kategorisine göre tazeler. Kapanmış (tarihsel) vardiyalara ASLA dokunmaz.
+    Owner canlı vardiya sırasında kategori düzeltirse anında yansısın diye
+    (ör. kişi yanlışlıkla barista rolüyle başladıysa → stajyer atanınca açık
+    vardiya stajyer olur, barista slotu boşalır)."""
+    try:
+        act = get_active_shift(db, user_id)
+        if not act:
+            return False
+        bid = act["branch_id"] if act["branch_id"] else user_branch_id(db, user_id)
+        pi = barista_pay_info(db, user_id, branch_id=bid)
+        role = pi.get("slot_role") or "barista"
+        db.execute("UPDATE shifts SET shift_role=?, cat_id=?, cat_name=?, rate=? WHERE id=?",
+                   (role, pi.get("cat_id"), pi.get("cat_name") or "",
+                    int(pi.get("rate") or 0), act["id"]))
+        db.commit()
+        return True
+    except Exception:
+        return False
 
 
 def paid_hours(start_dt, end_dt, cfg):
@@ -4004,6 +4027,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     cid_val = None
                 db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
                 db.commit()
+                # Kişinin AÇIK vardiyası varsa rol/ставка snapshot'ı anında güncel
+                # kategoriye göre tazelenir (tarihsel vardiyalara dokunulmaz).
+                refresh_open_shift_snapshot(db, int(tgt))
 
         elif action == "create_branch":
             db = get_db()
@@ -4121,6 +4147,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "branch_trainee", user.id, user.first_name, None, None,
                        {"branch_id": bid, "enabled": en})
+            # Bu şubedeki AÇIK vardiyaların rol snapshot'ları güncel kategoriye göre
+            # tazelenir (ör. toggle açılınca stajyer kategorili kişinin açık vardiyası
+            # yanlışlıkla barista rolündeyse → anında stajyere döner, barista slotu boşalır).
+            try:
+                _open_rows = db.execute(
+                    "SELECT DISTINCT user_id FROM shifts WHERE end_time IS NULL "
+                    "AND start_time IS NOT NULL AND COALESCE(branch_id,1)=?", (bid,)).fetchall()
+                for _orr in _open_rows:
+                    refresh_open_shift_snapshot(db, _orr["user_id"])
+            except Exception:
+                pass
+            await update.message.reply_text(
+                ("🎓 Позиция ассистента/стажёра включена." if en else "Позиция ассистента/стажёра выключена.")
+                + " Настройка сохранена.")
 
         elif action == "branch_role_save":
             # Owner: kişi × şube kategori ataması. cat_id boş → override silinir (global geçerli).
@@ -4148,6 +4188,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "branch_role_save", user.id, user.first_name, target_id,
                        display_name_for(db, target_id), {"branch_id": bid, "cat_id": cid})
+            # Kişinin AÇIK vardiyası bu şubedeyse rol/ставка snapshot'ı anında tazelenir
+            refresh_open_shift_snapshot(db, target_id)
 
         elif action == "force_end_shift":
             # Owner: çalışanın vardiyasını elle kapat (kapatmayı unuttuysa).
