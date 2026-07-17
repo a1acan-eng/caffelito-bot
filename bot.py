@@ -797,11 +797,23 @@ def slot_occupant(db, branch_id, role):
 
 def slot_block_reason(db, user_id, branch_id):
     """Kullanıcı bu şubede vardiya başlatabilir mi? None=serbest, str=dostça engel mesajı.
-    Trainee kapalı → tek barista slotu (herkes onu kullanır). Açık → rolüne göre slot."""
+    ROL her zaman kişinin (şube-etkin) kategorisinden gelir — toggle rolü değiştirmez.
+    Toggle kapalı + kişi asistan kategorili → o şubede asistan POZİSYONU YOK → net mesaj."""
     bid = int(branch_id or 1)
     pi = barista_pay_info(db, user_id, branch_id=bid)
-    tr_on = branch_trainee_enabled(db, bid)
-    role = (pi.get("slot_role") or "barista") if tr_on else "barista"
+    role = pi.get("slot_role") or "barista"
+    if role == "assistant" and not branch_trainee_enabled(db, bid):
+        _bn = ""
+        try:
+            _br = get_branch(db, bid)
+            _bn = (_br["name"] if _br else "") or ""
+        except Exception:
+            _bn = ""
+        return ("ℹ️ Нет позиции ассистента\n\n"
+                + (f"В филиале «{_bn}» " if _bn else "В этом филиале ")
+                + "нет позиции ассистента/стажёра.\n"
+                "Владелец может включить её (Управление → Филиалы) "
+                "или назначить вам категорию бариста для этого филиала.")
     occ = slot_occupant(db, bid, role)
     if occ and occ["uid"] != user_id:
         st = ""
@@ -1301,7 +1313,10 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
     # ── SNAPSHOT: rol + kategori + ставка başlangıçta dondurulur ──
     # Kategori/ücret sonradan değişse bu vardiya ASLA yeniden hesaplanmaz.
     _pi = barista_pay_info(db, user_id, branch_id=bid)
-    _role = (_pi.get("slot_role") or "barista") if branch_trainee_enabled(db, bid) else "barista"
+    # ROL = kişinin (bu şubedeki etkin) KATEGORİSİNİN rolü — HER ZAMAN. Owner kimi
+    # stajyer atadıysa vardiya stajyer olarak başlar; toggle rolü ASLA değiştirmez
+    # (toggle sadece o şubede asistan pozisyonu VAR/YOK der — slot_block_reason bakar).
+    _role = _pi.get("slot_role") or "barista"
     # ── SIKI DEVİR (handover): aynı şube + aynı rol pozisyonunda İKİ vardiyanın ödenmiş
     # süresi ASLA çakışamaz. Önceki vardiya 17:05'te kapandıysa yeni vardiya 17:00'a
     # GERİYE YAZILAMAZ → başlangıç en erken 17:05'e kaydırılır. Günün ilk açılışını
@@ -1581,9 +1596,10 @@ def build_hash_payload(db, user_id, name):
             _str = branch_trainee_enabled(db, _sbid)
             slots_out[str(_sbid)] = {
                 "trainee": 1 if _str else 0,
-                "my_role": (_spi.get("slot_role") or "barista") if _str else "barista",
+                # my_role HER ZAMAN kategoriden (toggle rolü değiştirmez)
+                "my_role": _spi.get("slot_role") or "barista",
                 "barista": slot_occupant(db, _sbid, "barista"),
-                "assistant": (slot_occupant(db, _sbid, "assistant") if _str else None),
+                "assistant": slot_occupant(db, _sbid, "assistant"),
             }
     except Exception:
         slots_out = {}
