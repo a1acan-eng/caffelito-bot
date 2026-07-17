@@ -934,7 +934,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070167;
+var APP_BUILD=2026070168;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3259,15 +3259,16 @@ function slotBlockMsg(bid){
   var occ=(role==='assistant')?s.assistant:s.barista;
   if(occ&&occ.uid!==MY_UID){
     var st='';try{st=fmtTime(occ.st)}catch(e){}
-    var rl=(role==='assistant')?'ассистента/стажёра':'бариста';
-    return 'Позиция '+rl+' сейчас занята — '+escH(occ.nm||'')+(st?' (на смене с '+st+')':'')
-      +'.\n\nДождитесь, пока текущая смена будет завершена — тогда можно будет начать свою.';
+    var who=(role==='assistant')?'ассистента':'бариста';
+    var cur=(role==='assistant')?'Текущий ассистент':'Текущий бариста';
+    return 'Смена '+who+' ещё активна — '+escH(occ.nm||'')+(st?' (с '+st+')':'')+'.\n\n'
+      +cur+' должен завершить свою смену — после этого вы сможете принять смену.';
   }
   return null;
 }
 async function startShiftNow(){
   var _blk=slotBlockMsg(startBranch||MY_BRANCH);
-  if(_blk){await cfAsk('🚧 '+_blk,{okText:'Понятно',icon:'⏳'});return}
+  if(_blk){await cfAsk('🔄 Передача смены\n\n'+_blk,{okText:'Понятно',icon:'🔄'});return}
   if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(new Date().toISOString()),{okText:'Начать',icon:'🟢'})))return;
   const nowIso=gT().toISOString();
   // Optimistik
@@ -3419,7 +3420,7 @@ function cfPrompt(msg,cur,opts){opts=opts||{};opts.kind='text';opts.msg=msg;opts
 // ── Vardiyayı geriye dönük başlat (HH:MM girişi) ──
 async function startShiftCustomTime(){
   var _blk=slotBlockMsg(startBranch||MY_BRANCH);
-  if(_blk){await cfAsk('🚧 '+_blk,{okText:'Понятно',icon:'⏳'});return}
+  if(_blk){await cfAsk('🔄 Передача смены\n\n'+_blk,{okText:'Понятно',icon:'🔄'});return}
   const inp=document.getElementById('cstStart');
   if(!inp||!inp.value){toast('Укажите время');return}
   const hhmm=inp.value; // 'HH:MM'

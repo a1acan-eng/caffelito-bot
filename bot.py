@@ -809,10 +809,16 @@ def slot_block_reason(db, user_id, branch_id):
             st = datetime.fromisoformat(occ["st"]).strftime("%H:%M")
         except Exception:
             pass
-        rl = "ассистента/стажёра" if role == "assistant" else "бариста"
-        return (f"Позиция {rl} сейчас занята — {occ['nm']}"
-                + (f" (на смене с {st})" if st else "")
-                + ". Пожалуйста, дождитесь завершения текущей смены — тогда можно будет начать свою.")
+        # Net «передача смены» mesajı: önce mevcut çalışan bitirir, sonra devralırsın.
+        if role == "assistant":
+            return ("🔄 Передача смены\n\n"
+                    f"Смена ассистента ещё активна — {occ['nm']}"
+                    + (f" (с {st})" if st else "") + ".\n"
+                    "Текущий ассистент должен завершить свою смену — после этого вы сможете принять смену.")
+        return ("🔄 Передача смены\n\n"
+                f"Смена бариста ещё активна — {occ['nm']}"
+                + (f" (с {st})" if st else "") + ".\n"
+                "Текущий бариста должен завершить свою смену — после этого вы сможете принять смену.")
     return None
 
 
@@ -1296,6 +1302,23 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
     # Kategori/ücret sonradan değişse bu vardiya ASLA yeniden hesaplanmaz.
     _pi = barista_pay_info(db, user_id, branch_id=bid)
     _role = (_pi.get("slot_role") or "barista") if branch_trainee_enabled(db, bid) else "barista"
+    # ── SIKI DEVİR (handover): aynı şube + aynı rol pozisyonunda İKİ vardiyanın ödenmiş
+    # süresi ASLA çakışamaz. Önceki vardiya 17:05'te kapandıysa yeni vardiya 17:00'a
+    # GERİYE YAZILAMAZ → başlangıç en erken 17:05'e kaydırılır. Günün ilk açılışını
+    # engellemez (önceki bitiş start'tan önceyse dokunulmaz). Şube/rol dinamik — hardcode yok.
+    try:
+        _pe_row = db.execute(
+            "SELECT end_time FROM shifts WHERE COALESCE(branch_id,1)=? "
+            "AND COALESCE(shift_role,'barista')=? AND end_time IS NOT NULL "
+            "ORDER BY end_time DESC LIMIT 1",
+            (int(bid or 1), _role)).fetchone()
+        if _pe_row and _pe_row["end_time"]:
+            _pe = datetime.fromisoformat(_pe_row["end_time"])
+            if start_dt < _pe:
+                start_dt = min(_pe, now)  # devir anı; geleceğe taşmaz
+                period = start_dt.strftime("%Y-%m")
+    except Exception:
+        pass
     cur = db.execute(
         "INSERT INTO shifts (user_id, hours, drinks, bonus, hourly_pay, total, date, period, created_at, start_time, end_time, note, branch_id, "
         "shift_role, cat_id, cat_name, rate) "
@@ -3259,7 +3282,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid_chk = user_branch_id(db, user.id)
             _blk = slot_block_reason(db, user.id, _bid_chk)
             if _blk:
-                await update.message.reply_text("🚧 " + _blk)
+                await update.message.reply_text(_blk)
                 await refresh_webapp_keyboard(update, context, db, user,
                     "🔄 Обновите приложение — смена не была начата 👇")
                 return
@@ -3270,6 +3293,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             note_back = ""
             if custom_start:
                 note_back = f"\n_(время указано вручную)_"
+                # Devir kaydırması olduysa şeffafça söyle (istenen saat < kaydedilen saat)
+                try:
+                    _req = _parse_user_time(custom_start)
+                    if _req and _req < start_dt:
+                        note_back = (f"\n_(время скорректировано: предыдущая смена на этой позиции "
+                                     f"закрылась в {start_dt.strftime('%H:%M')} — передача смены)_")
+                except Exception:
+                    pass
             await update.message.reply_text(
                 f"🟢 *Смена началась!*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -4160,9 +4191,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _fbid = user_branch_id(db, target_id)
             _blk = slot_block_reason(db, target_id, _fbid)
             if _blk:
-                await update.message.reply_text("🚧 " + _blk)
+                await update.message.reply_text(_blk)
                 return
             sh = start_shift(db, target_id, branch_id=_fbid)
+            # Audit: owner-elle-başlatma vardiya notuna da işlensin (log_action'a ek)
+            try:
+                db.execute("UPDATE shifts SET note=? WHERE id=?", ("начато владельцем", sh["id"]))
+                db.commit()
+            except Exception:
+                pass
             _nm = display_name_for(db, target_id, fallback="?")
             _st = datetime.fromisoformat(sh["start_time"]).strftime("%H:%M")
             log_action(db, "force_start_shift", user.id, user.first_name, target_id, _nm,
