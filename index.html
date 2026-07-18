@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070175;
+var APP_BUILD=2026070176;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3139,21 +3139,12 @@ function rShift(m,b){
     if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   }
 
-  // ── Смена = vardiya ile ilgili HER ŞEYİN tek evi (Prompt 6.1): son smены + история ──
-  const _mine=(s.shifts||[]);
-  if(_mine.length){
-    h+='<div class="sec">📊 Последние смены</div>';
-    _mine.map(function(sh,i){return {sh:sh,i:i}}).reverse().slice(0,3).forEach(function(r){
-      var sh=r.sh;var dt=new Date(sh.start_time||sh.created_at||Date.now());
-      var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
-      var tm=sh.start_time?(fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
-      var _ro=(sh.shift_role==='assistant')?' · 🎓':(sh.shift_role?' · ☕':'');
-      h+='<div class="hist click" onclick="openShiftDetail('+r.i+')">'
-        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+fmtH(sh.hours||0)+_ro+((BRANCHES||[]).length>1&&sh.branch_id?' · 🏢 '+escH(branchName(sh.branch_id)):'')+'</div></div>'
-        +'<div class="hist-r">+'+fmt((sh.total||0)+(sh.overtime||0))+'</div><span class="hist-arr">›</span>'
-      +'</div>';
-    });
-    h+='<div class="hist click" onclick="openMyShiftsReport()"><div class="hist-l"><div class="hist-d">Вся история смен'+((s.shifts_count||0)?' ('+s.shifts_count+')':'')+'</div></div><span class="hist-arr">›</span></div>';
+  // Смена ekranı AKTİF işe odaklı (raporlama değil). Geçmiş LİSTE YOK — tek bir
+  // «История смен» navigasyonu tam geçmiş sayfasını (Отчёт → Мои смены) açar.
+  if((s.shifts_count||0)>0){
+    h+='<div class="hist click" onclick="openMyShiftsReport()" style="margin-top:14px">'
+      +'<div class="hist-l"><div class="hist-d">📊 История смен</div><div class="hist-m">'+(s.shifts_count||0)+' смен · вся история</div></div>'
+      +'<span class="hist-arr">›</span></div>';
   }
 
   h+='<div class="footer">XSYN</div>';
@@ -3615,11 +3606,17 @@ function rProfSettings(m,b){
   var _bioOn=false;try{_bioOn=localStorage.getItem('cf_bio')==='1'}catch(e){}
   var _notif=true;try{_notif=localStorage.getItem('cf_notif')!=='0'}catch(e){}
   var _dark=(document.documentElement.getAttribute('data-theme')==='dark');
+  // ── Biyometri kullanılabilirliğini SAĞLAM tespit (cihaz destekliyorsa satır görünür).
+  //    Cache (_BIO_OK) + canlı BiometricManager; henüz init olmadıysa init et → hazır
+  //    olunca bu sayfayı tazele. Face ID/Touch ID ayarı yanlışlıkla KAYBOLMASIN. ──
+  var _BM=(typeof tg!=='undefined')&&tg&&tg.BiometricManager;
+  var _bioAvail=_BIO_OK||(_BM&&_BM.isInited&&_BM.isBiometricAvailable);
+  try{ if(_BM&&!_BM.isInited&&_BM.init){_BM.init(function(){try{_BIO_OK=!!_BM.isBiometricAvailable;if(mView==='profSettings')render();}catch(e){}});} }catch(e){}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">🔐 Безопасность</div>';
   if(MY_PWH){
     h+='<div class="hist click" onclick="changeMyPin()"><div class="hist-l"><div class="hist-d">PIN-код</div><div class="hist-m">сменить · потребуется текущий</div></div><span class="hist-arr">›</span></div>';
-    if(_BIO_OK)h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'быстрый вход включён':'PIN всегда остаётся запасным')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioOn?'checked':'')+' aria-label="Быстрый вход"></div>';
+    if(_bioAvail)h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'быстрый вход включён':'PIN всегда остаётся запасным')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioOn?'checked':'')+' aria-label="Быстрый вход"></div>';
   } else h+='<div class="hist" style="cursor:default"><div class="hist-l"><div class="hist-m">Доступ выдаёт владелец</div></div></div>';
   h+='<div class="sec">Приложение</div>';
   h+='<div class="hist click" onclick="toggleNotif()"><div class="hist-l"><div class="hist-d">Уведомления</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_notif?'checked':'')+' aria-label="Уведомления"></div>';
