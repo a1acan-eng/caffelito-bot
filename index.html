@@ -747,6 +747,40 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .n-btn-sec{display:block;width:100%;min-height:44px;padding:11px 16px;border:1px solid var(--border2);border-radius:14px;background:transparent;color:var(--t1);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .n-btn-danger{display:block;width:100%;min-height:44px;padding:11px 16px;border:none;border-radius:14px;background:var(--red-bg);color:var(--red);font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
 .n-btn:disabled,.n-btn-sec:disabled{opacity:.4;cursor:default}
+/* ── SİSTEM SÖZLÜĞÜ (mevcut kalıplar da bu sistemin parçası — yeniden yazma, KULLAN):
+   Uyarı/karar   → cfAsk(msg,{danger,okText,icon}) · girdi → cfPrompt/cfNum
+                   (ASLA native confirm()/prompt() — çirkin URL başlıklı kutu çıkar)
+   Sheet/modal   → cfModal altyapısı (cfAsk ailesi bunun üstünde)
+   Geri bildirim → toast('...') + tg.HapticFeedback (başarı=success, engel=warning)
+   Yükleme       → .skel iskeletleri (sayfa) · .n-load (satır içi küçük işlem)
+   Satır         → .hist (.click + .hist-arr ›) veya .n-row — TÜM satır tıklanır (≥44px)
+   Kart          → .card (liste) · .det-card (detay bölümü) · .bcard (kişi) — iç içe kart YOK
+   Boş durum     → .n-empty (hata gibi değil, sakin açıklama) · kısa varyant .empty-mini
+   Tipografi     → ekran başlığı .sec (üst) · birincil rakam 22-34px/800 ·
+                   gövde 13-14px · metadata 11px var(--t3) — her şey bold OLMASIN
+   Yıkıcı eylem  → .n-btn-danger / kırmızı 🗑 + cfAsk({danger:true}); birincil eylemin
+                   hemen yanına koyma; sadece anlamlı sonuçta onay iste            ── */
+/* Girdi alanı (mevcut .set-input ile uyumlu, yeni ekranlar için) */
+.n-input{display:block;width:100%;min-height:44px;padding:11px 13px;border:1px solid var(--border2);border-radius:12px;background:var(--card);color:var(--t1);font-family:inherit;font-size:14px}
+.n-input:focus{outline:none;border-color:var(--gold)}
+/* Gerçek İKİLİ durumlar için switch (Part 16 — çoklu seçimde KULLANMA, onun için .n-seg) */
+.n-toggle{position:relative;width:46px;height:28px;-webkit-appearance:none;appearance:none;background:var(--card2);border:1px solid var(--border2);border-radius:20px;cursor:pointer;flex-shrink:0;transition:background .15s}
+.n-toggle:checked{background:var(--gold);border-color:var(--gold)}
+.n-toggle::after{content:'';position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .15s}
+.n-toggle:checked::after{left:19px}
+/* Çoklu seçim (segment): kapsayıcı + .on seçili durumu (altın = seçili, Part 13) */
+.n-seg{display:flex;gap:6px;flex-wrap:wrap}
+.n-seg>button{flex:1;min-height:40px;padding:9px 12px;border:1px solid var(--border2);border-radius:11px;background:transparent;color:var(--t1);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.n-seg>button.on{background:var(--gold);border-color:var(--gold);color:#1a1a1a;font-weight:700}
+/* Satır içi küçük yükleme göstergesi (tüm ekranı bloklamak yerine — Part 20) */
+.n-load{display:inline-block;width:15px;height:15px;border:2px solid var(--border2);border-top-color:var(--gold);border-radius:50%;animation:nspin .7s linear infinite;vertical-align:-2px}
+@keyframes nspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.n-load{animation-duration:1.6s}.n-toggle,.n-toggle::after{transition:none}}
+/* Durum yardımcıları: renk TEK BAŞINA anlam taşımasın — yanında metin/ikon olsun (Part 26) */
+.n-ok{color:var(--green);font-weight:700}
+.n-err{color:var(--red);font-weight:700}
+.n-dim{color:var(--t3)}
+.n-row{display:flex;align-items:center;gap:11px;min-height:48px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:14px;cursor:pointer}
 /* Boş / kısıtlı durum (Part 19): hata gibi DEĞİL — sakin açıklama */
 .n-empty{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 24px;color:var(--t2)}
 .n-empty .ic{font-size:44px;margin-bottom:14px;opacity:.9}
@@ -952,7 +986,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070173;
+var APP_BUILD=2026070174;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3407,8 +3441,9 @@ function rMMain(m,b){
     h+='<div class="sec">🔐 Безопасность</div>';
     h+='<div class="hist click" onclick="changeMyPin()"><div class="hist-l"><div class="hist-d">Сменить PIN-код</div><div class="hist-m">потребуется текущий PIN-код</div></div><span class="hist-arr">›</span></div>';
     if(_BIO_OK){
+      // .n-toggle (design system): gerçek ikili durum → switch; TÜM satır dokunma hedefi
       h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Быстрый вход · Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'вход открывается автоматически':'PIN-код всегда остаётся запасным способом')+'</div></div>'
-        +'<span style="font-size:12px;font-weight:800;padding:4px 12px;border-radius:12px;background:'+(_bioOn?'var(--green)':'var(--card2)')+';color:'+(_bioOn?'#fff':'var(--t3)')+'">'+(_bioOn?'Вкл':'Выкл')+'</span></div>';
+        +'<input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioOn?'checked':'')+' aria-label="Быстрый вход по биометрии"></div>';
     }
   }
 
