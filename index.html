@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070177;
+var APP_BUILD=2026070178;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3044,6 +3044,7 @@ function rShift(m,b){
   if(mView==='shift')return rMShift(m,b);
   if(mView==='kasa')return rKasa(m,b);
   if(mView==='shiftDetail')return rMShiftDetail(m,b); // Смена = vardiya geçmişinin tek evi
+  if(mView==='activeBaristas')return rMActiveBaristas(m,b); // owner «Начать смену за сотрудника» Смена'dan açılır
 
   const s=SUMMARY||{};
   const active=s.active||null;
@@ -3453,11 +3454,10 @@ function rMMain(m,b){
 
   // Owner paneli (Бухгалтерия)
   if(MY_ROLE==='owner'){
-    const activeCount=BARISTAS.filter(function(x){return x.active && inActiveBranch((x.active&&x.active.branch_id)||x.bid)}).length;
+    // «В смене» butonu buradan KALDIRILDI — aktif vardiyalar + pozisyonlar «Смена» sekmesinde.
     h+='<div class="own-panel">'
       +'<div class="own-title">👑 Бухгалтерия</div>'
       +'<div class="own-grid">'
-        +'<div class="own-btn" onclick="mView=\'activeBaristas\';render()"><div class="own-btn-i">🟢</div><div class="own-btn-t">В смене</div>'+(activeCount?'<div class="own-btn-s">'+activeCount+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="mView=\'baristas\';render()"><div class="own-btn-i">👥</div><div class="own-btn-t">Все баристы</div>'+((BARISTAS.filter(function(x){return !x.arch}).length)?'<div class="own-btn-s">'+BARISTAS.filter(function(x){return !x.arch}).length+'</div>':'')+'</div>'
         +'<div class="own-btn" onclick="openFine()"><div class="own-btn-i">⚠️</div><div class="own-btn-t">Штраф</div></div>'
         // «Выплатить» ayrı kutu KALDIRILDI (kullanıcı isteği) — ödeme artık barista
@@ -3631,7 +3631,10 @@ function rProfSettings(m,b){
   h+='<div class="sec">🔐 Безопасность</div>';
   if(MY_PWH){
     h+='<div class="hist click" onclick="changeMyPin()"><div class="hist-l"><div class="hist-d">PIN-код</div><div class="hist-m">сменить · потребуется текущий</div></div><span class="hist-arr">›</span></div>';
-    if(_bioAvail)h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'быстрый вход включён':'PIN всегда остаётся запасным')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioOn?'checked':'')+' aria-label="Быстрый вход"></div>';
+    // Face ID / Touch ID satırı HER ZAMAN görünür (kullanıcı isteği: kaybolmasın).
+    //  · Cihaz destekliyorsa (_bioAvail) → açılıp kapanabilen switch.
+    //  · Desteklemiyorsa (desktop/eski client) → dürüst «недоступно» notu, dokunma denemede toast.
+    h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Face ID / Touch ID</div><div class="hist-m">'+(_bioAvail?(_bioOn?'быстрый вход включён':'PIN всегда остаётся запасным'):'недоступно на этом устройстве')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioAvail&&_bioOn?'checked':'')+' aria-label="Быстрый вход"></div>';
   } else h+='<div class="hist" style="cursor:default"><div class="hist-l"><div class="hist-m">Доступ выдаёт владелец</div></div></div>';
   h+='<div class="sec">Приложение</div>';
   h+='<div class="hist click" onclick="toggleNotif()"><div class="hist-l"><div class="hist-d">Уведомления</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_notif?'checked':'')+' aria-label="Уведомления"></div>';
