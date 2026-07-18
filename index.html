@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Caffelito</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -736,7 +736,25 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 [data-theme="dark"] .rt-feedback.ok{background:rgba(16,185,129,.15)}
 [data-theme="dark"] .rt-feedback.no{background:rgba(239,68,68,.15)}
 /* ─── Passcode (Wallet style) ─── */
-#pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px;padding-top:calc(env(safe-area-inset-top,0px) + 44px);overflow-y:auto}
+/* ═══ NERO UX DESIGN SYSTEM — token + yeniden kullanılabilir bileşenler ═══
+   Semantik renkler (Part 13): --gold = BİRİNCİL eylem / seçili durum (seçici kullan!)
+   · --red = yıkıcı / kritik hata / ceza · --green = başarı / onaylandı
+   · --t2/--t3 = ikincil metin / metadata / pasif · --card = yükseltilmiş yüzey.
+   Boşluk ölçeği: 4 / 8 / 12 / 16 / 24 / 32px. Köşe: --r2 kart · --rp buton.
+   Dokunma hedefi ≥44px (görsel küçük olabilir, vuruş alanı geniş kalır).
+   YENİ ekranlar bu sınıfları kullanmalı — her ekranda yeniden stil yazma. */
+.n-btn{display:block;width:100%;min-height:48px;padding:13px 16px;border:none;border-radius:14px;background:var(--gold);color:#1a1a1a;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer}
+.n-btn-sec{display:block;width:100%;min-height:44px;padding:11px 16px;border:1px solid var(--border2);border-radius:14px;background:transparent;color:var(--t1);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.n-btn-danger{display:block;width:100%;min-height:44px;padding:11px 16px;border:none;border-radius:14px;background:var(--red-bg);color:var(--red);font-family:inherit;font-size:14px;font-weight:700;cursor:pointer}
+.n-btn:disabled,.n-btn-sec:disabled{opacity:.4;cursor:default}
+/* Boş / kısıtlı durum (Part 19): hata gibi DEĞİL — sakin açıklama */
+.n-empty{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 24px;color:var(--t2)}
+.n-empty .ic{font-size:44px;margin-bottom:14px;opacity:.9}
+.n-empty .t{font-size:18px;font-weight:700;color:var(--t1);margin-bottom:7px;letter-spacing:-.2px}
+.n-empty .s{font-size:13.5px;line-height:1.55;color:var(--t2)}
+/* ═══ Kilit ekranı: safe-area (çentik/Dynamic Island/home bar) + OPTİK ortalama —
+   içerik tepeye yapışmaz, farklı ekran boylarında dengeli durur (Part 7). */
+#pass-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px;padding-top:calc(max(env(safe-area-inset-top,0px),var(--tg-content-safe-area-inset-top,0px)) + 9vh);padding-bottom:calc(env(safe-area-inset-bottom,0px) + 24px);overflow-y:auto}
 #pass-overlay .pass-icon{width:88px;height:88px;margin-bottom:14px;border-radius:50%;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.15);background:#fff;flex-shrink:0}
 #pass-overlay .pass-icon img{width:100%;height:100%;object-fit:cover;display:block}
 #pass-overlay .pass-title{font-size:20px;font-weight:600;color:var(--t1);margin-bottom:32px;text-align:center}
@@ -890,7 +908,7 @@ body{letter-spacing:-.01em}
     <button class="pad-key" data-k="del">⌫</button>
   </div>
   <div class="pass-msg" id="passMsg"></div>
-  <div class="pass-hint" id="passHint">Пароль выдаёт владелец кофейни</div>
+  <div class="pass-hint" id="passHint">PIN-код выдаёт владелец</div>
   <div id="passBranch" style="display:none;width:100%;max-width:340px;margin:0 auto">
     <div class="pass-title" style="font-size:18px">🏢 Выберите филиал</div>
     <div style="font-size:13px;color:var(--t2);margin:6px 0 16px;text-align:center">Где вы сегодня работаете? Отчёты уйдут в группу этого филиала.</div>
@@ -934,7 +952,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070172;
+var APP_BUILD=2026070173;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1019,7 +1037,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1057,14 +1075,24 @@ function refreshState(){
   const boxes=document.querySelectorAll('#passBoxes .pass-box');
   const msg=document.getElementById('passMsg');
   const hint=document.getElementById('passHint');
-  // Saate göre karşılama + barista adı (Caffelito logosu zaten üstte)
-  document.getElementById('passTitle').innerHTML=greetWord()+(myName?', '+escH(myName):'')+'! 👋<div style="font-size:13px;font-weight:500;color:var(--t2);margin-top:6px">Введите пароль для входа</div>';
+  // Karşılama: sade, süssüz (noktalama/emoji gürültüsü yok) — kimlik + net talimat
+  document.getElementById('passTitle').innerHTML=greetWord()+(myName?', '+escH(myName):'')+'<div style="font-size:13.5px;font-weight:500;color:var(--t2);margin-top:8px">Введите PIN-код</div>';
   if(!pwh){
-    document.getElementById('passTitle').textContent='Нет пароля';
-    msg.textContent='Попросите владельца назначить вам пароль';
-    msg.classList.add('err');
+    // ── ERİŞİM YOK (yetki ≠ kimlik doğrulama, Part 1-2): klavye/PIN GÖSTERİLMEZ.
+    //    Sakin kısıtlı-erişim durumu; hata gibi değil. Owner PIN verdiği an payload'da
+    //    pwh gelir → normal PIN akışı OTOMATİK döner (bu ekran kendiliğinden gider).
+    document.getElementById('passTitle').innerHTML=
+      '<div class="n-empty" style="padding:16px 8px 0">'
+      +'<div class="ic">🔒</div>'
+      +'<div class="t">Доступ ограничен</div>'
+      +'<div class="s">Обратитесь к администратору<br>для получения доступа</div>'
+      +'</div>';
+    document.getElementById('passBoxes').style.display='none';
+    var _pp0=document.querySelector('#pass-overlay .pass-pad');if(_pp0)_pp0.style.display='none';
+    msg.textContent='';
     hint.textContent='';
-    document.querySelectorAll('#pass-overlay .pad-key').forEach(b=>b.style.opacity='.3');
+    ov.style.display='flex';
+    return; // klavye dinleyicileri kurulmaz — bu ekranda etkileşim yok
   }
   ov.style.display='flex';
   let buf='';
@@ -1119,6 +1147,11 @@ function refreshState(){
         try{sessionStorage.setItem('cf_pass_ok','1')}catch(e){}
         msg.textContent='✅ Доступ открыт';
         try{window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success')}catch(e){}
+        // Bio hızlı giriş açıksa token'ı tazele (PIN değişmiş olabilir → eski token çalışmaz)
+        try{
+          var _BM3=window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.BiometricManager;
+          if(_BM3&&localStorage.getItem('cf_bio')==='1'&&_BM3.isInited&&_BM3.isAccessGranted){_BM3.updateBiometricToken(pwh,function(){});}
+        }catch(e){}
         // Birden fazla şube varsa: girişte şube seç → grup o an belli olur.
         if(pBranches.length>1){setTimeout(showBranchStep,250);}
         else{finishLogin(pBranches.length?pBranches[0].id:(pMyBranch||0));}
@@ -1148,6 +1181,36 @@ function refreshState(){
     });
   });
   paint();
+  // ── OTOMATİK Face ID / Touch ID hızlı giriş (Part 5) — Telegram'ın NATIVE
+  //    BiometricManager'ı (gerçek sistem kimlik doğrulaması, sahte değil).
+  //    Koşullar: erişim verilmiş (pwh var) + kullanıcı AÇMIŞ (cf_bio) + cihaz destekli.
+  //    Kilit başına TEK deneme (iptal sonrası döngü YOK); her durumda PIN yedek kalır.
+  //    Kalıcı Face ID butonu YOK — akış kendiliğinden tetiklenir.
+  (function(){
+    var BM=window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.BiometricManager;
+    if(!BM)return;
+    var want=false;try{want=localStorage.getItem('cf_bio')==='1'}catch(e){}
+    if(!want)return;
+    if(window.__bioTried)return;window.__bioTried=true;
+    function unlockOk(){
+      try{sessionStorage.setItem('cf_pass_ok','1')}catch(e){}
+      try{window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred?.('success')}catch(e){}
+      if(pBranches.length>1){showBranchStep();}
+      else{finishLogin(pBranches.length?pBranches[0].id:(pMyBranch||0));}
+    }
+    try{
+      BM.init(function(){
+        try{
+          if(!BM.isBiometricAvailable||!BM.isAccessGranted||!BM.isBiometricTokenSaved)return;
+          BM.authenticate({reason:'Быстрый вход в Nero'},function(okA,token){
+            // token === pwh → kimlik doğrulandı. Aksi halde (iptal/başarısız/eski token)
+            // SESSİZCE PIN ekranında kal — tekrar tetikleme yok, hata gösterme yok.
+            if(okA&&token&&token===pwh)unlockOk();
+          });
+        }catch(e){}
+      });
+    }catch(e){}
+  })();
 })();
 
 // ═══════════════════════════════════════
@@ -1584,6 +1647,23 @@ let MY_DOES_KASA=true;
 try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
 // Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
 var TIPS_ON=false;
+// ── Güvenlik (Профиль → Безопасность): PIN hash'i (asla düz metin PIN tutulmaz) ──
+let MY_PWH=(HP.get('pwh')||'').trim();
+// Native biyometri (Telegram BiometricManager) bu cihazda kullanılabilir mi?
+// Ayar satırı SADECE destekleniyorsa görünür (kullanılamaz ayar gösterilmez).
+var _BIO_OK=false;
+(function(){
+  try{
+    var BM=tg&&tg.BiometricManager;
+    if(!BM||!BM.init)return;
+    BM.init(function(){
+      try{
+        _BIO_OK=!!BM.isBiometricAvailable;
+        if(_BIO_OK&&typeof render==='function'&&tab==='salary')render(); // satır görünür olsun
+      }catch(e){}
+    });
+  }catch(e){}
+})();
 // Şube slot durumu: {bid:{trainee,my_role,barista:{uid,nm,st}|null,assistant:...}} —
 // vardiya-başlatma ön kontrolü (kesin karar backend'de slot_block_reason).
 let SLOTS={};
@@ -2568,6 +2648,72 @@ function openMyShiftsReport(){
   go('report');
   openRoom('shifts',((REP&&REP.shifts)||[]).length);
 }
+// ═══ 🔐 Безопасность — PIN değiştir + biyometrik hızlı giriş (Профиль) ═══
+// PIN düz metin GÖSTERİLMEZ/TUTULMAZ: doğrulama SHA-256 hash (MY_PWH) ile.
+async function _sha256hex(s){
+  const b=new TextEncoder().encode(s);
+  const d=await crypto.subtle.digest('SHA-256',b);
+  return Array.from(new Uint8Array(d)).map(function(x){return x.toString(16).padStart(2,'0')}).join('');
+}
+async function changeMyPin(){
+  // Adım 1: mevcut PIN doğrulaması (uygun güvenlik kontrolü — Part 3)
+  var cur=((await cfPrompt('Текущий PIN-код','',{placeholder:'••••',okText:'Далее',icon:'🔐'}))||'').trim();
+  if(!cur)return;
+  if((await _sha256hex(cur))!==MY_PWH){
+    toast('Текущий PIN-код неверен');
+    if(tg)tg.HapticFeedback?.notificationOccurred('error');
+    return;
+  }
+  var n1=((await cfPrompt('Новый PIN-код — 4 цифры','',{placeholder:'••••',okText:'Далее',icon:'🔐'}))||'').trim();
+  if(!n1)return;
+  if(!/^\d{4}$/.test(n1)){toast('PIN-код — ровно 4 цифры');return}
+  var n2=((await cfPrompt('Повторите новый PIN-код','',{placeholder:'••••',okText:'Сохранить',icon:'🔐'}))||'').trim();
+  if(n1!==n2){toast('PIN-коды не совпадают');return}
+  var nh=await _sha256hex(n1);
+  MY_PWH=nh;  // aynı oturumda tutarlı (payload sonraki açılışta zaten yeni hash getirir)
+  // Bio açıksa token'ı yeni hash'le tazele — hızlı giriş kesintisiz devam etsin
+  try{
+    var BM=tg&&tg.BiometricManager;
+    if(BM&&BM.isInited&&BM.isAccessGranted&&localStorage.getItem('cf_bio')==='1'){BM.updateBiometricToken(nh,function(){});}
+  }catch(e){}
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'change_my_pin',old:cur,pin:n1}))}catch(e){}}
+  toast('🔐 PIN-код обновлён');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+}
+// Biyometrik hızlı giriş AÇ/KAPA — native Telegram BiometricManager (sahte biyometri yok).
+// Açarken: sistem izni (native prompt) → PIN hash'i biyometri-korumalı depoya yazılır.
+// Kilit ekranı o token'ı native doğrulama sonrası okuyup PIN'siz açar. PIN hep yedek.
+function toggleBioUnlock(){
+  var BM=tg&&tg.BiometricManager;
+  if(!BM||!_BIO_OK){toast('Биометрия недоступна на этом устройстве');return}
+  var on=false;try{on=localStorage.getItem('cf_bio')==='1'}catch(e){}
+  if(on){
+    try{localStorage.removeItem('cf_bio')}catch(e){}
+    try{BM.updateBiometricToken('',function(){})}catch(e){}
+    toast('Быстрый вход выключен');render();
+    return;
+  }
+  function saveTok(){
+    try{
+      BM.updateBiometricToken(MY_PWH,function(ok2){
+        if(ok2){
+          try{localStorage.setItem('cf_bio','1')}catch(e){}
+          toast('✅ Быстрый вход включён');
+          if(tg)tg.HapticFeedback?.notificationOccurred('success');
+        }else{
+          toast('Не удалось сохранить — попробуйте ещё раз');
+        }
+        render();
+      });
+    }catch(e){toast('Не удалось включить быстрый вход')}
+  }
+  try{
+    if(BM.isAccessGranted){saveTok();}
+    else{BM.requestAccess({reason:'Быстрый вход в Nero по Face ID / Touch ID'},function(granted){
+      if(granted)saveTok();else toast('Доступ к биометрии не разрешён');
+    });}
+  }catch(e){toast('Не удалось включить быстрый вход')}
+}
 // ── TEK TİP VARDİYA DETAY SAYFASI (tüm roller) — her şey SNAPSHOT'tan.
 // Barista: bardak satışları+bonus görünür. Asistan: bardak bölümleri TAMAMEN gizli.
 function rRepShiftDetail(m,b){
@@ -3252,6 +3398,18 @@ function rMMain(m,b){
         +'<div class="own-btn" onclick="mView=\'settings\';settingsTab=\''+(PENDING&&PENDING.length?'names':'prices')+'\';render()"><div class="own-btn-i">⚙️</div><div class="own-btn-t">Настройки</div>'+(PENDING&&PENDING.length?'<div class="own-btn-s" style="background:#f59e0b">🆕'+PENDING.length+'</div>':'')+'</div>'
       +'</div>'
     +'</div>';
+  }
+
+  // ── 🔐 Безопасность (Part 3-4): PIN birincil ve kalıcı; biyometri OPSİYONEL konfor.
+  //    Biyometri satırı sadece cihaz destekliyorsa görünür. Owner'da PIN kilidi yok → bölüm yok.
+  if(MY_ROLE!=='owner'&&MY_PWH){
+    var _bioOn=false;try{_bioOn=localStorage.getItem('cf_bio')==='1'}catch(e){}
+    h+='<div class="sec">🔐 Безопасность</div>';
+    h+='<div class="hist click" onclick="changeMyPin()"><div class="hist-l"><div class="hist-d">Сменить PIN-код</div><div class="hist-m">потребуется текущий PIN-код</div></div><span class="hist-arr">›</span></div>';
+    if(_BIO_OK){
+      h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Быстрый вход · Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'вход открывается автоматически':'PIN-код всегда остаётся запасным способом')+'</div></div>'
+        +'<span style="font-size:12px;font-weight:800;padding:4px 12px;border-radius:12px;background:'+(_bioOn?'var(--green)':'var(--card2)')+';color:'+(_bioOn?'#fff':'var(--t3)')+'">'+(_bioOn?'Вкл':'Выкл')+'</span></div>';
+    }
   }
 
   // «Мои смены» LİSTESİ KALDIRILDI (kullanıcı isteği): vardiya geçmişinin TEK adresi
@@ -5259,7 +5417,7 @@ function rMSettings(m,b){
         fine_add:['⚠️','Штраф'],pay:['💵','Выплата'],tip_add:['💝','Чаевые'],
         price_update:['💰','Цена изменена'],rename:['📝','Имя изменено'],role_change:['👑','Роль изменена'],
         dessert_save:['🍰','Десерт сохранён'],dessert_delete:['🗑','Десерт удалён'],
-        set_password:['🔐','Пароль выдан'],clear_password:['🔓','Пароль удалён'],
+        set_password:['🔐','Пароль выдан'],clear_password:['🔓','Пароль удалён'],change_my_pin:['🔐','PIN изменён (сотрудник)'],
         archive_user:['📦','В архив'],unarchive_user:['♻️','Из архива'],delete_user:['🗑','Удалён'],
         loan_request:['💸','Запрос аванса'],loan_approved:['✅','Аванс одобрен'],loan_rejected:['🚫','Аванс отклонён'],
         login_ok:['🔓','Вход'],login_fail:['❌','Неверный пароль'],

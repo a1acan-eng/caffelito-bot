@@ -4365,6 +4365,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.warning(f"delete_record {kind}/{rid}: {ex}")
 
         # ─── Şifre yönetimi (owner-only) ───
+        elif action == "change_my_pin":
+            # Çalışan KENDİ PIN'ini değiştirir (Профиль → Безопасность). Erişim yetkisi
+            # (owner'ın PIN vermesi) ile kimlik doğrulama AYRI: burada sadece kimlik —
+            # mevcut PIN doğrulanır. PIN değerleri LOGLANMAZ (düz metin sızmaz).
+            db = get_db()
+            _row = db.execute("SELECT password FROM users WHERE user_id=?", (user.id,)).fetchone()
+            _cur_pw = ((_row["password"] or "").strip() if _row else "")
+            if not _cur_pw:
+                await update.message.reply_text("❌ Доступ ещё не выдан владельцем.")
+                return
+            _old = str(data.get("old") or "").strip()
+            _new = str(data.get("pin") or "").strip()
+            if _old != _cur_pw:
+                await update.message.reply_text("❌ Текущий PIN-код неверен.")
+                return
+            if not (_new.isdigit() and len(_new) == 4):
+                await update.message.reply_text("❌ Новый PIN-код должен состоять из 4 цифр.")
+                return
+            db.execute("UPDATE users SET password=? WHERE user_id=?", (_new, user.id))
+            db.commit()
+            log_action(db, "change_my_pin", user.id, user.first_name, None, None, {})
+            await update.message.reply_text("🔐 PIN-код обновлён.")
+
         elif action == "set_password":
             db = get_db()
             if get_role(db, user.id) != "owner":
