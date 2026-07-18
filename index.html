@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070176;
+var APP_BUILD=2026070177;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3111,20 +3111,22 @@ function rShift(m,b){
     }
   }
 
-  // Şu an çalışan diğer baristalar (owner seçili şubeyi süzer)
+  // Şu an çalışan diğer çalışanlar. Owner için burası İŞ GÜCÜ MERKEZİ (kullanıcı isteği:
+  // «kim çalışıyor + pozisyonlar» Смена'da olsun). Barista için sade "kim var" bilgisi.
   const activeOthers=(BARISTAS||[]).filter(function(x){return x.active && x.id!==MY_UID && inActiveBranch((x.active&&x.active.branch_id)||x.bid)});
   if(activeOthers.length){
     h+='<div class="sec">🟢 Сейчас в смене ('+activeOthers.length+')</div>';
     activeOthers.forEach(function(brs){
+      var _r=(brs.active&&brs.active.shift_role)||'barista';
+      var _chip=' <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:7px;background:'+(_r==='assistant'?'rgba(238,190,77,.15);color:var(--gold)':'rgba(62,207,130,.15);color:var(--green)')+'">'+(_r==='assistant'?'🎓':'☕')+'</span>';
       h+='<div class="hist" style="background:#ecfdf5;border-color:#6ee7b7">'
         +'<div class="hist-l">'
-          +'<div class="hist-d">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+'</div>'
+          +'<div class="hist-d">'+(brs.r==='owner'?'👑 ':'')+escH(brs.n)+_chip+((BRANCHES||[]).length>1?' <span style="font-size:10px;color:var(--t3);font-weight:600">· '+escH(branchName((brs.active&&brs.active.branch_id)||brs.bid))+'</span>':'')+'</div>'
           +'<div class="hist-m">с '+fmtTime(brs.active.start_time)+' · <span id="oa_'+brs.id+'" data-st="'+escH(brs.active.start_time||'')+'">'+liveDur(brs.active.start_time)+'</span></div>'
         +'</div>'
-        +'<div class="hist-r" style="color:#059669">🟢</div>'
+        +(MY_ROLE==='owner'?'<button onclick="ownerEndShift('+brs.id+',\''+esc(brs.n)+'\')" style="flex-shrink:0;padding:6px 9px;border-radius:9px;border:1px solid var(--border2);background:transparent;color:var(--red);font-size:11px;font-weight:700;cursor:pointer">🔴 Закрыть</button>':'<div class="hist-r" style="color:#059669">🟢</div>')
       +'</div>';
     });
-    // Diğer baristaların canlı süresini güncelle (saniye saniye)
     if(window._anyActTimer)clearInterval(window._anyActTimer);
     window._anyActTimer=setInterval(function(){
       if(tab!=='shift'){clearInterval(window._anyActTimer);return}
@@ -3137,11 +3139,25 @@ function rShift(m,b){
     },1000);
   } else {
     if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
+    if(MY_ROLE==='owner'&&!active)h+='<div class="n-empty" style="padding:24px"><div class="ic">🟢</div><div class="t">Никого нет в смене</div><div class="s">Активные смены появятся здесь</div></div>';
   }
 
-  // Смена ekranı AKTİF işe odaklı (raporlama değil). Geçmiş LİSTE YOK — tek bir
-  // «История смен» navigasyonu tam geçmiş sayfasını (Отчёт → Мои смены) açar.
-  if((s.shifts_count||0)>0){
+  // OWNER: şube pozisyonları (dolu/boş) + elle başlat — iş gücü merkezi Смена'da.
+  if(MY_ROLE==='owner'){
+    var _sk=Object.keys(SLOTS||{});
+    if(_sk.length){
+      h+='<div class="sec">🧩 Позиции по филиалам</div>';
+      _sk.forEach(function(k){var sl=SLOTS[k];var bnm=branchName(parseInt(k));
+        function _line(lbl,occ){return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0"><span style="color:var(--t2)">'+lbl+'</span>'+(occ?'<span style="font-weight:700">'+escH(occ.nm||'?')+' <span style="color:var(--t3);font-weight:500">с '+fmtTime(occ.st)+'</span></span>':'<span style="font-weight:700;color:var(--green)">свободно</span>')+'</div>';}
+        h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:9px 12px;margin-bottom:8px"><div style="font-size:12px;font-weight:800;margin-bottom:4px">🏢 '+escH(bnm)+(sl.trainee?'':' <span style="font-size:10px;color:var(--t3);font-weight:500">· одна позиция</span>')+'</div>'+_line('☕ Бариста',sl.barista)+(sl.trainee?_line('🎓 Ассистент/стажёр',sl.assistant):'')+'</div>';
+      });
+    }
+    h+='<div class="hist click" onclick="mView=\'activeBaristas\';render()" style="margin-top:4px"><div class="hist-l"><div class="hist-d">▶️ Начать смену за сотрудника</div><div class="hist-m">ручной запуск · правила позиций действуют</div></div><span class="hist-arr">›</span></div>';
+  }
+
+  // Vardiya geçmişi: SADECE barista Смена'da tek «История смен» nav'ı (owner'da yok —
+  // owner için история/рапорлар yalnız Отчёт'te; tekrar olmasın). Kullanıcı isteği.
+  if(MY_ROLE!=='owner' && (s.shifts_count||0)>0){
     h+='<div class="hist click" onclick="openMyShiftsReport()" style="margin-top:14px">'
       +'<div class="hist-l"><div class="hist-d">📊 История смен</div><div class="hist-m">'+(s.shifts_count||0)+' смен · вся история</div></div>'
       +'<span class="hist-arr">›</span></div>';
@@ -3468,12 +3484,8 @@ function rMMain(m,b){
     }
   }
 
-  // «Мои смены» LİSTESİ KALDIRILDI (kullanıcı isteği): vardiya geçmişinin TEK adresi
-  // Отчёт → Мои смены. Burada sadece oraya götüren sade bir satır var (progressive disclosure).
-  h+='<div class="hist click" onclick="openMyShiftsReport()">'
-    +'<div class="hist-l"><div class="hist-d">📊 Мои смены'+((s.shifts_count||0)?' ('+s.shifts_count+')':'')+'</div><div class="hist-m">как заработана зарплата — подробности в Отчёте</div></div>'
-    +'<span class="hist-arr">›</span>'
-  +'</div>';
+  // «Мои смены» nav'ı owner Управление'den KALDIRILDI (kullanıcı isteği: рапорлар
+  // sadece Отчёт'te). Owner история için Отчёт → Смены и кассы kullanır.
 
   // Cezalar (sadece kendi cezalarını görür — bot zaten kendi user_id'sine göre filtreliyor)
   const fl=(s.fines_list||[]).slice().reverse();
@@ -3610,7 +3622,10 @@ function rProfSettings(m,b){
   //    Cache (_BIO_OK) + canlı BiometricManager; henüz init olmadıysa init et → hazır
   //    olunca bu sayfayı tazele. Face ID/Touch ID ayarı yanlışlıkla KAYBOLMASIN. ──
   var _BM=(typeof tg!=='undefined')&&tg&&tg.BiometricManager;
-  var _bioAvail=_BIO_OK||(_BM&&_BM.isInited&&_BM.isBiometricAvailable);
+  // BiometricManager API varsa satırı GÖSTER (cihaz destekliyorsa kaybolmasın).
+  // Init tamamlanmadıysa optimistik göster + hazır olunca tazele; sadece kesin
+  // «desteklenmiyor» (isInited && !isBiometricAvailable) durumunda gizle.
+  var _bioAvail=!!_BM && (_BIO_OK || !_BM.isInited || !!_BM.isBiometricAvailable);
   try{ if(_BM&&!_BM.isInited&&_BM.init){_BM.init(function(){try{_BIO_OK=!!_BM.isBiometricAvailable;if(mView==='profSettings')render();}catch(e){}});} }catch(e){}
   let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
   h+='<div class="sec">🔐 Безопасность</div>';
@@ -3688,16 +3703,41 @@ function slotBlockMsg(bid){
   }
   return null;
 }
+// ── Vardiya başlatma onayı (PARALEL vardiya desteği): aynı rol pozisyonu doluysa
+//    ARTIK OTOMATİK ENGELLEMEZ — kullanıcıya 3 seçenek sunar. {ok, mode} döner.
+//    'nopos' (asistan pozisyonu yok) hâlâ engellenir (o paralel senaryosu değil). ──
+async function confirmShiftStart(bid){
+  var s=(SLOTS||{})[String(bid||MY_BRANCH||1)];
+  if(s){
+    var role=s.my_role||'barista';
+    if(role==='assistant'&&!s.trainee){
+      await cfAsk('ℹ️ Нет позиции ассистента\n\nВ этом филиале нет позиции ассистента/стажёра.\nВладелец может включить её (Управление → Филиалы) или назначить категорию бариста.',{okText:'Понятно',icon:'ℹ️'});
+      return {ok:false};
+    }
+    var occ=(role==='assistant')?s.assistant:s.barista;
+    if(occ&&occ.uid!==MY_UID){
+      var st='';try{st=fmtTime(occ.st)}catch(e){}
+      var who=(role==='assistant')?'ассистента':'бариста';
+      var mode=await cfAsk('Позиция '+who+' уже занята — '+escH(occ.nm||'')+(st?' (с '+st+')':'')+'.\n\nКак начать смену?',
+        {icon:'🔄',choices:[{text:'🔄 Принять смену (передача)',val:'takeover',cls:'pri'},{text:'👥 Параллельная смена',val:'parallel'}],cancelText:'Отмена'});
+      if(!mode)return {ok:false};
+      return {ok:true,mode:mode};
+    }
+  }
+  return {ok:true,mode:null};
+}
 async function startShiftNow(){
-  var _blk=slotBlockMsg(startBranch||MY_BRANCH);
-  if(_blk){await cfAsk(_blk,{okText:'Понятно',icon:'🔄'});return}
-  if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(new Date().toISOString()),{okText:'Начать',icon:'🟢'})))return;
+  var _c=await confirmShiftStart(startBranch||MY_BRANCH);
+  if(!_c.ok)return;
+  // Mode seçilmediyse normal onay; seçildiyse (paralel/передача) diyalog zaten onaydı.
+  if(!_c.mode){ if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(new Date().toISOString()),{okText:'Начать',icon:'🟢'})))return; }
   const nowIso=gT().toISOString();
   // Optimistik
   SUMMARY.active={start_time:nowIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
-  toast('🟢 Смена началась!');
+  toast(_c.mode==='parallel'?'🟢 Параллельная смена начата':'🟢 Смена началась!');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',branch:(startBranch||MY_BRANCH)}))}catch(e){console.warn(e)}}
+  var _pl={action:'shift_start',branch:(startBranch||MY_BRANCH)};if(_c.mode)_pl.shift_mode=_c.mode;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(_pl))}catch(e){console.warn(e)}}
   render();
   cfShiftStartedPop();
 }
@@ -3808,10 +3848,15 @@ function cfModal(opts){
         +'<div class="cf-num-chips"><button class="cf-chip" data-add="1" type="button">+1</button><button class="cf-chip" data-add="5" type="button">+5</button><button class="cf-chip" data-add="10" type="button">+10</button><button class="cf-chip" data-add="25" type="button">+25</button><button class="cf-chip cf-chip-z" data-set="0" type="button">Сброс</button></div>'
       ):'')
       +(isText?'<input class="cf-mod-inp" id="cfModTxt" type="text" value="'+escH(opts.value!=null?opts.value:'')+'" placeholder="'+escH(opts.placeholder||'')+'" style="font-size:15px;text-align:left;font-weight:600">':'')
-      +'<div class="cf-mod-btns">'
-        +'<button class="cf-mod-btn" id="cfModNo">'+(opts.cancelText||'Отмена')+'</button>'
-        +'<button class="cf-mod-btn pri" id="cfModYes">'+(opts.okText||(isNum?'ОК':'Да'))+'</button>'
-      +'</div>';
+      +(opts.choices
+        ? ('<div class="cf-mod-btns" style="flex-direction:column;gap:8px">'
+            +opts.choices.map(function(c,i){return '<button class="cf-mod-btn '+(c.cls||(i===0?'pri':''))+'" data-ch="'+i+'" style="width:100%">'+escH(c.text)+'</button>';}).join('')
+            +'<button class="cf-mod-btn" data-ch="-1" style="width:100%">'+(opts.cancelText||'Отмена')+'</button></div>')
+        : ('<div class="cf-mod-btns">'
+            +'<button class="cf-mod-btn" id="cfModNo">'+(opts.cancelText||'Отмена')+'</button>'
+            +'<button class="cf-mod-btn pri" id="cfModYes">'+(opts.okText||(isNum?'ОК':'Да'))+'</button>'
+          +'</div>'))
+      +'';
     ov.appendChild(box);document.body.appendChild(ov);
     var done=false;
     function finish(val){if(done)return;done=true;ov.classList.remove('on');setTimeout(function(){try{ov.remove()}catch(_e){}},280);resolve(val);}
@@ -3823,11 +3868,14 @@ function cfModal(opts){
       box.querySelector('#cfModPlus').addEventListener('click',function(){setV(cur()+1);});
       box.querySelectorAll('.cf-chip').forEach(function(ch){ch.addEventListener('click',function(){if(ch.dataset.set!=null)setV(parseInt(ch.dataset.set)||0);else setV(cur()+(parseInt(ch.dataset.add)||0));});});
     }
-    box.querySelector('#cfModYes').addEventListener('click',function(){
+    if(opts.choices){
+      box.querySelectorAll('[data-ch]').forEach(function(bn){bn.addEventListener('click',function(){var i=parseInt(bn.dataset.ch);finish(i<0?null:((opts.choices[i]&&opts.choices[i].val)||null));});});
+    }
+    var _yb=box.querySelector('#cfModYes');if(_yb)_yb.addEventListener('click',function(){
       if(isText){var tv=box.querySelector('#cfModTxt');finish((tv.value||'').trim());}
       else finish(isNum?(inp.value===''?null:Math.max(0,parseInt(inp.value)||0)):true);
     });
-    box.querySelector('#cfModNo').addEventListener('click',function(){finish((isNum||isText)?null:false);});
+    var _nb=box.querySelector('#cfModNo');if(_nb)_nb.addEventListener('click',function(){finish((isNum||isText)?null:false);});
     ov.addEventListener('click',function(e){if(e.target===ov)finish((isNum||isText)?null:false);});
     var txt=box.querySelector('#cfModTxt');
     if(txt){txt.addEventListener('keydown',function(e){if(e.key==='Enter')finish((txt.value||'').trim());});}
@@ -3841,8 +3889,8 @@ function cfPrompt(msg,cur,opts){opts=opts||{};opts.kind='text';opts.msg=msg;opts
 
 // ── Vardiyayı geriye dönük başlat (HH:MM girişi) ──
 async function startShiftCustomTime(){
-  var _blk=slotBlockMsg(startBranch||MY_BRANCH);
-  if(_blk){await cfAsk(_blk,{okText:'Понятно',icon:'🔄'});return}
+  var _cm=await confirmShiftStart(startBranch||MY_BRANCH);
+  if(!_cm.ok)return;
   const inp=document.getElementById('cstStart');
   if(!inp||!inp.value){toast('Укажите время');return}
   const hhmm=inp.value; // 'HH:MM'
@@ -3865,7 +3913,8 @@ async function startShiftCustomTime(){
   SUMMARY.active={start_time:customIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
   toast('🟢 Смена началась с '+dtLabel);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'shift_start',start_time:customIso,branch:(startBranch||MY_BRANCH)}))}catch(e){console.warn(e)}}
+  var _pl2={action:'shift_start',start_time:customIso,branch:(startBranch||MY_BRANCH)};if(_cm.mode)_pl2.shift_mode=_cm.mode;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(_pl2))}catch(e){console.warn(e)}}
   render();
   cfShiftStartedPop();
 }

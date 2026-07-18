@@ -1393,9 +1393,12 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # ödenmiş süre imkânsız (elle geç kapatma / owner düzeltmesi dahil).
     try:
         _my_role = active["shift_role"] if ("shift_role" in active.keys() and active["shift_role"]) else "barista"
+        # PARALEL vardiyalar klampe hedefi DEĞİL — bilinçli örtüşme; başka bir vardiyanın
+        # bitişini kısaltmaz. Sadece gerçek devir/сıradaki vardiya klampeler.
         _nx = db.execute(
             "SELECT MIN(start_time) AS st FROM shifts WHERE COALESCE(branch_id,1)=? "
-            "AND COALESCE(shift_role,'barista')=? AND start_time > ? AND id != ?",
+            "AND COALESCE(shift_role,'barista')=? AND start_time > ? AND id != ? "
+            "AND COALESCE(note,'') != 'параллельная смена'",
             (int(_bid or 1), _my_role, active["start_time"], active["id"])).fetchone()
         if _nx and _nx["st"]:
             _nxdt = datetime.fromisoformat(_nx["st"])
@@ -3340,13 +3343,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid_chk = None
             if not _bid_chk:
                 _bid_chk = user_branch_id(db, user.id)
+            # ── PARALEL VARDİYA: aynı rol pozisyonu DOLUYSA artık otomatik engellemez.
+            # Kullanıcı client'ta seçti (shift_mode=takeover|parallel) → "занята" engeli
+            # bypass edilir; her ikisi de BAĞIMSIZ yeni vardiya başlatır (kayıt birleşmez,
+            # kimse kapanmaya zorlanmaz). «Нет позиции» (asistan pozisyonu yok) bypass EDİLMEZ.
+            _mode = (data.get("shift_mode") or "").strip()
             _blk = slot_block_reason(db, user.id, _bid_chk)
             if _blk:
-                await update.message.reply_text(_blk)
-                await refresh_webapp_keyboard(update, context, db, user,
-                    "🔄 Обновите приложение — смена не была начата 👇")
-                return
+                _bypass = (_mode in ("takeover", "parallel")) and ("Нет позиции" not in _blk)
+                if not _bypass:
+                    await update.message.reply_text(_blk)
+                    await refresh_webapp_keyboard(update, context, db, user,
+                        "🔄 Обновите приложение — смена не была начата 👇")
+                    return
             sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch)
+            if _mode in ("takeover", "parallel"):
+                try:
+                    db.execute("UPDATE shifts SET note=? WHERE id=?",
+                               ("параллельная смена" if _mode == "parallel" else "передача смены", sh["id"]))
+                    db.commit()
+                except Exception:
+                    pass
             # Vardiya artık açık → duyuru bu vardiyanın şubesinin grubuna gitsin.
             group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
             start_dt = datetime.fromisoformat(sh["start_time"])
