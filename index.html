@@ -781,6 +781,12 @@ body{padding-bottom:calc(80px + env(safe-area-inset-bottom))}
 .n-err{color:var(--red);font-weight:700}
 .n-dim{color:var(--t3)}
 .n-row{display:flex;align-items:center;gap:11px;min-height:48px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:14px;cursor:pointer}
+.prof-head{display:flex;align-items:center;gap:11px;padding:8px 2px 12px}
+.prof-head .pav{width:44px;height:44px;border-radius:50%;background:var(--gold-bg);border:1px solid var(--gold-border);display:grid;place-items:center;font-size:20px;flex-shrink:0}
+.prof-head .pn{font-size:17px;font-weight:800;letter-spacing:-.2px}
+.prof-head .pm{font-size:12px;color:var(--t2);margin-top:1px}
+.stat-box.tap{cursor:pointer;position:relative}
+.stat-box.tap::after{content:'\203A';position:absolute;top:7px;right:9px;color:var(--t3);font-size:13px;line-height:1}
 /* Boş / kısıtlı durum (Part 19): hata gibi DEĞİL — sakin açıklama */
 .n-empty{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 24px;color:var(--t2)}
 .n-empty .ic{font-size:44px;margin-bottom:14px;opacity:.9}
@@ -986,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070174;
+var APP_BUILD=2026070175;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3037,6 +3043,7 @@ function rShift(m,b){
   if(mView==='shiftEnd')return rMShiftEnd(m,b);
   if(mView==='shift')return rMShift(m,b);
   if(mView==='kasa')return rKasa(m,b);
+  if(mView==='shiftDetail')return rMShiftDetail(m,b); // Смена = vardiya geçmişinin tek evi
 
   const s=SUMMARY||{};
   const active=s.active||null;
@@ -3132,8 +3139,22 @@ function rShift(m,b){
     if(window._anyActTimer){clearInterval(window._anyActTimer);window._anyActTimer=null}
   }
 
-  // «Ваши последние смены» KALDIRILDI (kullanıcı isteği): vardiya geçmişinin TEK
-  // adresi artık Отчёт → Мои смены. Bu ekran sadece başlat/aktif/şube/rol/bitir.
+  // ── Смена = vardiya ile ilgili HER ŞEYİN tek evi (Prompt 6.1): son smены + история ──
+  const _mine=(s.shifts||[]);
+  if(_mine.length){
+    h+='<div class="sec">📊 Последние смены</div>';
+    _mine.map(function(sh,i){return {sh:sh,i:i}}).reverse().slice(0,3).forEach(function(r){
+      var sh=r.sh;var dt=new Date(sh.start_time||sh.created_at||Date.now());
+      var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      var tm=sh.start_time?(fmtTime(sh.start_time)+(sh.end_time?'–'+fmtTime(sh.end_time):'')):'';
+      var _ro=(sh.shift_role==='assistant')?' · 🎓':(sh.shift_role?' · ☕':'');
+      h+='<div class="hist click" onclick="openShiftDetail('+r.i+')">'
+        +'<div class="hist-l"><div class="hist-d">'+day+' · '+tm+'</div><div class="hist-m">'+fmtH(sh.hours||0)+_ro+((BRANCHES||[]).length>1&&sh.branch_id?' · 🏢 '+escH(branchName(sh.branch_id)):'')+'</div></div>'
+        +'<div class="hist-r">+'+fmt((sh.total||0)+(sh.overtime||0))+'</div><span class="hist-arr">›</span>'
+      +'</div>';
+    });
+    h+='<div class="hist click" onclick="openMyShiftsReport()"><div class="hist-l"><div class="hist-d">Вся история смен'+((s.shifts_count||0)?' ('+s.shifts_count+')':'')+'</div></div><span class="hist-arr">›</span></div>';
+  }
 
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;b.style.display='none';
@@ -3237,6 +3258,11 @@ function rM(m,b){
   if(mView==='loanReview')return rMLoanReview(m,b);
   if(mView==='standard')return rMStandard(m,b);
   if(mView==='branches')return rMBranches(m,b);
+  if(mView==='salHours')return rSalHours(m,b);
+  if(mView==='salTips')return rSalTips(m,b);
+  if(mView==='salFines')return rSalFines(m,b);
+  if(mView==='payments')return rPayments(m,b);
+  if(mView==='profSettings')return rProfSettings(m,b);
   return rMMain(m,b);
 }
 
@@ -3350,6 +3376,10 @@ function rMMain(m,b){
     h+='<div class="footer">XSYN</div>';
     m.innerHTML=h;b.style.display='none';return;
   }
+
+  // ── BARISTA → yeni sade Профиль (Prompt 6.1): sadece kişisel merkez. Vardiya ile
+  //    ilgili her şey «Смена»da. Owner yolu (Управление) aşağıda AYNEN korunur. ──
+  if(MY_ROLE!=='owner')return rProfile(m,b);
 
   // Rol pill — temiz görünüm (id yok)
   const rolePill=MY_ROLE==='owner'
@@ -3502,6 +3532,104 @@ function rMMain(m,b){
   cfSalaryFx();
 }
 
+// ═══ БАРИСТА ПРОФИЛЬ — Prompt 6.1: kişisel merkez (vardiya yok, o «Смена»da) ═══
+function rProfile(m,b){
+  const s=SUMMARY||{};
+  const period=s.period||curPeriod();
+  const net=s.net||0,hourly=s.hourly||0,bonus=s.bonus||0,fines=s.fines||0,paid=s.paid||0,hours=s.hours||0,tips=s.tips||0;
+  var catNm=(MY_CAT&&MY_CAT.name)?MY_CAT.name:'';
+  var brNm=((BRANCHES||[]).length>1)?branchName(MY_BRANCH):'';
+  var sub=[catNm,brNm].filter(Boolean).join(' · ');
+  let h='';
+  h+='<div class="prof-head"><div class="pav">👤</div><div><div class="pn">'+escH(MY_NAME||'')+'</div>'+(sub?'<div class="pm">'+escH(sub)+'</div>':'')+'</div></div>';
+  // Maaş — birincil kart (bilgi hiyerarşisinin tepesi)
+  h+='<div class="sal-card">'
+    +'<div class="sal-period">'+escH(fmtMonth(period))+'</div>'
+    +'<div class="sal-amount">'+fmt(net)+'</div>'
+    +'<div class="sal-amount-sub">сум · чистая зарплата</div>'
+    +((hourly+bonus)>0?('<div class="sal-comp"><div class="sal-comp-bar"><span class="sal-comp-h" style="width:0" data-w="'+Math.round(hourly/(hourly+bonus)*100)+'"></span><span class="sal-comp-b" style="width:0" data-w="'+Math.round(bonus/(hourly+bonus)*100)+'"></span></div><div class="sal-comp-lg"><span><i class="gold"></i>Ставка '+fmt(hourly)+'</span><span><i class="grn"></i>Бонус +'+fmt(bonus)+'</span></div></div>'):'')
+    +(((s.overtime||0)>0)?('<div class="sal-comp-lg" style="margin-top:8px"><span>⏱ Переработка</span><span>+'+fmt(s.overtime)+' сум</span></div>'):'')
+  +'</div>';
+  // 3 kompakt tıklanabilir stat kartı → kendi detay sayfası
+  h+='<div class="stat-grid">'
+    +'<div class="stat-box tap" onclick="mView=\'salHours\';render()"><div class="stat-l">Часы</div><div class="stat-v">'+(hours%1===0?hours:hours.toFixed(1))+'h</div><div class="stat-s">за месяц</div></div>'
+    +'<div class="stat-box tap" onclick="mView=\'salTips\';render()"><div class="stat-l">Чаевые</div><div class="stat-v" style="color:var(--green)">+'+fmt(tips)+'</div><div class="stat-s">'+((s.tips_count||0)||'—')+'</div></div>'
+    +'<div class="stat-box tap" onclick="mView=\'salFines\';render()"><div class="stat-l">Штрафы</div><div class="stat-v red">-'+fmt(fines)+'</div><div class="stat-s">'+((s.fines_count||0)||'—')+'</div></div>'
+  +'</div>';
+  // Kişisel — özet satırlar, detay dokununca
+  var myPending=(LOANS||[]).find(function(x){return x.status==='pending'});
+  h+='<div class="sec">Личное</div>';
+  h+='<div class="hist click" onclick="'+(myPending?'':'openLoanRequest()')+'"><div class="hist-l"><div class="hist-d">💸 Аванс</div><div class="hist-m">'+(myPending?'⏳ запрос на рассмотрении':'запросить аванс')+'</div></div><span class="hist-arr">'+(myPending?'':'›')+'</span></div>';
+  h+='<div class="hist click" onclick="mView=\'payments\';render()"><div class="hist-l"><div class="hist-d">💵 Выплаты</div><div class="hist-m">'+(paid>0?('выплачено '+fmt(paid)+' сум'):'пока нет выплат')+'</div></div><span class="hist-arr">›</span></div>';
+  h+='<div class="hist click" onclick="mView=\'profSettings\';render()"><div class="hist-l"><div class="hist-d">⚙️ Настройки</div><div class="hist-m">PIN · Face ID · уведомления</div></div><span class="hist-arr">›</span></div>';
+  h+='<div class="hist click" onclick="openCert()"><div class="hist-l"><div class="hist-d">🎓 Сертификация</div><div class="hist-m">экзамен · сертификат +1 000 000</div></div><span class="hist-arr">›</span></div>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;b.style.display='none';
+  cfSalaryFx();
+}
+function rSalHours(m,b){
+  const s=SUMMARY||{};var hr=s.hours||0;
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">⏱ Часы за месяц</div>';
+  h+='<div class="stat-box" style="text-align:center;padding:14px"><div class="stat-v" style="font-size:28px">'+(hr%1===0?hr:hr.toFixed(1))+'h</div><div class="stat-s">'+(s.shifts_count||0)+' смен · '+escH(fmtMonth(s.period||curPeriod()))+'</div></div>';
+  var shifts=(s.shifts||[]);
+  if(shifts.length){
+    h+='<div class="sec">По сменам</div>';
+    shifts.map(function(sh,i){return {sh:sh,i:i}}).reverse().forEach(function(r){
+      var sh=r.sh;var dt=new Date(sh.start_time||sh.created_at||Date.now());
+      var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+      h+='<div class="hist click" onclick="openShiftDetail('+r.i+')"><div class="hist-l"><div class="hist-d">'+day+' · '+(sh.start_time?fmtTime(sh.start_time):'')+(sh.end_time?'–'+fmtTime(sh.end_time):'')+'</div></div><div class="hist-r">'+fmtH(sh.hours||0)+'</div><span class="hist-arr">›</span></div>';
+    });
+  } else h+='<div class="empty-mini">Смен ещё нет</div>';
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';
+}
+function rSalTips(m,b){
+  const s=SUMMARY||{};var lst=(s.tips_list||[]).slice().reverse();
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">💝 Чаевые ('+(s.tips_count||0)+')</div>';
+  if(lst.length){lst.forEach(function(t){var dt=new Date(t.created_at||Date.now());var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+    h+='<div class="hist" style="background:#ecfdf5;border-color:#6ee7b7"><div class="hist-l"><div class="hist-d">'+day+(t.note?' · '+escH(t.note):'')+'</div><div class="hist-m">от '+escH(t.added_by_name||'?')+'</div></div><div class="hist-r" style="color:#059669">+'+fmt(t.amount||0)+'</div></div>';});}
+  else h+='<div class="empty-mini">Чаевых пока нет</div>';
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';
+}
+function rSalFines(m,b){
+  const s=SUMMARY||{};var lst=(s.fines_list||[]).slice().reverse();
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">⚠️ Штрафы ('+(s.fines_count||0)+')</div>';
+  if(lst.length){lst.forEach(function(f){var dt=new Date(f.created_at||Date.now());var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+    h+='<div class="hist fine"><div class="hist-l"><div class="hist-d">'+day+' · '+escH(f.reason||'Без причины')+'</div><div class="hist-m">от '+escH(f.added_by_name||'?')+'</div></div><div class="hist-r red">-'+fmt(f.amount||0)+'</div></div>';});}
+  else h+='<div class="n-empty"><div class="ic">✓</div><div class="t">Штрафов нет</div><div class="s">Отличная работа</div></div>';
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';
+}
+function rPayments(m,b){
+  const s=SUMMARY||{};var paid=s.paid||0;
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">💵 Выплаты</div>';
+  if(paid>0){
+    h+='<div class="hist paid"><div class="hist-l"><div class="hist-d">За '+escH(fmtMonth(s.period||curPeriod()))+'</div><div class="hist-m">выплачено владельцем</div></div><div class="hist-r grey">'+fmt(paid)+'</div></div>';
+    h+='<div class="refresh-hint" style="margin-top:10px">Итоговая выплата может отличаться от начисленной (аванс, остаток).</div>';
+  } else h+='<div class="n-empty"><div class="ic">💵</div><div class="t">Выплат пока нет</div><div class="s">Выплаты за период появятся здесь</div></div>';
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';
+}
+function rProfSettings(m,b){
+  var _bioOn=false;try{_bioOn=localStorage.getItem('cf_bio')==='1'}catch(e){}
+  var _notif=true;try{_notif=localStorage.getItem('cf_notif')!=='0'}catch(e){}
+  var _dark=(document.documentElement.getAttribute('data-theme')==='dark');
+  let h='<button class="back" onclick="mView=\'main\';render()">‹ Назад</button>';
+  h+='<div class="sec">🔐 Безопасность</div>';
+  if(MY_PWH){
+    h+='<div class="hist click" onclick="changeMyPin()"><div class="hist-l"><div class="hist-d">PIN-код</div><div class="hist-m">сменить · потребуется текущий</div></div><span class="hist-arr">›</span></div>';
+    if(_BIO_OK)h+='<div class="hist click" onclick="toggleBioUnlock()"><div class="hist-l"><div class="hist-d">Face ID / Touch ID</div><div class="hist-m">'+(_bioOn?'быстрый вход включён':'PIN всегда остаётся запасным')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_bioOn?'checked':'')+' aria-label="Быстрый вход"></div>';
+  } else h+='<div class="hist" style="cursor:default"><div class="hist-l"><div class="hist-m">Доступ выдаёт владелец</div></div></div>';
+  h+='<div class="sec">Приложение</div>';
+  h+='<div class="hist click" onclick="toggleNotif()"><div class="hist-l"><div class="hist-d">Уведомления</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_notif?'checked':'')+' aria-label="Уведомления"></div>';
+  h+='<div class="hist click" onclick="toggleTheme();render()"><div class="hist-l"><div class="hist-d">Оформление</div><div class="hist-m">'+(_dark?'тёмное':'светлое')+'</div></div><input type="checkbox" class="n-toggle" style="pointer-events:none" '+(_dark?'checked':'')+' aria-label="Тёмная тема"></div>';
+  h+='<div class="hist click" onclick="toast(\'Скоро\')"><div class="hist-l"><div class="hist-d">Язык</div><div class="hist-m">Русский</div></div><span class="hist-arr">›</span></div>';
+  h+='<div class="sec">О приложении</div>';
+  h+='<div class="hist" style="cursor:default"><div class="hist-l"><div class="hist-d">Nero</div><div class="hist-m">управление сменами · Caffelito</div></div><span style="font-family:var(--mono);font-size:12px;color:var(--t3)">v'+(typeof APP_BUILD!=='undefined'?APP_BUILD:'?')+'</span></div>';
+  h+='<div class="footer">XSYN</div>';m.innerHTML=h;b.style.display='none';
+}
+function toggleNotif(){var on=true;try{on=localStorage.getItem('cf_notif')!=='0'}catch(e){}try{localStorage.setItem('cf_notif',on?'0':'1')}catch(e){}toast(on?'Уведомления выключены':'Уведомления включены');if(tg)tg.HapticFeedback?.selectionChanged?.();render();}
 function openShift(){mView='shift';shiftDraft={hours:'',drinks:{},note:''};render()}
 // Maaş kartı: kompozisyon çubuğunu doldur (rAF'a bağımlı DEĞİL — tutar asla yanlış görünmesin)
 function cfSalaryFx(){
