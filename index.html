@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070178;
+var APP_BUILD=2026070179;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2257,7 +2257,7 @@ async function ownerEndShift(uid,nm){
 function fsHint(){
   var el=document.getElementById('fsHintBox');if(!el)return;
   var uid=parseInt((document.getElementById('fsEmp')||{}).value)||0;
-  var bid=parseInt((document.getElementById('fsBr')||{}).value)||0;
+  var bid=parseInt(startBranch)||parseInt(MY_BRANCH)||1;
   var b=(BARISTAS||[]).find(function(x){return x.id===uid});
   if(!b){el.textContent='';return}
   var ov=((b.broles||{})[String(bid)])||null;
@@ -2271,11 +2271,13 @@ function fsHint(){
 // Backend: slot + devir klampesi + rol/kategori/ставка şube-etkin SNAPSHOT + audit. ──
 function ownerStartShift(){
   var uid=parseInt((document.getElementById('fsEmp')||{}).value)||0;
-  var bid=parseInt((document.getElementById('fsBr')||{}).value)||0;
+  // Şube: birleşik panelin startBranch seçimi (ayrı #fsBr YOK artık).
+  var bid=parseInt(startBranch)||parseInt(MY_BRANCH)||1;
   if(!uid){toast('Выберите сотрудника');return}
   var payload={action:'force_start_shift',target:uid,branch_id:bid};
-  var _t=((document.getElementById('fsTime')||{}).value||'').trim();
-  var _d=((document.getElementById('fsDate')||{}).value||'').trim();
+  // Tarih/saat: birleşik panelin #cstStart (saat) + #cstDate (tarih) alanları.
+  var _t=((document.getElementById('cstStart')||{}).value||'').trim();
+  var _d=((document.getElementById('cstDate')||{}).value||'').trim();
   if(_t){
     try{
       var p=_d?_d.split('-'):null;var hm=_t.split(':');
@@ -2288,6 +2290,14 @@ function ownerStartShift(){
   }
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){}}
   toast('▶ Смена запускается…');if(tg)tg.HapticFeedback?.impactOccurred('light');
+}
+// ── Birleşik başlatma yönlendirici (Смена panelindeki tek «Начать» butonu):
+//    owner bir çalışan seçtiyse onun adına (force_start_shift), aksi halde kendi
+//    vardiyası (startShiftCustomTime). İş mantığı ilgili fonksiyonlarda AYNEN. ──
+function startShiftPanel(){
+  var emp=(MY_ROLE==='owner')?(parseInt((document.getElementById('fsEmp')||{}).value)||0):0;
+  if(emp)return ownerStartShift();
+  return startShiftCustomTime();
 }
 async function deleteShift(id){
   if(!(await cfAsk('Удалить эту смену?\nДействие нельзя отменить.',{danger:true,okText:'Удалить'})))return;
@@ -3089,9 +3099,22 @@ function rShift(m,b){
     // Nerede + hangi rolle başlayacağı (SLOTS'tan; şube ⚙️'den değiştirilir)
     (function(){var _sb=startBranch||MY_BRANCH||1;var _mr=((SLOTS||{})[String(_sb)]||{}).my_role||'';
       h+='<div style="text-align:center;font-size:11.5px;color:var(--t3);margin-top:8px">🏢 '+escH(branchName(_sb))+(_mr?' · '+(_mr==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста'):'')+'</div>';})();
-    h+='<button onclick="shiftMoreOpen=!shiftMoreOpen;render()" style="width:100%;margin-top:8px;padding:9px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t3);font-size:12.5px;font-weight:600;cursor:pointer">'+(shiftMoreOpen?'▴ Скрыть':'⚙️ Другое время / филиал')+'</button>';
+    h+='<button onclick="shiftMoreOpen=!shiftMoreOpen;render()" style="width:100%;margin-top:8px;padding:9px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t3);font-size:12.5px;font-weight:600;cursor:pointer">'+(shiftMoreOpen?'▴ Скрыть':(MY_ROLE==='owner'?'⚙️ За сотрудника · другое время / филиал':'⚙️ Другое время / филиал'))+'</button>';
     if(shiftMoreOpen){
       h+='<div style="margin-top:10px;padding:12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">';
+      // ── OWNER/ADMIN: çalışan seçici (aynı akışta). Normal çalışan görmez → kendi vardiyası.
+      //    Ayrı «Начать смену за сотрудника» sayfası YOK: tek başlatma arayüzü budur.
+      if(MY_ROLE==='owner'){
+        var _idleEmp=(BARISTAS||[]).filter(function(x){return !x.arch&&!x.active&&x.id!==MY_UID});
+        h+='<div style="margin-bottom:10px">'
+          +'<div style="font-size:10.5px;color:var(--t3);font-weight:800;letter-spacing:.4px;margin-bottom:5px">СОТРУДНИК</div>'
+          +'<select id="fsEmp" onchange="fsHint()" style="width:100%;padding:10px;border:1px solid var(--border2);border-radius:var(--r3);background:var(--card);color:var(--t1);font-size:13px;font-family:inherit">'
+            +'<option value="" selected>— я сам(а) —</option>'
+            +_idleEmp.map(function(x){return '<option value="'+x.id+'">'+escH(x.n)+'</option>'}).join('')
+          +'</select>'
+          +'<div id="fsHintBox" style="font-size:11px;color:var(--t2);margin-top:6px;font-weight:600"></div>'
+        +'</div>';
+      }
       if((BRANCHES||[]).length>1){
         h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
           +'<div style="font-size:13px;font-weight:700">🏢 '+escH(branchName(startBranch))+'</div>'
@@ -3106,8 +3129,9 @@ function rShift(m,b){
       h+='<div style="display:flex;gap:8px;align-items:center">'
         +'<input type="time" id="cstStart" style="flex:1;padding:10px;border:1px solid var(--border2);border-radius:10px;font-size:15px;font-family:inherit;background:transparent;color:var(--t1)">'
         +'<input type="date" id="cstDate" value="'+_tdv+'" max="'+_tdv+'" style="padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:12px;font-family:inherit;color:var(--t2);background:transparent">'
-        +'<button onclick="startShiftCustomTime()" style="padding:10px 14px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">Начать</button>'
+        +'<button onclick="startShiftPanel()" style="padding:10px 14px;background:#0ea5e9;color:#fff;border:none;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">Начать</button>'
       +'</div>';
+      if(MY_ROLE==='owner')h+='<div style="font-size:10.5px;color:var(--t3);margin-top:7px">Пусто «сотрудник» — начнёте свою смену. Выбор сотрудника — запуск за него (время можно оставить пустым = сейчас). Правила позиций и передачи действуют.</div>';
       h+='</div>';
     }
   }
@@ -3153,7 +3177,8 @@ function rShift(m,b){
         h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:9px 12px;margin-bottom:8px"><div style="font-size:12px;font-weight:800;margin-bottom:4px">🏢 '+escH(bnm)+(sl.trainee?'':' <span style="font-size:10px;color:var(--t3);font-weight:500">· одна позиция</span>')+'</div>'+_line('☕ Бариста',sl.barista)+(sl.trainee?_line('🎓 Ассистент/стажёр',sl.assistant):'')+'</div>';
       });
     }
-    h+='<div class="hist click" onclick="mView=\'activeBaristas\';render()" style="margin-top:4px"><div class="hist-l"><div class="hist-d">▶️ Начать смену за сотрудника</div><div class="hist-m">ручной запуск · правила позиций действуют</div></div><span class="hist-arr">›</span></div>';
+    // «Начать смену за сотрудника» ayrı bölümü/sayfası KALDIRILDI — tek başlatma akışı
+    //  yukarıda «⚙️ За сотрудника · другое время» panelinde (owner çalışan seçicisi).
   }
 
   // Vardiya geçmişi: SADECE barista Смена'da tek «История смен» nav'ı (owner'da yok —
@@ -4553,9 +4578,10 @@ function rMActiveBaristas(m,b){
       +'</div>';
     });
   }
-  // ── Elle vardiya başlat (çalışan unuttuysa / owner adına) ──
+  // ── «Начать смену за сотрудника» formu KALDIRILDI — tek başlatma akışı «Смена»
+  //    ekranındaki birleşik panelde (owner çalışan seçicisi). Aşağısı render EDİLMEZ. ──
   var _idleEmps=BARISTAS.filter(function(x){return !x.arch&&!x.active});
-  if(_idleEmps.length){
+  if(false){
     h+='<div class="sec">▶️ Начать смену за сотрудника</div>';
     var _fsToday=(function(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')})();
     h+='<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px">'
