@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070179;
+var APP_BUILD=2026070180;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2881,14 +2881,14 @@ function rReportRoom(m,b){
         }
       }catch(_e){}
       keys.forEach(function(k){
-        var ds=byDay[k].slice().sort(function(a,b){return new Date(a.start_time)-new Date(b.start_time)});
+        // Gün içi sıra: gün SONU (en geç başlayan) ÜSTTE, gün BAŞI (en erken) ALTTA.
+        var ds=byDay[k].slice().sort(function(a,b){return new Date(b.start_time)-new Date(a.start_time)});
         var d0=new Date(ds[0].start_time);
         var dayLbl=(DR[d0.getDay()]||'')+' · '+String(d0.getDate()).padStart(2,'0')+'.'+String(d0.getMonth()+1).padStart(2,'0')+'.'+d0.getFullYear();
         h+='<div style="border-radius:16px;overflow:hidden;margin-bottom:14px;box-shadow:0 6px 18px rgba(0,0,0,.28);border:1px solid var(--border)">'
           +'<div style="background:linear-gradient(135deg,#b88a2e,#e9c46a);color:#1a1a1a;padding:10px 14px;font-weight:800;display:flex;justify-content:space-between;align-items:center"><span>📅 '+dayLbl+'</span><span style="font-size:12px;opacity:.85">'+ds.length+' смен</span></div>'
           +'<div style="padding:4px 12px 8px;background:var(--card)">';
         ds.forEach(function(s,i){
-          if(i>0){var pe=ds[i-1].end_time?(' · '+fmtTime(ds[i-1].end_time)):'';h+='<div style="text-align:center;font-size:11px;color:#10b981;padding:3px 0;font-weight:600">🔄 пересменка'+pe+'</div>';}
           var outTxt=s.end_time?fmtTime(s.end_time):'<span style="color:#10b981;font-weight:700">в смене</span>';
           var kri=(s.start_time&&kByStart[s.start_time]!=null)?kByStart[s.start_time]:null;
           var hasRep=(kri!=null);
@@ -2909,6 +2909,9 @@ function rReportRoom(m,b){
             +'<span class="arrow" style="flex-shrink:0;margin-left:4px">›</span>'
             +((MY_ROLE==='owner'&&edit&&s.sid)?'<button onclick="event.stopPropagation();deleteShift('+s.sid+')" title="Удалить смену" style="flex-shrink:0;margin-left:4px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>':'')
           +'</div>';
+          // пересменка (devir): bu satır (daha geç) ile ALTINDAKİ kronolojik önceki vardiya
+          //  arasında, önceki vardiyanın bitiş saatiyle. Sıra gün sonu→gün başı olduğundan alt = ds[i+1].
+          if(i<ds.length-1){var pe=ds[i+1].end_time?(' · '+fmtTime(ds[i+1].end_time)):'';h+='<div style="text-align:center;font-size:11px;color:#10b981;padding:3px 0;font-weight:600">🔄 пересменка'+pe+'</div>';}
           // (inline «детали» bloğu KALDIRILDI — tek tip detay sayfası rRepShiftDetail kullanılıyor)
         });
         h+='</div></div>';
