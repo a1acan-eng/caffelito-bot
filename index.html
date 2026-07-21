@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070180;
+var APP_BUILD=2026070181;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3749,25 +3749,36 @@ async function confirmShiftStart(bid){
     if(occ&&occ.uid!==MY_UID){
       var st='';try{st=fmtTime(occ.st)}catch(e){}
       var who=(role==='assistant')?'ассистента':'бариста';
-      var mode=await cfAsk('Позиция '+who+' уже занята — '+escH(occ.nm||'')+(st?' (с '+st+')':'')+'.\n\nКак начать смену?',
-        {icon:'🔄',choices:[{text:'🔄 Принять смену (передача)',val:'takeover',cls:'pri'},{text:'👥 Параллельная смена',val:'parallel'}],cancelText:'Отмена'});
+      var mode=await cfAsk('Здесь уже работает '+escH(occ.nm||'')+(st?' (с '+st+')':'')+'.\n\nВы работаете ВМЕСТЕ или сменяете его?',
+        {icon:'👥',choices:[
+           {text:'👥 Работаем вместе (оба на смене)',val:'parallel',cls:'pri'},
+           {text:'🔄 Я сменяю — '+escH(occ.nm||'коллега')+' уходит',val:'takeover'}
+        ],cancelText:'Отмена'});
       if(!mode)return {ok:false};
+      // «Devir» = önceki vardiya BU ANDA kapanır. Yanlış seçimi önlemek için net uyar.
+      if(mode==='takeover'){
+        if(!(await cfAsk('Внимание! Смена «'+escH(occ.nm||'коллеги')+'» будет ЗАКРЫТА текущим временем — это передача.\n\nЕсли вы просто работаете ВМЕСТЕ, нажмите «Отмена» и выберите «Работаем вместе».',
+          {danger:true,okText:'Да, принять смену',cancelText:'Отмена',icon:'🔄'})))return {ok:false};
+      }
       return {ok:true,mode:mode};
     }
   }
   return {ok:true,mode:null};
 }
 async function startShiftNow(){
+  // Geliş saatini DOKUNULDUĞU an sabitle — onay penceresini okurken saat kaymasın.
+  const tapIso=gT().toISOString();
   var _c=await confirmShiftStart(startBranch||MY_BRANCH);
   if(!_c.ok)return;
   // Mode seçilmediyse normal onay; seçildiyse (paralel/передача) diyalog zaten onaydı.
-  if(!_c.mode){ if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(new Date().toISOString()),{okText:'Начать',icon:'🟢'})))return; }
-  const nowIso=gT().toISOString();
+  if(!_c.mode){ if(!(await cfAsk('Начать смену сейчас?\nВремя прихода: '+fmtTime(tapIso),{okText:'Начать',icon:'🟢'})))return; }
+  const nowIso=tapIso;
   // Optimistik
   SUMMARY.active={start_time:nowIso,end_time:null,hours:0,drinks:'{}',bonus:0,hourly_pay:0,total:0};
   toast(_c.mode==='parallel'?'🟢 Параллельная смена начата':'🟢 Смена началась!');
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
-  var _pl={action:'shift_start',branch:(startBranch||MY_BRANCH)};if(_c.mode)_pl.shift_mode=_c.mode;
+  // start_time = dokunuş anı (backend near-now'ı «ручное время» saymaz).
+  var _pl={action:'shift_start',start_time:tapIso,branch:(startBranch||MY_BRANCH)};if(_c.mode)_pl.shift_mode=_c.mode;
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(_pl))}catch(e){console.warn(e)}}
   render();
   cfShiftStartedPop();
@@ -3950,12 +3961,26 @@ async function startShiftCustomTime(){
   cfShiftStartedPop();
 }
 
+// ── BİRLİKTE ÇALIŞMA: aynı şubede hâlâ AÇIK başka bir vardiya var mı? (paralel ortak)
+//    Varsa bardakları SON kapatan sayar → bu kişi bardak saymaz, sadece saat.
+function hasOpenSameBranchPartner(){
+  var a=(SUMMARY||{}).active;if(!a)return false;
+  var myBr=parseInt(a.branch_id)||parseInt(startBranch)||parseInt(MY_BRANCH)||1;
+  return (BARISTAS||[]).some(function(x){
+    if(!x||x.id===MY_UID||!x.active)return false;
+    var xb=parseInt((x.active&&x.active.branch_id)||x.bid)||1;
+    return xb===myBr;
+  });
+}
 // ── Vardiya BITIR ekranı (geliş zamanı zaten kayıtlı, sadece bardak+not) ──
 function rMShiftEnd(m,b){
   const active=(SUMMARY||{}).active;
   if(!active){mView='main';render();return}
   // Stajyer (kategori does_kasa=0) → bardak/kasa YOK, sadece saatlik. Ayrı sade ekran.
   if(!MY_DOES_KASA)return rMShiftEndTrainee(m,b);
+  // Birlikte çalışma: aynı şubede hâlâ açık ortak varsa → bardakları SON kapatan sayar.
+  //  Bu kişi şimdi bardak saymaz (çift sayım/çift bonus olmaz), sadece saat girer.
+  if(hasOpenSameBranchPartner())return rMShiftEndTrainee(m,b);
   const startStr=fmtTime(active.start_time);
   const dayStr=fmtDay(active.start_time);
   // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
@@ -4255,9 +4280,11 @@ function rMShiftEndTrainee(m,b){
       +'<div id="cstEndDay" style="font-size:11px;color:var(--t2);font-weight:700;margin-top:5px"></div>'
     +'</div>';
   }
-  h+='<div class="refresh-hint" style="margin:6px 0">🎓 Стажёр — стаканы и касса не заполняются. Оплата только по часам.</div>';
+  h+='<div class="refresh-hint" style="margin:6px 0">'+(MY_DOES_KASA
+      ?'👥 Работаете вместе — стаканы посчитает тот, кто закроет смену ПОСЛЕДНИМ. С вас — только часы.'
+      :'🎓 Стажёр — стаканы и касса не заполняются. Оплата только по часам.')+'</div>';
   h+='<div class="sec">📝 Заметка (необязательно)</div>'
-    +'<textarea class="sf-note" rows="2" placeholder="например: стажировка" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
+    +'<textarea class="sf-note" rows="2" placeholder="'+(MY_DOES_KASA?'например: работали вдвоём':'например: стажировка')+'" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
   h+='<div class="sf-total">'
     +'<div class="sf-tot-row"><span>Часы × '+fmt(HOURLY_RATE)+' <span style="font-size:10px;color:var(--t3)">(в конце месяца)</span></span><span id="seHourly">'+fmt(hourly)+'</span></div>'
     +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span id="seTotal">'+fmt(hourly)+' сум</span></div>'

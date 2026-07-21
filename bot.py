@@ -3368,7 +3368,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
             start_dt = datetime.fromisoformat(sh["start_time"])
             note_back = ""
+            # «Ручное время» notu SADECE gerçekten geçmiş bir saat girildiğinde. Uygulama
+            # artık normal başlatmada da start_time (dokunuş anı) gönderiyor → şimdiye yakın
+            # (≤3 dk) ise bu normal başlatmadır, «вручную» yazma.
+            _near_now = False
             if custom_start:
+                try:
+                    _req0 = _parse_user_time(custom_start)
+                    if _req0:
+                        _near_now = abs((datetime.now(TZ).replace(tzinfo=None) - _req0).total_seconds()) <= 180
+                except Exception:
+                    _near_now = False
+            if custom_start and not _near_now:
                 note_back = f"\n_(время указано вручную)_"
                 # Devir kaydırması olduysa şeffafça söyle (istenen saat < kaydedilen saat)
                 try:
