@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070181;
+var APP_BUILD=2026070182;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3748,19 +3748,12 @@ async function confirmShiftStart(bid){
     var occ=(role==='assistant')?s.assistant:s.barista;
     if(occ&&occ.uid!==MY_UID){
       var st='';try{st=fmtTime(occ.st)}catch(e){}
-      var who=(role==='assistant')?'ассистента':'бариста';
-      var mode=await cfAsk('Здесь уже работает '+escH(occ.nm||'')+(st?' (с '+st+')':'')+'.\n\nВы работаете ВМЕСТЕ или сменяете его?',
-        {icon:'👥',choices:[
-           {text:'👥 Работаем вместе (оба на смене)',val:'parallel',cls:'pri'},
-           {text:'🔄 Я сменяю — '+escH(occ.nm||'коллега')+' уходит',val:'takeover'}
-        ],cancelText:'Отмена'});
-      if(!mode)return {ok:false};
-      // «Devir» = önceki vardiya BU ANDA kapanır. Yanlış seçimi önlemek için net uyar.
-      if(mode==='takeover'){
-        if(!(await cfAsk('Внимание! Смена «'+escH(occ.nm||'коллеги')+'» будет ЗАКРЫТА текущим временем — это передача.\n\nЕсли вы просто работаете ВМЕСТЕ, нажмите «Отмена» и выберите «Работаем вместе».',
-          {danger:true,okText:'Да, принять смену',cancelText:'Отмена',icon:'🔄'})))return {ok:false};
-      }
-      return {ok:true,mode:mode};
+      // Aynı pozisyonda biri zaten çalışıyor. Vardiyalar BAĞIMSIZ — kimse otomatik
+      // kapanmaz; ikiniz de açık kalırsınız, herkes kendi vardiyasını kapatır.
+      // «Devir» seçeneği KALDIRILDI (artık hiçbir şey otomatik kapanmıyor).
+      if(!(await cfAsk(escH(occ.nm||'Коллега')+(st?' (с '+st+')':'')+' уже на смене здесь.\n\nВаша смена будет отдельной — обе останутся открытыми, каждый завершает свою.',
+        {okText:'Начать смену',cancelText:'Отмена',icon:'👥'})))return {ok:false};
+      return {ok:true,mode:'parallel'};
     }
   }
   return {ok:true,mode:null};

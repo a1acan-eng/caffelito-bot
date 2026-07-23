@@ -1388,24 +1388,12 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     if end_dt < start:
         end_dt = now
     _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
-    # ── DEVİR BÜTÜNLÜĞÜ (evrensel): bu vardiyanın bitişi, aynı şube + aynı rol
-    # pozisyonundaki SONRAKİ vardiyanın başlangıcını GEÇEMEZ — aynı slotta çakışan
-    # ödenmiş süre imkânsız (elle geç kapatma / owner düzeltmesi dahil).
-    try:
-        _my_role = active["shift_role"] if ("shift_role" in active.keys() and active["shift_role"]) else "barista"
-        # PARALEL vardiyalar klampe hedefi DEĞİL — bilinçli örtüşme; başka bir vardiyanın
-        # bitişini kısaltmaz. Sadece gerçek devir/сıradaki vardiya klampeler.
-        _nx = db.execute(
-            "SELECT MIN(start_time) AS st FROM shifts WHERE COALESCE(branch_id,1)=? "
-            "AND COALESCE(shift_role,'barista')=? AND start_time > ? AND id != ? "
-            "AND COALESCE(note,'') != 'параллельная смена'",
-            (int(_bid or 1), _my_role, active["start_time"], active["id"])).fetchone()
-        if _nx and _nx["st"]:
-            _nxdt = datetime.fromisoformat(_nx["st"])
-            if end_dt > _nxdt:
-                end_dt = _nxdt
-    except Exception:
-        pass
+    # ── DEVİR KLAMPESİ KALDIRILDI (kullanıcı isteği — vardiyalar TAMAMEN bağımsız) ──
+    # Eskiden: bir vardiyanın bitişi, aynı şube+roldeki SONRAKİ vardiyanın başlangıcına
+    # otomatik kısaltılıyordu (Hasan 03:00 kapatınca 20:00'a düşüyordu). ARTIK YOK.
+    # Bitiş SADECE bu çalışanın gerçek kapanış saatidir (kendi «Завершить» veya owner'ın
+    # elle kapatması). Başka bir çalışanın vardiyası ASLA otomatik değiştirilmez; aynı
+    # şubede birden çok AÇIK vardiya (barista+barista, ассистент+barista vb.) serbesttir.
     # Ödenecek saat: ŞUBEYE ÖZEL kapalı pencere düşülür + max ile sınırlı.
     _pc = branch_pay_window(db, _bid)
     hours = paid_hours(start, end_dt, _pc)
