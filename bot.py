@@ -4358,6 +4358,81 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "delete_shift", user.id, user.first_name, row["user_id"],
                                display_name_for(db, row["user_id"]), {"shift_id": sid})
 
+        elif action == "edit_shift":
+            # Owner: bir vardiyanın giriş/çıkış saatini ELLE düzelt (yanlış kayıtları
+            # onarmak için). SNAPSHOT ставка korunur; saat + saatlik ücret + fazla mesai
+            # YENİDEN hesaplanır; bardak/tatlı bonusu (satış) DEĞİŞMEZ. Başka vardiya
+            # etkilenmez — klampe yok, sadece bu kaydı günceller.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                sid = int(data.get("id") or 0)
+            except Exception:
+                sid = 0
+            sh = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone() if sid else None
+            if not sh:
+                await update.message.reply_text("❌ Смена не найдена.")
+                return
+            _ns = _parse_user_time(data.get("start_time")) if data.get("start_time") else None
+            _ne = _parse_user_time(data.get("end_time")) if data.get("end_time") else None
+            start_dt = _ns or (datetime.fromisoformat(sh["start_time"]) if sh["start_time"] else None)
+            if not start_dt:
+                await update.message.reply_text("❌ Неверное время начала.")
+                return
+            _existing_end = datetime.fromisoformat(sh["end_time"]) if sh["end_time"] else None
+            end_dt = _ne or _existing_end  # yeni çıkış verilmezse mevcut çıkışı koru
+            if end_dt and end_dt < start_dt:
+                await update.message.reply_text("❌ Уход не может быть раньше прихода.")
+                return
+            _bid = sh["branch_id"] if sh["branch_id"] else user_branch_id(db, sh["user_id"])
+            try:
+                _rate = int(sh["rate"]) if sh["rate"] else int(barista_pay_info(db, sh["user_id"], branch_id=_bid)["rate"])
+            except Exception:
+                _rate = int(sh["rate"] or 0)
+            _bonus = int(sh["bonus"] or 0)  # bardak/tatlı bonusu KORUNUR (saat düzenlemesi satışı değiştirmez)
+            if end_dt:
+                _pc = branch_pay_window(db, _bid)
+                hours = paid_hours(start_dt, end_dt, _pc)
+                hourly_pay = int(hours * _rate)
+                ot_shift, ot_h = 0, 0.0
+                try:
+                    _otc = get_overtime_cfg(db)
+                    _thr = float(_otc.get("hours") or 0)
+                    if _thr > 0 and hours > _thr:
+                        ot_h = round(hours - _thr, 2)
+                        _val = int(_otc.get("value") or 0)
+                        ot_shift = int(ot_h * _rate * (_val / 100.0)) if _otc.get("type") == "percent" else int(ot_h * _val)
+                except Exception:
+                    ot_shift, ot_h = 0, 0.0
+                total = hourly_pay + _bonus
+                db.execute(
+                    "UPDATE shifts SET start_time=?, end_time=?, hours=?, hourly_pay=?, total=?, "
+                    "overtime=?, overtime_h=?, period=? WHERE id=?",
+                    (start_dt.isoformat(), end_dt.isoformat(), hours, hourly_pay, total,
+                     ot_shift, ot_h, start_dt.strftime("%Y-%m"), sid))
+            else:
+                # Açık vardiya → sadece giriş saatini güncelle (hâlâ açık kalır).
+                db.execute("UPDATE shifts SET start_time=?, period=? WHERE id=?",
+                           (start_dt.isoformat(), start_dt.strftime("%Y-%m"), sid))
+            db.commit()
+            _sh2 = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone()
+            _nm = display_name_for(db, sh["user_id"], fallback="?")
+            log_action(db, "edit_shift", user.id, user.first_name, sh["user_id"], _nm,
+                       {"shift_id": sid, "start": _sh2["start_time"], "end": _sh2["end_time"],
+                        "hours": _sh2["hours"], "total": _sh2["total"]})
+            if _sh2["end_time"]:
+                await update.message.reply_text(
+                    f"✏️ Смена *{_nm}* обновлена.\n"
+                    f"⏰ {start_dt.strftime('%d.%m %H:%M')} → {end_dt.strftime('%H:%M')} · "
+                    f"{fmt_hm(_sh2['hours'] or 0)} · {fmt_sum(_sh2['total'] or 0)} сум",
+                    parse_mode="Markdown")
+            else:
+                await update.message.reply_text(
+                    f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}.",
+                    parse_mode="Markdown")
+
         elif action == "delete_record":
             # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
             db = get_db()

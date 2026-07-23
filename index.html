@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070182;
+var APP_BUILD=2026070183;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2691,7 +2691,8 @@ function openRoom(id,n){
 // ═══ TEK TİP vardiya detayı — TÜM roller için AYNI etkileşim: satıra dokun → detay.
 // («отчёт» / «детали» ikiliği kaldırıldı.) repShiftDet = açık vardiyanın sid'i.
 var repShiftDet=null;
-function openRepShift(sid){repShiftDet=sid;render();scrollTopAll();}
+var shiftEditOpen=false; // owner: vardiya saati düzenleme formu açık mı
+function openRepShift(sid){repShiftDet=sid;shiftEditOpen=false;render();scrollTopAll();}
 // Профиль/Управление'den vardiya geçmişine tek atlama: Отчёт → Мои смены/Смены.
 // (go() reportRoom'u sıfırlar → openRoom SONRA çağrılır.)
 function openMyShiftsReport(){
@@ -2822,8 +2823,51 @@ function rRepShiftDetail(m,b){
     var _ki=-1;(KASA_REPORTS||[]).forEach(function(r,ri){if(r.start_time===s.start_time)_ki=ri;});
     if(_ki>=0)h+='<button class="mbtn" style="width:100%;margin-top:4px" onclick="kasaDetail=KASA_REPORTS['+_ki+'];render()">📋 Кассовый отчёт этой смены ›</button>';
   }catch(e){}
+  // ── OWNER: vardiya giriş/çıkış saatini ELLE düzelt (yanlış kayıtları onar) ──
+  if(MY_ROLE==='owner'){
+    var _fdate=function(iso){var d=new Date(iso);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+    var _ftime=function(iso){var d=new Date(iso);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')};
+    var _sdD=_fdate(s.start_time),_sdT=_ftime(s.start_time);
+    var _edD=s.end_time?_fdate(s.end_time):'',_edT=s.end_time?_ftime(s.end_time):'';
+    h+='<button class="mbtn" style="width:100%;margin-top:8px;background:transparent;border:1px solid var(--border2);color:var(--t2)" onclick="shiftEditOpen=!shiftEditOpen;render()">'+(shiftEditOpen?'▴ Скрыть':'✏️ Изменить время смены')+'</button>';
+    if(shiftEditOpen){
+      h+='<div class="det-card" style="margin-top:8px"><div class="det-h">✏️ Изменить время</div>'
+        +'<div style="font-size:11px;color:var(--t3);margin-bottom:10px">Ставка и бонусы сохранятся — пересчитаются только часы и оплата.</div>'
+        +'<div style="font-size:11px;color:var(--t2);font-weight:700;margin-bottom:4px">Приход</div>'
+        +'<div style="display:flex;gap:8px;margin-bottom:12px">'
+          +'<input type="date" id="esD" value="'+_sdD+'" style="flex:1;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:13px;font-family:inherit;background:transparent;color:var(--t1)">'
+          +'<input type="time" id="esT" value="'+_sdT+'" style="flex:1;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:14px;font-family:inherit;background:transparent;color:var(--t1)">'
+        +'</div>'
+        +'<div style="font-size:11px;color:var(--t2);font-weight:700;margin-bottom:4px">Уход'+(isOpenSh?' <span style="color:var(--t3);font-weight:500">(пусто = смена останется открытой)</span>':'')+'</div>'
+        +'<div style="display:flex;gap:8px;margin-bottom:14px">'
+          +'<input type="date" id="eeD" value="'+_edD+'" style="flex:1;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:13px;font-family:inherit;background:transparent;color:var(--t1)">'
+          +'<input type="time" id="eeT" value="'+_edT+'" style="flex:1;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:14px;font-family:inherit;background:transparent;color:var(--t1)">'
+        +'</div>'
+        +'<button class="mbtn grn" style="width:100%" onclick="saveShiftTimeEdit('+s.sid+')">💾 Сохранить</button>'
+      +'</div>';
+    }
+  }
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;
+}
+// Owner: vardiya saatini düzelt → edit_shift (backend snapshot ставка ile yeniden hesaplar)
+function saveShiftTimeEdit(sid){
+  var sD=((document.getElementById('esD')||{}).value||'').trim();
+  var sT=((document.getElementById('esT')||{}).value||'').trim();
+  var eD=((document.getElementById('eeD')||{}).value||'').trim();
+  var eT=((document.getElementById('eeT')||{}).value||'').trim();
+  if(!sD||!sT){toast('Укажите дату и время прихода');return}
+  function _iso(d,t){var p=d.split('-'),hm=t.split(':');return new Date(parseInt(p[0]),parseInt(p[1])-1,parseInt(p[2]),parseInt(hm[0])||0,parseInt(hm[1])||0,0,0).toISOString();}
+  var startIso=_iso(sD,sT);
+  var endIso=(eD&&eT)?_iso(eD,eT):'';
+  if(endIso&&new Date(endIso)<new Date(startIso)){toast('Уход не может быть раньше прихода');return}
+  var payload={action:'edit_shift',id:sid,start_time:startIso};
+  if(endIso)payload.end_time=endIso;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn(e)}}
+  shiftEditOpen=false;
+  toast('✏️ Время обновляется…');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  render(); // 600ms sonra sendData override'ı refreshState çağırır → taze rakamlar
 }
 function rReportRoom(m,b){
   b.style.display='none';
