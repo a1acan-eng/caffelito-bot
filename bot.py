@@ -152,6 +152,12 @@ def get_db():
         note TEXT,
         added_by INTEGER, added_by_name TEXT,
         created_at TEXT)""")
+    # ─── Manuel bakiye düzeltmeleri (Корректировка) — owner mutabakat aracı (+/-) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, amount INTEGER, note TEXT, period TEXT,
+        branch_id INTEGER, added_by INTEGER, added_by_name TEXT,
+        created_at TEXT)""")
     # ─── Click/Payme ödeme akışı (gruptan yakalanan bildirimler) ───
     db.execute("""CREATE TABLE IF NOT EXISTS pay_feed (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1249,8 +1255,20 @@ def calc_summary(db, user_id, period=None):
         prod_revenue = _pbrow["r"] or 0
     except Exception:
         prod_bonus, prod_revenue = 0, 0
+    # Manuel düzeltmeler (Корректировка): owner'ın eklediği +/- mutabakat kalemleri.
+    # Doğrudan net'e girer (gross'a değil): «−» borcu azaltır (zaten ödendi), «+» artırır.
+    try:
+        _adjrow = db.execute(
+            "SELECT COALESCE(SUM(amount),0) AS a FROM adjustments WHERE user_id=? AND period=?",
+            (user_id, period)).fetchone()
+        adj_total = _adjrow["a"] or 0
+        _adj_rows = db.execute(
+            "SELECT * FROM adjustments WHERE user_id=? AND period=? ORDER BY created_at",
+            (user_id, period)).fetchall()
+    except Exception:
+        adj_total, _adj_rows = 0, []
     gross = hourly + bonus + tips_total + ot_bonus + prod_bonus
-    net = gross - fine_total - paid_total
+    net = gross - fine_total - paid_total + adj_total
 
     return {
         "period": period,
@@ -1266,6 +1284,8 @@ def calc_summary(db, user_id, period=None):
         "tips": tips_total,
         "tips_count": len(tips),
         "tips_list": [dict(t) for t in tips],
+        "adjustments": adj_total,
+        "adjustments_list": [dict(a) for a in _adj_rows],
         "gross": gross,
         "net": net,
         "shifts_count": len(shifts),
@@ -1738,6 +1758,14 @@ def build_hash_payload(db, user_id, name):
                 "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",
                 (b["user_id"], current_period())).fetchall()
             _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]} for r in _pays]
+            # Bu ayki manuel düzeltmeler (Корректировка) — kişi kartında gösterilir/silinir
+            try:
+                _adjs = db.execute(
+                    "SELECT id, amount, note, created_at FROM adjustments WHERE user_id=? AND period=? ORDER BY id DESC",
+                    (b["user_id"], current_period())).fetchall()
+                _adj_list = [{"id": r["id"], "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _adjs]
+            except Exception:
+                _adj_list = []
             # Kişi × şube kategori atamaları (owner UI: «bu şubede farklı kategori»)
             try:
                 _broles = {str(r["branch_id"]): r["salary_cat_id"] for r in db.execute(
@@ -1775,12 +1803,14 @@ def build_hash_payload(db, user_id, name):
                 "hp": bs["hourly"], "f": bs["fines"],
                 "paid": bs["paid"], "net": bs["net"],
                 "tips": bs["tips"],
+                "adj": bs["adjustments"],
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
                 "cat": b["salary_cat_id"],
                 "recent": _recent,
                 "pays": _pay_list,
+                "adjs": _adj_list,
                 "broles": _broles,
                 "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
@@ -4433,6 +4463,45 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}.",
                     parse_mode="Markdown")
 
+        elif action == "adjust_balance":
+            # Owner: kişinin bakiyesine MANUEL düzeltme (Корректировка, +/-) ekle.
+            # Mutabakat için: «−» borcu azaltır (zaten ödendi/telafi düzeltmesi), «+» artırır.
+            # net'e doğrudan girer (calc_summary'de toplanır); başka kalem etkilenmez.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            try:
+                amount = int(round(float(data.get("amount") or 0)))
+            except Exception:
+                amount = 0
+            note = (data.get("note") or "").strip()
+            if not target_id or amount == 0:
+                await update.message.reply_text("❌ Укажите сотрудника и сумму (не 0).")
+                return
+            _per = current_period()
+            _now = datetime.now(TZ).replace(tzinfo=None)
+            try:
+                _abid = user_branch_id(db, target_id)
+            except Exception:
+                _abid = 1
+            db.execute(
+                "INSERT INTO adjustments (user_id, amount, note, period, branch_id, added_by, added_by_name, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (target_id, amount, note, _per, _abid, user.id, user.first_name, _now.isoformat()))
+            db.commit()
+            _anm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "adjust_balance", user.id, user.first_name, target_id, _anm,
+                       {"amount": amount, "note": note, "period": _per})
+            _sign = "+" if amount > 0 else ""
+            await update.message.reply_text(
+                f"⚖️ Корректировка для *{_anm}*: {_sign}{fmt_sum(amount)} сум"
+                + (f"\n📝 {note}" if note else ""), parse_mode="Markdown")
+
         elif action == "delete_record":
             # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
             db = get_db()
@@ -4445,7 +4514,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 rid = 0
             _TBL = {"tip": "tips", "pay": "payments", "fine": "fines", "loan": "loans",
-                    "order": "orders", "cash": "cashreports", "shift": "shifts"}
+                    "order": "orders", "cash": "cashreports", "shift": "shifts",
+                    "adjustment": "adjustments"}
             tbl = _TBL.get(kind)
             if tbl and rid:
                 try:

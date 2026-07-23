@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070183;
+var APP_BUILD=2026070184;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -2201,11 +2201,13 @@ function delBtn(kind,id){
   return '<button onclick="event.stopPropagation();delRec(\''+kind+'\','+id+')" title="Удалить" style="flex-shrink:0;margin-left:8px;width:26px;height:26px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:13px;cursor:pointer">🗑</button>';
 }
 async function delRec(kind,id){
-  var names={tip:'чаевые',pay:'выплату',fine:'штраф',loan:'аванс',order:'заказ',cash:'кассовый отчёт'};
+  var names={tip:'чаевые',pay:'выплату',fine:'штраф',loan:'аванс',order:'заказ',cash:'кассовый отчёт',adjustment:'корректировку'};
   if(!(await cfAsk('Удалить «'+(names[kind]||'запись')+'»?\nЭто повлияет на расчёты и нельзя отменить.',{danger:true,okText:'Удалить'})))return;
   var map={tip:'tips',pay:'pays',fine:'fines',loan:'loans',order:'orders'};
   if(map[kind]&&REP&&REP[map[kind]])REP[map[kind]]=REP[map[kind]].filter(function(x){return x.id!==id});
   if(kind==='cash'&&typeof KASA_REPORTS!=='undefined')KASA_REPORTS=KASA_REPORTS.filter(function(x){return x.id!==id});
+  // Düzeltme (adjustment) BARISTAS[i].adjs içinde — optimistik: listeden çıkar + net'i geri al.
+  if(kind==='adjustment'&&typeof BARISTAS!=='undefined'){(BARISTAS||[]).forEach(function(x){if(!x.adjs)return;var a=x.adjs.find(function(y){return y.id===id});if(a){x.net=(parseInt(x.net)||0)-(parseInt(a.amount)||0);x.adj=(parseInt(x.adj)||0)-(parseInt(a.amount)||0);x.adjs=x.adjs.filter(function(y){return y.id!==id});}});}
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'delete_record',kind:kind,id:id}))}catch(e){}}
   toast('🗑 Удалено');render();
 }
@@ -4999,6 +5001,29 @@ function rMBaristas(m,b){
           });
           h+='</div>';
         }
+        // ⚖️ Manuel düzeltmeler (Корректировка) — mutabakat kalemleri (+/-)
+        if(brs.adjs&&brs.adjs.length){
+          h+='<div class="bcard-stat" style="border-top:1px dashed var(--border);margin-top:6px;padding-top:8px;flex-direction:column;align-items:stretch"><span style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">⚖️ Корректировки ('+brs.adjs.length+')</span>';
+          brs.adjs.forEach(function(a){
+            var dt=new Date(a.at||Date.now());var day=String(dt.getDate()).padStart(2,'0')+'.'+String(dt.getMonth()+1).padStart(2,'0');
+            var pos=((parseInt(a.amount)||0)>=0);
+            h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 0;color:var(--t2)"><span>'+day+(a.note?' · '+escH(a.note):'')+'</span><span style="display:flex;align-items:center;gap:8px"><b style="color:'+(pos?'#059669':'var(--red)')+'">'+(pos?'+':'')+fmt(a.amount)+'</b>'+(edit?'<button onclick="delRec(\'adjustment\','+a.id+')" title="Удалить" style="width:24px;height:24px;border-radius:50%;border:none;background:var(--red-bg);color:var(--red);font-size:12px;cursor:pointer">🗑</button>':'')+'</span></div>';
+          });
+          h+='</div>';
+        }
+        // ⚖️ Düzeltme ekle (toggle form)
+        h+='<button onclick="adjCardOpen=(adjCardOpen==='+brs.id+'?null:'+brs.id+');render()" style="width:100%;margin-top:8px;padding:8px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">'+(adjCardOpen===brs.id?'▴ Скрыть':'⚖️ Корректировка баланса')+'</button>';
+        if(adjCardOpen===brs.id){
+          h+='<div style="margin-top:8px;padding:10px 12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">'
+            +'<div style="font-size:11px;color:var(--t3);margin-bottom:8px">Ручная поправка баланса. «− Уменьшить» = уже выдано/лишнее списать, «+ Увеличить» = доплата.</div>'
+            +'<input type="number" id="adjAmt_'+brs.id+'" placeholder="Сумма" inputmode="numeric" style="width:100%;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:14px;font-family:inherit;background:transparent;color:var(--t1);margin-bottom:8px">'
+            +'<input type="text" id="adjNote_'+brs.id+'" placeholder="Причина (напр. уже выплачено за 20.07)" style="width:100%;padding:9px;border:1px solid var(--border2);border-radius:10px;font-size:13px;font-family:inherit;background:transparent;color:var(--t1);margin-bottom:10px">'
+            +'<div style="display:flex;gap:8px">'
+              +'<button onclick="saveAdjust('+brs.id+',-1)" style="flex:1;padding:10px;background:var(--red-bg);color:var(--red);border:1px solid var(--red);border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">− Уменьшить</button>'
+              +'<button onclick="saveAdjust('+brs.id+',1)" style="flex:1;padding:10px;background:#ecfdf5;color:#059669;border:1px solid #6ee7b7;border-radius:10px;font-weight:700;font-size:13px;cursor:pointer">+ Увеличить</button>'
+            +'</div>'
+          +'</div>';
+        }
         h+='<div class="bcard-actions">'
           +'<button class="bcard-act pay" onclick="quickPay('+brs.id+')" style="flex:1">✅ Выплатить</button>'
         +'</div>';
@@ -5045,6 +5070,21 @@ function quickPay(uid){payTarget=uid;mView='pay';render()}
 // view-key'e BİLEREK eklenmedi → aç/kapa scroll konumunu bozmaz (payDetail/shiftDetOpen gibi).
 var baristaOpen=null;
 function toggleBarista(uid){baristaOpen=(baristaOpen===uid)?null:uid;render()}
+var adjCardOpen=null; // owner: hangi kişinin «Корректировка» formu açık
+// Owner: kişinin bakiyesine manuel düzeltme ekle (sign=-1 azalt, +1 arttır)
+function saveAdjust(uid,sign){
+  var amt=Math.abs(parseInt((document.getElementById('adjAmt_'+uid)||{}).value)||0);
+  var note=((document.getElementById('adjNote_'+uid)||{}).value||'').trim();
+  if(!amt){toast('Укажите сумму');return}
+  var signed=(sign<0)?-amt:amt;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'adjust_balance',target:uid,amount:signed,note:note}))}catch(e){console.warn(e)}}
+  // Optimistik: kişinin net'ini ve listesini hemen güncelle (600ms sonra refreshState kesinleştirir)
+  try{(BARISTAS||[]).forEach(function(x){if(x.id===uid){x.net=(parseInt(x.net)||0)+signed;x.adj=(parseInt(x.adj)||0)+signed;x.adjs=x.adjs||[];x.adjs.unshift({id:-Date.now(),amount:signed,note:note,at:new Date().toISOString()});}});}catch(e){}
+  adjCardOpen=null;
+  toast('⚖️ Корректировка применена');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  render();
+}
 // В смене: aktif vardiya operasyonel detayı aç/kapa (owner)
 var ownerActOpen=null;
 function toggleOwnerAct(uid){ownerActOpen=(ownerActOpen===uid)?null:uid;render()}
