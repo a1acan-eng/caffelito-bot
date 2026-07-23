@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070184;
+var APP_BUILD=2026070185;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1077,7 +1077,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);MY_BRANCH_CLOSED_TODAY=(P.get('my_branch_closed_today')||'0')==='1';
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1685,6 +1685,9 @@ try{MY_CAT=JSON.parse((HP.get('my_cat')||'{}'))||{}}catch(e){MY_CAT={}}
 // Varsayılan true → mevcut baristalar eskisi gibi (geriye tam uyumlu).
 let MY_DOES_KASA=true;
 try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
+// Closing owner guard: bu şube benim vardiyamdan sonra zaten kapatıldı mı (backend).
+let MY_BRANCH_CLOSED_TODAY=false;
+try{MY_BRANCH_CLOSED_TODAY=(HP.get('my_branch_closed_today')||'0')==='1'}catch(e){MY_BRANCH_CLOSED_TODAY=false}
 // Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
 var TIPS_ON=false;
 // ── Güvenlik (Профиль → Безопасность): PIN hash'i (asla düz metin PIN tutulmaz) ──
@@ -4000,26 +4003,38 @@ async function startShiftCustomTime(){
   cfShiftStartedPop();
 }
 
-// ── BİRLİKTE ÇALIŞMA: aynı şubede hâlâ AÇIK başka bir vardiya var mı? (paralel ortak)
-//    Varsa bardakları SON kapatan sayar → bu kişi bardak saymaz, sadece saat.
-function hasOpenSameBranchPartner(){
-  var a=(SUMMARY||{}).active;if(!a)return false;
+// ── CLOSING OWNER (kapatma sorumlusu) = ROL önceliğine göre, varış sırasına DEĞİL.
+//    Öncelik: Менеджер/владелец (3) > Бариста (2) > Ассистент/стажёр (1).
+//    Aynı şubede AÇIK olanlar arasında en yüksek öncelikli kişi kapatmayı yapar;
+//    eşitlikte (2 barista) en erken başlayan. Biri/başkası şubeyi zaten kapattıysa
+//    (MY_BRANCH_CLOSED_TODAY) tekrar kapatılmaz.
+function _shiftPrio(role,srole){ if(role==='owner')return 3; if(srole==='assistant')return 1; return 2; }
+function isClosingOwner(){
+  var a=(SUMMARY||{}).active;if(!a)return true; // aktif yoksa (edge) engelleme
   var myBr=parseInt(a.branch_id)||parseInt(startBranch)||parseInt(MY_BRANCH)||1;
-  return (BARISTAS||[]).some(function(x){
-    if(!x||x.id===MY_UID||!x.active)return false;
+  var actives=[{uid:MY_UID,p:_shiftPrio(MY_ROLE,(a.shift_role||'barista')),st:new Date(a.start_time).getTime()||0}];
+  (BARISTAS||[]).forEach(function(x){
+    if(!x||x.id===MY_UID||!x.active)return;
     var xb=parseInt((x.active&&x.active.branch_id)||x.bid)||1;
-    return xb===myBr;
+    if(xb!==myBr)return;
+    actives.push({uid:x.id,p:_shiftPrio(x.r,(x.active.shift_role||'barista')),st:new Date(x.active.start_time).getTime()||0});
   });
+  var maxP=Math.max.apply(null,actives.map(function(e){return e.p;}));
+  var top=actives.filter(function(e){return e.p===maxP;});
+  top.sort(function(p,q){return (p.st-q.st)||(p.uid-q.uid);}); // eşitlikte en erken başlayan
+  return !!(top[0]&&top[0].uid===MY_UID);
 }
+// Bu kişi ŞİMDİ kapatma ekranını (bardak/kasa) görsün mü?
+function shouldDoClosing(){ return isClosingOwner() && !MY_BRANCH_CLOSED_TODAY; }
 // ── Vardiya BITIR ekranı (geliş zamanı zaten kayıtlı, sadece bardak+not) ──
 function rMShiftEnd(m,b){
   const active=(SUMMARY||{}).active;
   if(!active){mView='main';render();return}
   // Stajyer (kategori does_kasa=0) → bardak/kasa YOK, sadece saatlik. Ayrı sade ekran.
   if(!MY_DOES_KASA)return rMShiftEndTrainee(m,b);
-  // Birlikte çalışma: aynı şubede hâlâ açık ortak varsa → bardakları SON kapatan sayar.
-  //  Bu kişi şimdi bardak saymaz (çift sayım/çift bonus olmaz), sadece saat girer.
-  if(hasOpenSameBranchPartner())return rMShiftEndTrainee(m,b);
+  // CLOSING OWNER: kapatma ekranını (bardak/kasa/rapor) SADECE rol-öncelikli sorumlu görür.
+  //  Değilsem (daha üst rol aktif ya da şube zaten kapatılmış) → sade saat ekranı.
+  if(!shouldDoClosing())return rMShiftEndTrainee(m,b);
   const startStr=fmtTime(active.start_time);
   const dayStr=fmtDay(active.start_time);
   // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
@@ -4320,7 +4335,7 @@ function rMShiftEndTrainee(m,b){
     +'</div>';
   }
   h+='<div class="refresh-hint" style="margin:6px 0">'+(MY_DOES_KASA
-      ?'👥 Работаете вместе — стаканы посчитает тот, кто закроет смену ПОСЛЕДНИМ. С вас — только часы.'
+      ?'👥 Стаканы и кассу закрывает ответственный по смене (менеджер → бариста → ассистент). С вас — только часы.'
       :'🎓 Стажёр — стаканы и касса не заполняются. Оплата только по часам.')+'</div>';
   h+='<div class="sec">📝 Заметка (необязательно)</div>'
     +'<textarea class="sf-note" rows="2" placeholder="'+(MY_DOES_KASA?'например: работали вдвоём':'например: стажировка')+'" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';

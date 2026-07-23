@@ -1599,6 +1599,19 @@ def build_hash_payload(db, user_id, name):
         kasa_reports = [dict(r) for r in crs]
     except Exception:
         kasa_reports = []
+    # ── CLOSING OWNER guard: bu şube, benim vardiyam başladıktan SONRA zaten kapatıldı mı?
+    #    (biri kasa raporu verdiyse tekrar kapatılmaz — rol-öncelikli sorumlu kapattı).
+    branch_closed_today = 0
+    try:
+        _actsh = get_active_shift(db, user_id)
+        if _actsh and _actsh["start_time"]:
+            _cbid = _actsh["branch_id"] or acting_branch_id(db, user_id)
+            _cc = db.execute(
+                "SELECT 1 FROM cashreports WHERE COALESCE(branch_id,1)=? AND created_at > ? LIMIT 1",
+                (int(_cbid or 1), _actsh["start_time"])).fetchone()
+            branch_closed_today = 1 if _cc else 0
+    except Exception:
+        branch_closed_today = 0
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
@@ -1668,6 +1681,7 @@ def build_hash_payload(db, user_id, name):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
+        f"my_branch_closed_today={branch_closed_today}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
