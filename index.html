@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070188;
+var APP_BUILD=2026070189;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3739,9 +3739,12 @@ function cfSalaryFx(){
 }
 function openShiftEnd(){
   shiftMoreOpen=false; // sade başla — «başka saat» ⚙️ ile açılır
+  closingReview=false; // her zaman düzenleme ekranıyla başla
   // AYNI açık vardiyanın taslağı varsa KORU (ayarlara gidip dönünce girilenler
   // kaybolmasın; yeni rate/norm zaten canlı timer+render ile yansır).
   var _act=(SUMMARY||{}).active;var _key=_act?String(_act.start_time||''):'';
+  // localStorage'daki «Сохранить черновик» taslağı bu vardiyaya aitse geri yükle.
+  try{var _sd=JSON.parse(localStorage.getItem('cf_closedraft')||'null');if(_sd&&_sd.key===_key&&_key&&_sd.draft){endDraft=_sd.draft;endDraft._key=_key;mView='shiftEnd';render();return;}}catch(e){}
   if(endDraft&&endDraft._key===_key&&_key){mView='shiftEnd';render();return}
   mView='shiftEnd';endDraft={_key:_key,drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   // Было'yu önceki vardiyanın Осталось'undan ön-doldur. Осталось BOŞ başlar (barista sonunda sayar;
@@ -4060,6 +4063,7 @@ function rMShiftEnd(m,b){
   // CLOSING OWNER: kapatma ekranını (bardak/kasa/rapor) SADECE rol-öncelikli sorumlu görür.
   //  Değilsem (daha üst rol aktif ya da şube zaten kapatılmış) → sade saat ekranı.
   if(!shouldDoClosing())return rMShiftEndTrainee(m,b);
+  if(closingReview)return rMShiftReview(m,b); // «Проверить и закрыть» → review/onay ekranı
   const startStr=fmtTime(active.start_time);
   const dayStr=fmtDay(active.start_time);
   // Manuel bitiş zamanı varsa onu kullan; yoksa şu an
@@ -4152,7 +4156,7 @@ function rMShiftEnd(m,b){
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;
   b.style.display='block';
-  b.innerHTML='<button class="mbtn grn" onclick="endShiftSave()">🔴 Завершить смену</button>';
+  b.innerHTML='<button class="mbtn grn" onclick="openClosingReview()">📋 Проверить и закрыть →</button>';
   endExpRender();
   recalcEnd();
   // Saniyelik canlı güncelleme — HER KOŞULDA çalışır (manuel saatte de):
@@ -4329,6 +4333,8 @@ async function endShiftSave(){
   cfCelebrateShiftEnd(total,hourly,bonus,liveH,ot.amount);
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
+  closingReview=false;
+  try{localStorage.removeItem('cf_closedraft')}catch(e){} // taslak temizle (kapatma tamamlandı)
   mView='main';
   render();
   // 1) Kasa raporunu gönder (await — vardiya kapatma reload'undan ÖNCE kaydedilsin)
@@ -4339,6 +4345,73 @@ async function endShiftSave(){
   }catch(e){console.warn('kasa send',e)}
   // 2) Vardiyayı kapat (sendData override → /api/action + reload)
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
+}
+// ═══ FAZ B: GÜVENLİ KAPATMA — Review/onay ekranı (Confirm'e kadar HİÇBİR ŞEY kaydolmaz) ═══
+var closingReview=false;
+function openClosingReview(){ closingReview=true; render(); try{scrollTopAll()}catch(e){} }
+// Review özeti — endShiftSave ile AYNI hesap (sadece gösterim; kayıt YOK)
+function _closingSummary(){
+  var active=(SUMMARY||{}).active||{};
+  var effEnd=(endDraft.endTime?new Date(endDraft.endTime):new Date());
+  var _ph=paidHours(active.start_time, effEnd.toISOString());var liveH=_ph.paid;
+  var bylo=endDraft.bylo||{},zav=endDraft.zavoz||{},ost=endDraft.ostalos||{};
+  var cups=[],drinkBonus=0,totalCups=0;
+  DRINK_LIST.forEach(function(d){
+    var b=parseInt(bylo[d.id])||0,r=parseInt(zav[d.id])||0;
+    var oRaw=ost[d.id],counted=!(oRaw===''||oRaw==null);
+    var s=counted?Math.max(0,b+r-(parseInt(oRaw)||0)):0;
+    if(s>0){cups.push({l:d.c+' '+d.l,s:s});totalCups+=s;drinkBonus+=s*drinkRate(d);}
+  });
+  var desN=parseInt(endDraft.dessertsTotal)||0;var desBonus=desN*DESSERT_RATE;
+  var bonus=drinkBonus+desBonus;
+  var hourly=Math.round(liveH*HOURLY_RATE);var ot=liveOvertime(liveH);
+  var exps=(endDraft.kasa&&endDraft.kasa.expenses||[]).filter(function(e){return (e.n&&String(e.n).trim())||e.a;}).map(function(e){return {n:e.n||'',a:scaleK(e.a)};});
+  var expTotal=exps.reduce(function(a,e){return a+e.a;},0);
+  return {liveH:liveH,cups:cups,totalCups:totalCups,bonus:bonus,hourly:hourly,ot:ot,total:hourly+bonus+ot.amount,exps:exps,expTotal:expTotal};
+}
+function rMShiftReview(m,b){
+  var active=(SUMMARY||{}).active;if(!active){closingReview=false;mView='main';render();return}
+  var S=_closingSummary();
+  var h='<button class="back" onclick="closingReview=false;render()">‹ Назад к редактированию</button>';
+  h+='<div class="sec">📋 Проверьте перед закрытием</div>';
+  h+='<div class="refresh-hint" style="margin-top:0">Ничего не сохранится, пока вы не нажмёте «Подтвердить закрытие».</div>';
+  h+='<div class="det-card"><div class="det-h">🥤 Продажи ('+S.totalCups+' шт)</div>';
+  if(S.cups.length)S.cups.forEach(function(c){h+='<div class="det-row"><span>'+escH(c.l)+'</span><span>× '+c.s+'</span></div>';});
+  else h+='<div class="det-row"><span style="color:var(--t3)">Стаканы не посчитаны</span><span>—</span></div>';
+  h+='</div>';
+  if(S.exps.length){
+    h+='<div class="det-card"><div class="det-h">💸 Расходы</div>';
+    S.exps.forEach(function(e){h+='<div class="det-row"><span>'+escH(e.n||'—')+'</span><span>'+fmt(e.a)+' сум</span></div>';});
+    h+='<div class="det-total"><span>Итого расходы</span><span>'+fmt(S.expTotal)+' сум</span></div></div>';
+  }
+  h+='<div class="sec">📝 Заметка</div>';
+  h+='<textarea class="sf-note" rows="2" placeholder="комментарий к закрытию (необязательно)" oninput="endDraft.note=this.value">'+escH(endDraft.note||'')+'</textarea>';
+  h+='<div class="sf-total">'
+    +'<div class="sf-tot-row"><span>Часы '+fmtH(S.liveH)+'</span><span>'+fmt(S.hourly)+'</span></div>'
+    +((S.bonus>0)?'<div class="sf-tot-row"><span>🥤 Бонус</span><span>+'+fmt(S.bonus)+'</span></div>':'')
+    +((S.ot.amount>0)?'<div class="sf-tot-row"><span>⏱ Переработка</span><span>+'+fmt(S.ot.amount)+'</span></div>':'')
+    +'<div class="sf-tot-big"><span>ИТОГО за смену</span><span>'+fmt(S.total)+' сум</span></div>'
+  +'</div>';
+  h+='<button onclick="saveClosingDraft()" style="width:100%;margin-top:10px;padding:11px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:13px;font-weight:700;cursor:pointer">💾 Сохранить черновик</button>';
+  h+='<div class="footer">XSYN</div>';
+  m.innerHTML=h;
+  b.style.display='block';
+  b.innerHTML='<button class="mbtn grn" onclick="confirmClosing()">✅ Подтвердить закрытие · '+fmt(S.total)+' сум</button>';
+}
+function saveClosingDraft(){
+  var active=(SUMMARY||{}).active;if(!active)return;
+  try{localStorage.setItem('cf_closedraft',JSON.stringify({key:String(active.start_time||''),draft:endDraft}));}catch(e){}
+  toast('💾 Черновик сохранён');
+  closingReview=false;mView='main';render();
+}
+async function confirmClosing(){
+  // Bu arada başkası kapattıysa / kapatma devrolduysa → engelle (çift kapatma).
+  if(!shouldDoClosing()){
+    await cfAsk('⚠️ Эта смена уже закрыта или закрытие передано другому сотруднику.\nПовторное закрытие недоступно.',{okText:'Понятно',icon:'⚠️'});
+    closingReview=false;mView='main';render();return;
+  }
+  closingReview=false;
+  await endShiftSave();
 }
 
 // ═══ STAJYER vardiya-kapatma — bardak/kasa YOK, sadece saatlik ═══
