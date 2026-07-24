@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070187;
+var APP_BUILD=2026070188;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -5518,17 +5518,25 @@ function rMLoanRequest(m,b){
     h+='<div class="loan-amt-preset '+(sel?'on':'')+'" onclick="setLoanAmt('+v+')">'+fmt(v)+'</div>';
   });
   h+='</div>';
-  h+='<input class="loan-amt-input" type="number" inputmode="numeric" placeholder="0" value="'+(loanDraft.amount||'')+'" oninput="loanDraft.amount=this.value">';
+  h+='<input class="loan-amt-input" type="number" inputmode="numeric" placeholder="0" value="'+(loanDraft.amount||'')+'" oninput="loanDraft.amount=this.value;recalcLoan()">';
   h+='<div style="font-size:11px;color:var(--t3);font-weight:700;letter-spacing:.5px;margin-top:14px">ПРИЧИНА</div>';
-  h+='<textarea class="loan-reason" rows="3" placeholder="Например: срочно нужны деньги до зарплаты — лекарства" oninput="loanDraft.reason=this.value">'+escH(loanDraft.reason||'')+'</textarea>';
+  h+='<textarea class="loan-reason" rows="3" placeholder="Например: срочно нужны деньги до зарплаты — лекарства" oninput="loanDraft.reason=this.value;recalcLoan()">'+escH(loanDraft.reason||'')+'</textarea>';
   h+='<div style="font-size:11px;color:var(--t3);margin-top:12px;line-height:1.4">⚠️ Сумма будет вычтена из ближайшей зарплаты после одобрения шефом.</div>';
   h+='</div>';
-  const amt=parseInt(loanDraft.amount)||0,reasonOk=(loanDraft.reason||'').trim().length>=3;
+  const amt=parseInt(loanDraft.amount)||0,reasonOk=(loanDraft.reason||'').trim().length>=1;
   const ok=amt>0&&reasonOk;
   h+='<div class="footer">XSYN</div>';
   m.innerHTML=h;
   b.style.display='block';
-  b.innerHTML='<button class="mbtn" '+(ok?'':'disabled')+' onclick="sendLoanRequest()">'+(ok?'💸 Отправить шефу · '+fmt(amt)+' сум':(amt?'Укажите причину':'Введите сумму'))+'</button>';
+  b.innerHTML='<button class="mbtn" id="lnBtn" '+(ok?'':'disabled')+' onclick="sendLoanRequest()">'+(ok?'💸 Отправить шефу · '+fmt(amt)+' сум':(amt?'Укажите причину':'Введите сумму'))+'</button>';
+}
+// Miktar/neden yazılırken «Отправить» butonunu CANLI güncelle (full render YOK → focus korunur).
+function recalcLoan(){
+  var amt=parseInt(loanDraft.amount)||0, reasonOk=(loanDraft.reason||'').trim().length>=1;
+  var ok=amt>0&&reasonOk;
+  var el=document.getElementById('lnBtn');if(!el)return;
+  el.disabled=!ok;
+  el.textContent=ok?('💸 Отправить шефу · '+fmt(amt)+' сум'):(amt?'Укажите причину':'Введите сумму');
 }
 function sendLoanRequest(){
   const amt=parseInt(loanDraft.amount)||0,reason=(loanDraft.reason||'').trim();
