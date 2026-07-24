@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070190;
+var APP_BUILD=2026070191;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -3169,10 +3169,15 @@ function rShift(m,b){
       },1000);
     }
     // Sade: sadece «Начать смену». Diğer her şey ⚙️ içinde gizli.
-    h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
-    // Nerede + hangi rolle başlayacağı (SLOTS'tan; şube ⚙️'den değiştirilir)
-    (function(){var _sb=startBranch||MY_BRANCH||1;var _mr=((SLOTS||{})[String(_sb)]||{}).my_role||'';
-      h+='<div style="text-align:center;font-size:11.5px;color:var(--t3);margin-top:8px">🏢 '+escH(branchName(_sb))+(_mr?' · '+(_mr==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста'):'')+'</div>';})();
+    // Büyük «Начать смену» (şimdi başlat) — SADECE panel kapalıyken. Panel açıkken gizlenir
+    //  ki başka saat/şube ayarlayanlar alışkanlıkla buna basıp «şimdi» başlatmasın;
+    //  panel kapanınca geri gelir. Başlatma özelliği aynen (startShiftNow = şimdi).
+    if(!shiftMoreOpen){
+      h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
+      // Nerede + hangi rolle başlayacağı (SLOTS'tan; şube ⚙️'den değiştirilir)
+      (function(){var _sb=startBranch||MY_BRANCH||1;var _mr=((SLOTS||{})[String(_sb)]||{}).my_role||'';
+        h+='<div style="text-align:center;font-size:11.5px;color:var(--t3);margin-top:8px">🏢 '+escH(branchName(_sb))+(_mr?' · '+(_mr==='assistant'?'🎓 Ассистент/стажёр':'☕ Бариста'):'')+'</div>';})();
+    }
     h+='<button onclick="shiftMoreOpen=!shiftMoreOpen;render()" style="width:100%;margin-top:8px;padding:9px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t3);font-size:12.5px;font-weight:600;cursor:pointer">'+(shiftMoreOpen?'▴ Скрыть':(MY_ROLE==='owner'?'⚙️ За сотрудника · другое время / филиал':'⚙️ Другое время / филиал'))+'</button>';
     if(shiftMoreOpen){
       h+='<div style="margin-top:10px;padding:12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">';
