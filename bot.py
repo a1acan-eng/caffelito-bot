@@ -1303,6 +1303,47 @@ def get_active_shift(db, user_id):
         "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
 
 
+def _closing_override(db, bid):
+    """meta'daki closing_owner_{bid} transfer override'ı (taze ise) → dict, yoksa None."""
+    try:
+        row = db.execute("SELECT val FROM meta WHERE k=?", (f"closing_owner_{int(bid or 1)}",)).fetchone()
+        if not row or not row["val"]:
+            return None
+        d = json.loads(row["val"])
+        at = datetime.fromisoformat(d.get("at"))
+        if (datetime.now(TZ).replace(tzinfo=None) - at).total_seconds() > 18 * 3600:
+            return None
+        return d
+    except Exception:
+        return None
+
+
+def closing_owner_uid(db, bid):
+    """Şubenin kapatma sorumlusu: transfer override (kişi hâlâ aktifse) → yoksa ROL
+    önceliği (владелец>бариста>ассистент; eşitlikte en erken başlayan). Yoksa None."""
+    bid = int(bid or 1)
+    ov = _closing_override(db, bid)
+    if ov and ov.get("uid") and get_active_shift(db, int(ov["uid"])):
+        return int(ov["uid"])
+    rows = db.execute(
+        "SELECT s.user_id AS uid, s.shift_role AS srole, s.start_time AS st, u.role AS urole "
+        "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
+        "WHERE COALESCE(s.branch_id,1)=? AND s.start_time IS NOT NULL AND s.end_time IS NULL",
+        (bid,)).fetchall()
+    def _prio(r):
+        if (r["urole"] or "") == "owner":
+            return 3
+        if (r["srole"] or "barista") == "assistant":
+            return 1
+        return 2
+    best = None
+    for r in rows:
+        p = _prio(r)
+        if best is None or p > best[0] or (p == best[0] and (r["st"] or "") < (best[1] or "")):
+            best = (p, r["st"], r["uid"])
+    return best[2] if best else None
+
+
 def _parse_user_time(s):
     """
     HTML'den gelen zamanı parse et. Kabul edilenler:
@@ -1602,6 +1643,7 @@ def build_hash_payload(db, user_id, name):
     # ── CLOSING OWNER guard: bu şube, benim vardiyam başladıktan SONRA zaten kapatıldı mı?
     #    (biri kasa raporu verdiyse tekrar kapatılmaz — rol-öncelikli sorumlu kapattı).
     branch_closed_today = 0
+    closing_override = 0  # transfer ile atanmış kapatma sorumlusu uid (varsa)
     try:
         _actsh = get_active_shift(db, user_id)
         if _actsh and _actsh["start_time"]:
@@ -1610,6 +1652,9 @@ def build_hash_payload(db, user_id, name):
                 "SELECT 1 FROM cashreports WHERE COALESCE(branch_id,1)=? AND created_at > ? LIMIT 1",
                 (int(_cbid or 1), _actsh["start_time"])).fetchone()
             branch_closed_today = 1 if _cc else 0
+            _cov = _closing_override(db, _cbid)
+            if _cov and _cov.get("uid") and get_active_shift(db, int(_cov["uid"])):
+                closing_override = int(_cov["uid"])
     except Exception:
         branch_closed_today = 0
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
@@ -1682,6 +1727,7 @@ def build_hash_payload(db, user_id, name):
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"my_branch_closed_today={branch_closed_today}",
+        f"closing_override_uid={closing_override}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
@@ -4516,6 +4562,44 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"⚖️ Корректировка для *{_anm}*: {_sign}{fmt_sum(amount)} сум"
                 + (f"\n📝 {note}" if note else ""), parse_mode="Markdown")
 
+        elif action == "transfer_closing":
+            # Kapatma sorumluluğunu (closing owner) başka bir AKTİF çalışana devret.
+            # Sadece PERMISSION değişir — saat/maaş/bonus DEĞİŞMEZ. Yetki: mevcut
+            # sorumlu VEYA владелец. Hedef aynı şubede açık vardiyada olmalı.
+            db = get_db()
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            _me_act = get_active_shift(db, user.id)
+            _bid = (_me_act["branch_id"] if _me_act else None) or acting_branch_id(db, user.id)
+            _cur_owner = closing_owner_uid(db, _bid)
+            if get_role(db, user.id) != "owner" and _cur_owner != user.id:
+                await update.message.reply_text("❌ Передать закрытие может только текущий ответственный или владелец.")
+                return
+            _t_act = get_active_shift(db, target_id) if target_id else None
+            if not _t_act:
+                await update.message.reply_text("❌ Сотрудник не на смене.")
+                return
+            _tbid = _t_act["branch_id"] or _bid
+            if int(_tbid or 1) != int(_bid or 1):
+                await update.message.reply_text("❌ Сотрудник работает в другом филиале.")
+                return
+            _tnm = display_name_for(db, target_id, fallback="?")
+            db.execute("INSERT OR REPLACE INTO meta(k,val) VALUES(?,?)",
+                       (f"closing_owner_{int(_bid or 1)}",
+                        json.dumps({"uid": target_id, "nm": _tnm, "by": user.id, "at": now.isoformat()}, ensure_ascii=False)))
+            db.commit()
+            log_action(db, "transfer_closing", user.id, user.first_name, target_id, _tnm,
+                       {"branch_id": int(_bid or 1)})
+            await update.message.reply_text(f"🔄 Закрытие передано: *{_tnm}*", parse_mode="Markdown")
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text="🔄 Вам передали закрытие смены. Теперь стаканы/кассу/отчёт закрываете вы.")
+            except Exception:
+                pass
+
         elif action == "delete_record":
             # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
             db = get_db()
@@ -4867,6 +4951,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ─── Kasa / Сменный отчёт (vardiya kapanış raporu) ───
         elif action == "cash_report":
             from html import escape as esc_html
+            # ── ÇİFT KAPATMA ENGELİ (#5): bu şube, benim vardiyam başladıktan SONRA
+            #    başka biri tarafından zaten kapatıldıysa → duplicate kasa raporu YARATMA.
+            #    (Saat yine de shift_end ile kapanır; sadece kapatma tekrarı engellenir.) ──
+            _my_act_cr = get_active_shift(db, user.id)
+            _cr_bid_chk = acting_branch_id(db, user.id)
+            if _my_act_cr and _my_act_cr["start_time"]:
+                _prev_cr = db.execute(
+                    "SELECT user_name, created_at FROM cashreports WHERE COALESCE(branch_id,1)=? "
+                    "AND created_at > ? AND user_id != ? ORDER BY id DESC LIMIT 1",
+                    (int(_cr_bid_chk or 1), _my_act_cr["start_time"], user.id)).fetchone()
+                if _prev_cr:
+                    try:
+                        _pt = datetime.fromisoformat(_prev_cr["created_at"]).strftime("%H:%M")
+                    except Exception:
+                        _pt = "?"
+                    await update.message.reply_text(
+                        f"⚠️ Смена уже закрыта: *{_prev_cr['user_name'] or '?'}* в {_pt}.\n"
+                        "Повторное закрытие не требуется — ваши часы будут учтены.",
+                        parse_mode="Markdown")
+                    return
             cups = data.get("cups", [])  # [{n,b,r,o,s}]
             itg = int(data.get("itogo", 0) or 0)
             clk = int(data.get("click", 0) or 0)
@@ -4905,6 +5009,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
                  json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg, _cr_branch))
             db.commit()
+            # Kapatma yapıldı → bu şubenin transfer override'ını temizle (oturum bitti).
+            try:
+                db.execute("DELETE FROM meta WHERE k=?", (f"closing_owner_{int(_cr_branch or 1)}",))
+                db.commit()
+            except Exception:
+                pass
             if group_id:
                 try:
                     t = "<b>📋 СМЕННЫЙ ОТЧЁТ — CAFFELITO</b>\n"

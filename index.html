@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070185;
+var APP_BUILD=2026070186;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1077,7 +1077,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);MY_BRANCH_CLOSED_TODAY=(P.get('my_branch_closed_today')||'0')==='1';
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);MY_BRANCH_CLOSED_TODAY=(P.get('my_branch_closed_today')||'0')==='1';CLOSING_OVERRIDE_UID=parseInt(P.get('closing_override_uid'))||0;
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1688,6 +1688,9 @@ try{MY_DOES_KASA=(HP.get('my_does_kasa')||'1')!=='0'}catch(e){MY_DOES_KASA=true}
 // Closing owner guard: bu şube benim vardiyamdan sonra zaten kapatıldı mı (backend).
 let MY_BRANCH_CLOSED_TODAY=false;
 try{MY_BRANCH_CLOSED_TODAY=(HP.get('my_branch_closed_today')||'0')==='1'}catch(e){MY_BRANCH_CLOSED_TODAY=false}
+// Transfer ile atanmış kapatma sorumlusu uid (0 = yok → rol önceliği geçerli).
+let CLOSING_OVERRIDE_UID=0;
+try{CLOSING_OVERRIDE_UID=parseInt(HP.get('closing_override_uid'))||0}catch(e){CLOSING_OVERRIDE_UID=0}
 // Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
 var TIPS_ON=false;
 // ── Güvenlik (Профиль → Безопасность): PIN hash'i (asla düz metin PIN tutulmaz) ──
@@ -4009,8 +4012,18 @@ async function startShiftCustomTime(){
 //    eşitlikte (2 barista) en erken başlayan. Biri/başkası şubeyi zaten kapattıysa
 //    (MY_BRANCH_CLOSED_TODAY) tekrar kapatılmaz.
 function _shiftPrio(role,srole){ if(role==='owner')return 3; if(srole==='assistant')return 1; return 2; }
+// Bu şubede şu an AÇIK olan bir kişi (uid) hâlâ aktif mi?
+function _isActiveInMyBranch(uid){
+  var a=(SUMMARY||{}).active;var myBr=a?(parseInt(a.branch_id)||parseInt(startBranch)||parseInt(MY_BRANCH)||1):1;
+  if(uid===MY_UID)return !!a;
+  return (BARISTAS||[]).some(function(x){return x&&x.id===uid&&x.active&&(parseInt((x.active&&x.active.branch_id)||x.bid)||1)===myBr;});
+}
 function isClosingOwner(){
   var a=(SUMMARY||{}).active;if(!a)return true; // aktif yoksa (edge) engelleme
+  // TRANSFER override: atanan kişi hâlâ aktifse kapatma sorumlusu ODUR (rol önceliğini ezer).
+  if(CLOSING_OVERRIDE_UID&&_isActiveInMyBranch(CLOSING_OVERRIDE_UID)){
+    return MY_UID===CLOSING_OVERRIDE_UID;
+  }
   var myBr=parseInt(a.branch_id)||parseInt(startBranch)||parseInt(MY_BRANCH)||1;
   var actives=[{uid:MY_UID,p:_shiftPrio(MY_ROLE,(a.shift_role||'barista')),st:new Date(a.start_time).getTime()||0}];
   (BARISTAS||[]).forEach(function(x){
@@ -4026,6 +4039,16 @@ function isClosingOwner(){
 }
 // Bu kişi ŞİMDİ kapatma ekranını (bardak/kasa) görsün mü?
 function shouldDoClosing(){ return isClosingOwner() && !MY_BRANCH_CLOSED_TODAY; }
+// 🔄 Kapatmayı başka aktif çalışana devret (SADECE yetki değişir; saat/maaş/bonus AYNEN).
+var transferOpen=false;
+async function saveTransferClosing(uid,nm){
+  if(!(await cfAsk('Передать закрытие смены «'+nm+'»?\nОтветственность за стаканы/кассу/отчёт перейдёт ему. Часы и зарплата НЕ меняются.',{okText:'Передать',icon:'🔄'})))return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'transfer_closing',target:uid}))}catch(e){console.warn(e)}}
+  CLOSING_OVERRIDE_UID=uid; transferOpen=false; // optimistik → artık sorumlu değilim
+  toast('🔄 Закрытие передано: '+nm);
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  mView='main';render(); // 600ms sonra refreshState kesinleştirir
+}
 // ── Vardiya BITIR ekranı (geliş zamanı zaten kayıtlı, sadece bardak+not) ──
 function rMShiftEnd(m,b){
   const active=(SUMMARY||{}).active;
@@ -4053,6 +4076,22 @@ function rMShiftEnd(m,b){
   +'</div>';
   // Kapalı saat / max limit kırılımı — barista "az yazıldı" sanmasın (id'li → canlı güncellenir)
   h+='<div id="seBreak">'+endBreakdownHTML(_ph)+'</div>';
+  // 🔄 Kapatmayı devret (Передать закрытие) — aynı şubede aktif başka çalışan varsa
+  (function(){
+    var myBr=parseInt(active.branch_id)||parseInt(startBranch)||parseInt(MY_BRANCH)||1;
+    var mates=(BARISTAS||[]).filter(function(x){return x&&x.id!==MY_UID&&x.active&&(parseInt((x.active&&x.active.branch_id)||x.bid)||1)===myBr;});
+    if(!mates.length)return;
+    h+='<button onclick="transferOpen=!transferOpen;render()" style="width:100%;margin:2px 0 4px;padding:8px;border-radius:var(--rp);border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:12px;font-weight:600;cursor:pointer">'+(transferOpen?'▴ Скрыть':'🔄 Передать закрытие другому')+'</button>';
+    if(transferOpen){
+      h+='<div style="margin-bottom:6px;padding:10px 12px;border:1px solid var(--border2);border-radius:12px;background:var(--card)">'
+        +'<div style="font-size:11px;color:var(--t3);margin-bottom:8px">Ответственность за стаканы/кассу/отчёт перейдёт выбранному. Часы и зарплата НЕ меняются.</div>';
+      mates.forEach(function(x){
+        var _ico=((x.active&&x.active.shift_role)==='assistant')?'🎓':(x.r==='owner'?'👑':'☕');
+        h+='<button onclick="saveTransferClosing('+x.id+',\''+esc(x.n)+'\')" style="width:100%;text-align:left;margin-bottom:6px;padding:10px 12px;border:1px solid var(--border2);border-radius:10px;background:transparent;color:var(--t1);font-size:13px;font-weight:600;cursor:pointer">'+_ico+' '+escH(x.n)+' <span style="color:var(--t3);font-weight:500;font-size:11px">· с '+fmtTime(x.active.start_time)+'</span></button>';
+      });
+      h+='</div>';
+    }
+  })();
   // Manuel bitiş saati alanı (telefon kapanmıştı vs.)
   const curHHMM=String(effEnd.getHours()).padStart(2,'0')+':'+String(effEnd.getMinutes()).padStart(2,'0');
   const curDate=effEnd.getFullYear()+'-'+String(effEnd.getMonth()+1).padStart(2,'0')+'-'+String(effEnd.getDate()).padStart(2,'0');
