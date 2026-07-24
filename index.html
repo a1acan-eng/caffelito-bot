@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070189;
+var APP_BUILD=2026070190;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1077,7 +1077,7 @@ function refreshState(){
         PAY_CFG=J('pay_cfg','{}');
         HOURLY_RATE=parseInt(P.get('pay_rate'))||HOURLY_RATE;
         SAL_CATS=J('sal_cats','[]');MY_CAT=J('my_cat','{}');MY_RATE=parseInt(P.get('my_rate'))||MY_RATE;HOURLY_RATE=MY_RATE||HOURLY_RATE;
-        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);MY_BRANCH_CLOSED_TODAY=(P.get('my_branch_closed_today')||'0')==='1';CLOSING_OVERRIDE_UID=parseInt(P.get('closing_override_uid'))||0;
+        MY_BONUS_SYS=(P.get('my_bonus_sys')||MY_BONUS_SYS);CAFFELITO_BONUS=J('caffelito_bonus','{}');OT_CFG=J('ot_cfg','{}');PAY_WIN=J('my_pay_window','{}');PRODUCTS=J('products','[]');MY_PRODUCT_OK=(P.get('my_product_ok')==='1');PROD_REPORT=J('prod_report','{}');MY_DOES_KASA=(P.get('my_does_kasa')||'1')!=='0';SLOTS=J('slots','{}');MY_PWH=(P.get('pwh')||MY_PWH);MY_BRANCH_CLOSED_TODAY=(P.get('my_branch_closed_today')||'0')==='1';CLOSING_OVERRIDE_UID=parseInt(P.get('closing_override_uid'))||0;MY_LAST_CLOSING_AT=P.get('my_last_closing_at')||'';
         MY_BRANCH=parseInt(P.get('my_branch'))||MY_BRANCH;
         if(ACTIVE_BRANCH&&!BRANCHES.some(function(bb){return bb.id===ACTIVE_BRANCH})){ACTIVE_BRANCH=0;try{localStorage.removeItem('cf_active_branch')}catch(e){}}
         PRICES=J('prices','{}');
@@ -1691,6 +1691,9 @@ try{MY_BRANCH_CLOSED_TODAY=(HP.get('my_branch_closed_today')||'0')==='1'}catch(e
 // Transfer ile atanmış kapatma sorumlusu uid (0 = yok → rol önceliği geçerli).
 let CLOSING_OVERRIDE_UID=0;
 try{CLOSING_OVERRIDE_UID=parseInt(HP.get('closing_override_uid'))||0}catch(e){CLOSING_OVERRIDE_UID=0}
+// Son kapatma (kasa raporu) zamanı — «Изменить закрытие» 10 dk penceresi için.
+let MY_LAST_CLOSING_AT='';
+try{MY_LAST_CLOSING_AT=HP.get('my_last_closing_at')||''}catch(e){MY_LAST_CLOSING_AT=''}
 // Bahşiş (Чаевые) özelliği gizli (kullanıcı isteği). Kod duruyor → true yapınca geri gelir.
 var TIPS_ON=false;
 // ── Güvenlik (Профиль → Безопасность): PIN hash'i (asla düz metin PIN tutulmaz) ──
@@ -3151,6 +3154,20 @@ function rShift(m,b){
     },1000);
   } else {
     if((BRANCHES||[]).length>1 && (!startBranch||!BRANCHES.some(function(b){return b.id===startBranch})))startBranch=(BRANCHES[0]&&BRANCHES[0].id)||1;
+    // 🔄 FAZ C: son kapatmayı 10 dk içinde yeniden aç (düzeltme için) — geri sayımlı banner.
+    if(reopenRemainingMs()>0){
+      h+='<div style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--gold-border);background:var(--gold-bg);border-radius:14px">'
+        +'<div style="font-size:13px;font-weight:800;color:var(--t1);margin-bottom:5px">✅ Смена закрыта</div>'
+        +'<div style="font-size:11.5px;color:var(--t2);margin-bottom:9px">Ошиблись? Закрытие можно изменить ещё <b id="reopenCd">'+fmtReopenCd(reopenRemainingMs())+'</b></div>'
+        +'<button onclick="reopenClosing()" style="width:100%;padding:10px;border-radius:var(--rp);border:1px solid var(--gold);background:transparent;color:var(--gold2);font-size:13px;font-weight:700;cursor:pointer">🔄 Изменить закрытие</button>'
+      +'</div>';
+      if(window._reopenTimer)clearInterval(window._reopenTimer);
+      window._reopenTimer=setInterval(function(){
+        var el=document.getElementById('reopenCd');var rem=reopenRemainingMs();
+        if(!el||rem<=0){clearInterval(window._reopenTimer);window._reopenTimer=null;if(tab==='shift')render();return;}
+        el.textContent=fmtReopenCd(rem);
+      },1000);
+    }
     // Sade: sadece «Начать смену». Diğer her şey ⚙️ içinde gizli.
     h+='<button class="btn-start" onclick="startShiftNow()"><span class="ic">▶</span>Начать смену</button>';
     // Nerede + hangi rolle başlayacağı (SLOTS'tan; şube ⚙️'den değiştirilir)
@@ -3743,8 +3760,12 @@ function openShiftEnd(){
   // AYNI açık vardiyanın taslağı varsa KORU (ayarlara gidip dönünce girilenler
   // kaybolmasın; yeni rate/norm zaten canlı timer+render ile yansır).
   var _act=(SUMMARY||{}).active;var _key=_act?String(_act.start_time||''):'';
-  // localStorage'daki «Сохранить черновик» taslağı bu vardiyaya aitse geri yükle.
-  try{var _sd=JSON.parse(localStorage.getItem('cf_closedraft')||'null');if(_sd&&_sd.key===_key&&_key&&_sd.draft){endDraft=_sd.draft;endDraft._key=_key;mView='shiftEnd';render();return;}}catch(e){}
+  // localStorage'daki «Сохранить черновик»/kapatma taslağı bu vardiyaya aitse geri yükle;
+  //  BAŞKA vardiyaya aitse (key uyuşmaz) → stale, temizle.
+  try{var _sd=JSON.parse(localStorage.getItem('cf_closedraft')||'null');
+    if(_sd&&_sd.key===_key&&_key&&_sd.draft){endDraft=_sd.draft;endDraft._key=_key;mView='shiftEnd';render();return;}
+    if(_sd&&_sd.key!==_key){localStorage.removeItem('cf_closedraft');}
+  }catch(e){}
   if(endDraft&&endDraft._key===_key&&_key){mView='shiftEnd';render();return}
   mView='shiftEnd';endDraft={_key:_key,drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   // Было'yu önceki vardiyanın Осталось'undan ön-doldur. Осталось BOŞ başlar (barista sonunda sayar;
@@ -4044,6 +4065,22 @@ function isClosingOwner(){
 }
 // Bu kişi ŞİMDİ kapatma ekranını (bardak/kasa) görsün mü?
 function shouldDoClosing(){ return isClosingOwner() && !MY_BRANCH_CLOSED_TODAY; }
+// FAZ C: son kapatmadan bu yana kalan «Изменить закрытие» süresi (ms). 10 dk sonra 0.
+function reopenRemainingMs(){
+  if(!MY_LAST_CLOSING_AT)return 0;
+  var t=new Date(MY_LAST_CLOSING_AT).getTime();if(isNaN(t))return 0;
+  var rem=10*60*1000-(gT().getTime()-t);return rem>0?rem:0;
+}
+function fmtReopenCd(ms){var s=Math.max(0,Math.floor(ms/1000));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');}
+async function reopenClosing(){
+  if(reopenRemainingMs()<=0){toast('🔒 Закрытие заблокировано — прошло 10 минут');return;}
+  if(!(await cfAsk('Открыть последнее закрытие заново?\nСмена снова станет активной — внесите правки и закройте ещё раз.',{okText:'Открыть',icon:'🔄'})))return;
+  if(tg&&tg.sendData){try{tg.sendData(JSON.stringify({action:'reopen_closing'}))}catch(e){console.warn(e)}}
+  toast('🔄 Закрытие открывается…');
+  if(tg)tg.HapticFeedback?.notificationOccurred('success');
+  MY_LAST_CLOSING_AT=''; // optimistik: banner kalksın (600ms sonra refreshState → active geri gelir)
+  render();
+}
 // 🔄 Kapatmayı başka aktif çalışana devret (SADECE yetki değişir; saat/maaş/bonus AYNEN).
 var transferOpen=false;
 async function saveTransferClosing(uid,nm){
@@ -4334,7 +4371,9 @@ async function endShiftSave(){
   if(tg)tg.HapticFeedback?.notificationOccurred('success');
   endDraft={drinks:{},desserts:{},note:'',endTime:'',bylo:{},zavoz:{},ostalos:{},showZavoz:false,coffeeKg:'',kasa:{click:0,payme:0,karta:0,terminal:0,itogo:0,vyshlo:0,expenses:[]}};
   closingReview=false;
-  try{localStorage.removeItem('cf_closedraft')}catch(e){} // taslak temizle (kapatma tamamlandı)
+  // NOT: taslağı burada SİLMEYİZ — «Изменить закрытие» (10 dk) yeniden açınca aynı
+  //  vardiyaya geri yüklensin diye localStorage'da kalır. Farklı vardiya kapatılırken
+  //  openShiftEnd stale taslağı (key uyuşmazsa) temizler.
   mView='main';
   render();
   // 1) Kasa raporunu gönder (await — vardiya kapatma reload'undan ÖNCE kaydedilsin)

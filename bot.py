@@ -1670,6 +1670,15 @@ def build_hash_payload(db, user_id, name):
                 closing_override = int(_cov["uid"])
     except Exception:
         branch_closed_today = 0
+    # Bu kullanıcının SON kapatması (kasa raporu created_at) — «Изменить закрытие» 10 dk penceresi.
+    last_closing_at = ""
+    try:
+        _lc = db.execute("SELECT created_at FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                         (user_id,)).fetchone()
+        if _lc and _lc["created_at"]:
+            last_closing_at = _lc["created_at"]
+    except Exception:
+        last_closing_at = ""
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
@@ -1741,6 +1750,7 @@ def build_hash_payload(db, user_id, name):
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"my_branch_closed_today={branch_closed_today}",
         f"closing_override_uid={closing_override}",
+        f"my_last_closing_at={quote(last_closing_at)}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
@@ -4612,6 +4622,58 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     text="🔄 Вам передали закрытие смены. Теперь стаканы/кассу/отчёт закрываете вы.")
             except Exception:
                 pass
+
+        elif action == "reopen_closing":
+            # FAZ C: kapatmayı 10 DK içinde yeniden aç (düzeltme için). Sorumlu kendi
+            # kapatmasını, владелец herhangi birininkini açabilir. Vardiya yeniden aktive
+            # edilir (hesap sıfırlanır), kasa raporu + otomatik günlük-bonus ödemesi geri
+            # alınır → kişi düzeltip TEKRAR kapatır. 10 dk sonra KİLİT.
+            db = get_db()
+            try:
+                target_id = int(data.get("target") or user.id)
+            except Exception:
+                target_id = user.id
+            if target_id != user.id and get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Открыть чужое закрытие может только владелец.")
+                return
+            cr = db.execute("SELECT * FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                            (target_id,)).fetchone()
+            if not cr:
+                await update.message.reply_text("ℹ️ Нет закрытия для повторного открытия.")
+                return
+            try:
+                _cat = datetime.fromisoformat(cr["created_at"])
+            except Exception:
+                _cat = None
+            if not _cat or (now - _cat).total_seconds() > 10 * 60:
+                await update.message.reply_text("🔒 Закрытие заблокировано — прошло больше 10 минут.")
+                return
+            # İlgili vardiyayı yeniden aktive et (aynı start_time'lı kapanmış vardiya)
+            sh = db.execute(
+                "SELECT * FROM shifts WHERE user_id=? AND start_time=? AND end_time IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (target_id, cr["start_time"])).fetchone()
+            if sh:
+                db.execute("UPDATE shifts SET end_time=NULL, hours=0, bonus=0, hourly_pay=0, total=0, "
+                           "overtime=0, overtime_h=0 WHERE id=?", (sh["id"],))
+            # Otomatik günlük-bonus ödemesini geri al (kasa raporuyla AYNI paid_at ile eşleşir)
+            if (cr["daily_pay"] or 0) > 0:
+                db.execute("DELETE FROM payments WHERE user_id=? AND paid_at=? AND amount=?",
+                           (target_id, cr["created_at"], cr["daily_pay"]))
+            # Kasa raporunu sil (yeniden kapatınca taze oluşur; duplicate/guard temizlenir)
+            db.execute("DELETE FROM cashreports WHERE id=?", (cr["id"],))
+            db.commit()
+            _rnm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "reopen_closing", user.id, user.first_name, target_id, _rnm,
+                       {"cashreport_id": cr["id"], "start_time": cr["start_time"]})
+            await update.message.reply_text(
+                "🔄 Закрытие открыто заново. Внесите правки и закройте смену ещё раз.")
+            if target_id != user.id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_id,
+                        text="🔄 Владелец открыл ваше закрытие для правок. Закройте смену ещё раз.")
+                except Exception:
+                    pass
 
         elif action == "delete_record":
             # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
