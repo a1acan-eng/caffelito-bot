@@ -1344,6 +1344,19 @@ def closing_owner_uid(db, bid):
     return best[2] if best else None
 
 
+def _norm_amt(v):
+    """AKILLI tutar normalizasyonu (harcama/kasa) — HER kaynak için (app/mini-app/API):
+    boşluk/ayraç temizlenir; <1000 → binlik (×1000); ≥1000 → gerçek tutar (ASLA tekrar
+    ×1000). İdempotent (normalize edilmiş değer ≥1000 olduğundan tekrar bozulmaz) →
+    «82 → 82.000.000» bug'ı backend'de de imkânsız."""
+    try:
+        digits = re.sub(r"[^0-9]", "", str(v if v is not None else ""))
+        n = int(digits) if digits else 0
+    except Exception:
+        n = 0
+    return n * 1000 if (0 < n < 1000) else n
+
+
 def _parse_user_time(s):
     """
     HTML'den gelen zamanı parse et. Kabul edilenler:
@@ -4972,14 +4985,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         parse_mode="Markdown")
                     return
             cups = data.get("cups", [])  # [{n,b,r,o,s}]
-            itg = int(data.get("itogo", 0) or 0)
-            clk = int(data.get("click", 0) or 0)
-            pay = int(data.get("payme", 0) or 0)
-            kar = int(data.get("karta", 0) or 0)
-            term = int(data.get("terminal", 0) or 0)
-            vsh = int(data.get("vyshlo", 0) or 0)
-            sdachi = int(data.get("na_sdachi", 0) or 0)
+            # Para alanları AKILLI normalize (her kaynak için; «82→82 000», asla ×1000000).
+            itg = _norm_amt(data.get("itogo", 0))
+            clk = _norm_amt(data.get("click", 0))
+            pay = _norm_amt(data.get("payme", 0))
+            kar = _norm_amt(data.get("karta", 0))
+            term = _norm_amt(data.get("terminal", 0))
+            vsh = _norm_amt(data.get("vyshlo", 0))
+            sdachi = _norm_amt(data.get("na_sdachi", 0))
             exps = data.get("expenses", [])  # [{n,a}]
+            # Harcama tutarları da normalize (in-place) — girdi/kaynak ne olursa olsun.
+            for _e in exps:
+                if isinstance(_e, dict):
+                    _e["a"] = _norm_amt(_e.get("a", 0))
             note = (data.get("note") or "").strip()
             daily_pay = int(data.get("daily_pay", 0) or 0)  # günlük bonus (satılan bardak) — kasadan alınır
             cashless = clk + pay + kar + term

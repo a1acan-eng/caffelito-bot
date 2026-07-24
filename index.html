@@ -992,7 +992,7 @@ var API_BASE="https://amusing-creativity-production-a2e7.up.railway.app";
 // "Open App"/Main App sabit URL'inde). Açılışta sunucudaki güncel sürümü sor; bizimkinden
 // yeniyse demek ki cache'li eski sayfadayız → ?v= ile kendini taze yükle. APP_BUILD her
 // deploy'da artar; /api/ver bunu diskteki index.html'den okuyup döndürür (tek kaynak).
-var APP_BUILD=2026070186;
+var APP_BUILD=2026070187;
 (function(){
   try{
     fetch(API_BASE+'/api/ver?_='+Date.now(),{cache:'no-store'})
@@ -1825,9 +1825,11 @@ let settingsTab='prices'; // prices|desserts|names|passwords|logs
 
 function fmt(n){return Number(n||0).toLocaleString('ru-RU').replace(/\u00a0/g,'.').replace(/,/g,'.')}
 // Binler \u00f6l\u00e7e\u011fi: '455'\u2192455000, '5967'\u21925.967.000; ama '000' ile biten (455000) oldu\u011fu gibi kal\u0131r.
-// Binler ölçeği: kullanıcı her zaman "binlerce" yazar (300→300.000, 3000→3.000.000).
-// 100.000'den küçük girilen değer ×1000; tam tutar (≥100.000) zaten girilmişse aynen.
-function scaleK(n){n=parseInt(n)||0;return (n>0&&n<100000)?n*1000:n;}
+// AKILLI tutar normalizasyonu (harcama/kasa): kullanıcı "82" (=82.000) ya da tam
+// "82000"/"82 000" (=82.000) yazabilir. Kural: <1000 → binlik (×1000); ≥1000 → gerçek
+// tutar (ASLA tekrar ×1000). Boşluk/ayraç temizlenir. İDEMPOTENT (normalize edilmiş
+// değer >=1000 olduğu için tekrar uygulanınca bozulmaz) → «82 → 82.000.000» bug'ı imkânsız.
+function scaleK(n){n=parseInt(String(n==null?'':n).replace(/[^0-9]/g,''))||0;return (n>0&&n<1000)?n*1000:n;}
 function fmtMonth(p){if(!p)return '';const a=p.split('-');return MN[parseInt(a[1])-1]+' '+a[0]}
 function curPeriod(){const d=gT();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
 
@@ -4450,19 +4452,30 @@ async function endShiftSaveTrainee(){
   if(tg&&tg.sendData){try{tg.sendData(JSON.stringify(payload))}catch(e){console.warn('sendData:',e)}}
 }
 // Birleşik kapanış — harcama satırları (kasa)
+// Harcama tutarı yardımcı metni: «82 = 82 000 сум» (canlı; yeni çalışana formatı öğretir)
+function expPrevText(raw){
+  var digits=parseInt(String(raw==null?'':raw).replace(/[^0-9]/g,''))||0;
+  if(!digits)return 'напр. 82 = 82 000 сум';
+  return digits+' = '+fmt(scaleK(raw))+' сум'+(digits<1000?' (в тысячах)':'');
+}
+function endExpPrev(i){var el=document.getElementById('exprev_'+i);if(el)el.innerHTML=expPrevText((endDraft.kasa.expenses[i]||{}).a);}
 function endExpRender(){
   var el=document.getElementById('eexp');if(!el)return;
   var h='';
   (endDraft.kasa.expenses||[]).forEach(function(e,i){
-    h+='<div style="display:flex;gap:6px;margin-bottom:6px">'
-      +'<input class="set-input" type="text" value="'+escH(e.n||'')+'" placeholder="название" oninput="endDraft.kasa.expenses['+i+'].n=this.value" style="flex:1">'
-      +'<input class="set-input" type="number" inputmode="numeric" value="'+(e.a||0)+'" placeholder="сумма" oninput="endDraft.kasa.expenses['+i+'].a=parseInt(this.value)||0" style="width:90px">'
-      +'<button class="xbtn" onclick="endExpDel('+i+')">&#10005;</button>'
+    var av=(e.a==null||e.a===0||e.a==='0')?'':String(e.a);
+    h+='<div style="margin-bottom:8px">'
+      +'<div style="display:flex;gap:6px">'
+        +'<input class="set-input" type="text" value="'+escH(e.n||'')+'" placeholder="название" oninput="endDraft.kasa.expenses['+i+'].n=this.value" style="flex:1">'
+        +'<input class="set-input" type="text" inputmode="numeric" value="'+escH(av)+'" placeholder="сумма" oninput="endDraft.kasa.expenses['+i+'].a=this.value;endExpPrev('+i+')" style="width:110px">'
+        +'<button class="xbtn" onclick="endExpDel('+i+')">&#10005;</button>'
+      +'</div>'
+      +'<div id="exprev_'+i+'" style="font-size:11px;color:var(--t3);margin-top:3px;padding-left:2px">'+expPrevText(e.a)+'</div>'
     +'</div>';
   });
   el.innerHTML=h;
 }
-function endExpAdd(){endDraft.kasa.expenses.push({n:'',a:0});endExpRender()}
+function endExpAdd(){endDraft.kasa.expenses.push({n:'',a:''});endExpRender()}
 function endExpDel(i){endDraft.kasa.expenses.splice(i,1);endExpRender()}
 
 // ── Vardiya DETAY ekranı (üstüne basınca açılır) ──
