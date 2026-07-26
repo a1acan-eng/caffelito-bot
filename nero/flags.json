@@ -1,8 +1,8 @@
 {
-  "_comment": "Nero kademeli açılış ayarı. Kimin Nero göreceğini burası belirler. DİKKAT: allow.users içindeki sayılar GERÇEK Telegram ID olmalı (9-10 hane). 1001/1002/1003 sahte örnektir — bunlar dururken kimse Nero görmez.",
+  "_comment": "Nero rollout configuration. THIS FILE IS THE ONLY THING YOU CHANGE TO MOVE A USER OR BRANCH. No redeploy, no code edit. The bot re-reads it on every Mini App open.",
   "_docs": "deployment.md",
-  "version": 3,
-  "updated": "2026-07-25",
+  "version": 4,
+  "updated": "2026-07-26",
   "activeEnvironment": "production",
   "kill": false,
   "_kill": "true = every user goes to legacy on their next open. The <1 minute rollback.",
@@ -10,7 +10,7 @@
     "users": [
       6729766563
     ],
-    "_users": "GERÇEK Telegram ID'ler. @userinfobot ile öğrenilir. Önce sadece kendini ekle, çalıştığını gör, sonra Hasan.",
+    "_users": "Wave 1: Хусейин (owner), Хасанбей, Абдулатиф (trusted barista). REPLACE WITH REAL TELEGRAM IDs BEFORE GO-LIVE.",
     "branches": [],
     "_branches": "Branch ids that get Nero wholesale. Empty during wave 1."
   },
@@ -40,15 +40,15 @@
     },
     "production": {
       "bot": "@CaffelitoMrBot",
-      "legacyUrl": "https://caffelito.app/legacy/index.html",
-      "neroUrl": "https://caffelito.app/nero/2026.07.25-1/index.html",
+      "legacyUrl": "https://amusing-creativity-production-a2e7.up.railway.app/",
+      "neroUrl": "https://amusing-creativity-production-a2e7.up.railway.app/nero/2026-07-25/index.html",
       "storage": "prod-sheet",
       "_note": "Immutable versioned paths. Never overwrite a live build — publish a new folder and repoint."
     }
   },
   "clientGuard": {
-    "enforce": true,
-    "_enforce": "Nero re-checks the flag at boot and sends itself back to legacy if it was opened by someone not on the list. Defence in depth against a bot-side routing mistake."
+    "enforce": false,
+    "_enforce": "KAPALI. Yönlendirmeyi bot yapıyor (build_webapp_url). Pakete gömülü config zamanla eskiyeceği için içerideki koruma yanlış karar verebilirdi — kapatıldı."
   },
   "waves": [
     {
@@ -77,9 +77,7 @@
     }
   ],
   "_roster": {
-    "husein": 1001,
-    "hasan": 1002,
-    "abdulatif": 1003
+    "husein": 6729766563
   },
   "_rosterNote": "slot → Telegram ID. Written by Rollout Console; ignored by the resolver. Never infer identity from allow.users order."
 }
