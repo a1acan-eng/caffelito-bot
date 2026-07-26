@@ -4,7 +4,7 @@
   "version": 4,
   "updated": "2026-07-26",
   "activeEnvironment": "production",
-  "kill": false,
+  "kill": true,
   "_kill": "true = every user goes to legacy on their next open. The <1 minute rollback.",
   "allow": {
     "users": [
