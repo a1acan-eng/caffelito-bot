@@ -8,9 +8,7 @@
   "_kill": "true = every user goes to legacy on their next open. The <1 minute rollback.",
   "allow": {
     "users": [
-      1001,
-      1002,
-      1003
+      6729766563
     ],
     "_users": "GERÇEK Telegram ID'ler. @userinfobot ile öğrenilir. Önce sadece kendini ekle, çalıştığını gör, sonra Hasan.",
     "branches": [],
