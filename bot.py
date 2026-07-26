@@ -1935,17 +1935,33 @@ def build_hash_payload(db, user_id, name):
 
 
 def _nero_flags():
-    """flags.json'u 60 sn cache ile getir. Hata → son bilinen config, o da yoksa None."""
+    """flags.json'u 60 sn cache ile getir.
+
+    ÖNCE YEREL DOSYA (nero/flags.json). Kendi sunucumuza HTTP atmak YASAK:
+    bot ile aiohttp aynı event loop'ta çalışıyor; urlopen bloklayıcı olduğu için
+    loop kilitlenir, sunucu kendi isteğine cevap veremez → her seferinde timeout
+    → config None → herkes eski uygulamada kalır. Diskten okumak anında ve güvenli.
+    Yerel dosya yoksa (ör. Gist'te barındırılıyorsa) URL'den çekilir."""
     import time, urllib.request
-    if not NERO_FLAGS_URL:
-        return None
+    now = time.time()
+    if _nero_cache["cfg"] is not None and now - _nero_cache["at"] <= 60:
+        return _nero_cache["cfg"]
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "flags.json")
     try:
-        if time.time() - _nero_cache["at"] > 60:
+        if os.path.isfile(local):
+            with open(local, "r", encoding="utf-8") as fh:
+                _nero_cache["cfg"] = json.load(fh)
+                _nero_cache["at"] = now
+                return _nero_cache["cfg"]
+    except Exception as e:
+        logger.warning(f"nero flags local read failed: {e}")
+    if NERO_FLAGS_URL:
+        try:
             with urllib.request.urlopen(NERO_FLAGS_URL, timeout=3) as r:
                 _nero_cache["cfg"] = json.loads(r.read().decode("utf-8"))
-                _nero_cache["at"] = time.time()
-    except Exception as e:
-        logger.warning(f"nero flags fetch failed: {e}")
+                _nero_cache["at"] = now
+        except Exception as e:
+            logger.warning(f"nero flags fetch failed: {e}")
     return _nero_cache["cfg"]
 
 
