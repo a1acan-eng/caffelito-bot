@@ -5953,9 +5953,12 @@ async def sync_user_ui(bot, db, user_id: int):
         if is_owner_user:
             await bot.set_chat_menu_button(chat_id=user_id, menu_button=MenuButtonCommands())
         elif WEBAPP_URL:
+            # Menü butonu da Nero yönlendirmesinden geçsin — yoksa listedeki barista
+            # ≡ menüden açtığında eski uygulamayı görür.
+            _mu = build_webapp_url(WEBAPP_URL, user_id, "", db)
             await bot.set_chat_menu_button(
                 chat_id=user_id,
-                menu_button=MenuButtonWebApp(text="☕ Caffelito", web_app=WebAppInfo(url=WEBAPP_URL))
+                menu_button=MenuButtonWebApp(text="☕ Caffelito", web_app=WebAppInfo(url=_mu))
             )
     except Exception as e:
         logger.warning(f"sync_user_ui failed for {user_id}: {e}")
