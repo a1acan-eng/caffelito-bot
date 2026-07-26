@@ -1970,20 +1970,18 @@ def nero_base_url(user_id, db=None):
     Öncelik: kill > deny.user > deny.branch > allow.user > allow.branch > yüzde > None.
     HER hata yolu None döner (fail-closed) → eski uygulama."""
     if not NERO_WEBAPP_URL:
+        logger.info("NERO kapali: NERO_WEBAPP_URL bos")
         return None
     cfg = _nero_flags()
     if not cfg:
+        logger.info("NERO kapali: flags.json okunamadi")
         return None
     try:
-        if cfg.get("kill") is True:
-            return None
-
         uid = int(user_id)
         allow = cfg.get("allow") or {}
         deny = cfg.get("deny") or {}
-
-        if uid in [int(x) for x in (deny.get("users") or [])]:
-            return None
+        allow_u = [int(x) for x in (allow.get("users") or [])]
+        deny_u = [int(x) for x in (deny.get("users") or [])]
 
         bid = None
         if db is not None:
@@ -1992,23 +1990,30 @@ def nero_base_url(user_id, db=None):
             except Exception:
                 bid = None
 
-        if bid is not None and bid in [int(x) for x in (deny.get("branches") or [])]:
-            return None
-        if uid in [int(x) for x in (allow.get("users") or [])]:
-            return NERO_WEBAPP_URL
-        if bid is not None and bid in [int(x) for x in (allow.get("branches") or [])]:
-            return NERO_WEBAPP_URL
-
-        pct = int((cfg.get("rollout") or {}).get("percent") or 0)
-        if pct > 0:
-            # nero-flags.js ile AYNI FNV-1a bucket — pult ile bot aynı kararı vermeli
-            h = 2166136261
-            for ch in str(uid):
-                h ^= ord(ch)
-                h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
-            if (h % 100) < min(100, pct):
-                return NERO_WEBAPP_URL
-        return None
+        # Tek karar noktası + TEK log satırı: hangi uid geldi, hangi listede var, sonuç ne.
+        if cfg.get("kill") is True:
+            res, why = None, "kill-switch"
+        elif uid in deny_u:
+            res, why = None, "deny.user"
+        elif bid is not None and bid in [int(x) for x in (deny.get("branches") or [])]:
+            res, why = None, "deny.branch"
+        elif uid in allow_u:
+            res, why = NERO_WEBAPP_URL, "allow.user"
+        elif bid is not None and bid in [int(x) for x in (allow.get("branches") or [])]:
+            res, why = NERO_WEBAPP_URL, "allow.branch"
+        else:
+            pct = int((cfg.get("rollout") or {}).get("percent") or 0)
+            res, why = None, "listede-yok"
+            if pct > 0:
+                # nero-flags.js ile AYNI FNV-1a bucket — pult ile bot aynı kararı vermeli
+                h = 2166136261
+                for ch in str(uid):
+                    h ^= ord(ch)
+                    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
+                if (h % 100) < min(100, pct):
+                    res, why = NERO_WEBAPP_URL, f"rollout-{pct}%"
+        logger.info(f"NERO uid={uid} bid={bid} allow={allow_u} sonuc={'NERO' if res else 'ESKI'} ({why})")
+        return res
     except Exception as e:
         logger.warning(f"nero_base_url failed: {e}")
         return None
