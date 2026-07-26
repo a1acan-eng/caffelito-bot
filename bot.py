@@ -28,6 +28,11 @@ if _RW_DOMAIN and (not WEBAPP_URL or "github.io" in WEBAPP_URL):
     WEBAPP_URL = f"https://{_RW_DOMAIN}/"
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
+# ─── Nero kademeli açılış (flags.json ile yönlendirme) ───
+# NERO_WEBAPP_URL boşsa YAMA TAMAMEN PASİF: herkes eski uygulamada kalır.
+NERO_FLAGS_URL  = os.getenv("NERO_FLAGS_URL", "")
+NERO_WEBAPP_URL = os.getenv("NERO_WEBAPP_URL", "")
+_nero_cache = {"cfg": None, "at": 0.0}
 ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor (eski sistem — fallback)
 # 🗂  DB yolu — Railway Volume için: env DB_PATH=/data/caffelito.db
 # Boş bırakılırsa current dir'de "caffelito.db" kullanılır (LOCAL test için).
@@ -1929,11 +1934,76 @@ def build_hash_payload(db, user_id, name):
     return "&".join(parts)
 
 
+def _nero_flags():
+    """flags.json'u 60 sn cache ile getir. Hata → son bilinen config, o da yoksa None."""
+    import time, urllib.request
+    if not NERO_FLAGS_URL:
+        return None
+    try:
+        if time.time() - _nero_cache["at"] > 60:
+            with urllib.request.urlopen(NERO_FLAGS_URL, timeout=3) as r:
+                _nero_cache["cfg"] = json.loads(r.read().decode("utf-8"))
+                _nero_cache["at"] = time.time()
+    except Exception as e:
+        logger.warning(f"nero flags fetch failed: {e}")
+    return _nero_cache["cfg"]
+
+
+def nero_base_url(user_id, db=None):
+    """Bu kullanıcı Nero'yu mu görecek? Evet → Nero adresi, hayır/şüphe → None.
+    Öncelik: kill > deny.user > deny.branch > allow.user > allow.branch > yüzde > None.
+    HER hata yolu None döner (fail-closed) → eski uygulama."""
+    if not NERO_WEBAPP_URL:
+        return None
+    cfg = _nero_flags()
+    if not cfg:
+        return None
+    try:
+        if cfg.get("kill") is True:
+            return None
+
+        uid = int(user_id)
+        allow = cfg.get("allow") or {}
+        deny = cfg.get("deny") or {}
+
+        if uid in [int(x) for x in (deny.get("users") or [])]:
+            return None
+
+        bid = None
+        if db is not None:
+            try:
+                bid = int(acting_branch_id(db, uid))
+            except Exception:
+                bid = None
+
+        if bid is not None and bid in [int(x) for x in (deny.get("branches") or [])]:
+            return None
+        if uid in [int(x) for x in (allow.get("users") or [])]:
+            return NERO_WEBAPP_URL
+        if bid is not None and bid in [int(x) for x in (allow.get("branches") or [])]:
+            return NERO_WEBAPP_URL
+
+        pct = int((cfg.get("rollout") or {}).get("percent") or 0)
+        if pct > 0:
+            # nero-flags.js ile AYNI FNV-1a bucket — pult ile bot aynı kararı vermeli
+            h = 2166136261
+            for ch in str(uid):
+                h ^= ord(ch)
+                h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
+            if (h % 100) < min(100, pct):
+                return NERO_WEBAPP_URL
+        return None
+    except Exception as e:
+        logger.warning(f"nero_base_url failed: {e}")
+        return None
+
+
 def build_webapp_url(base_url, user_id, name, db):
     """Yol B: URL'e DEV hash GÖMÜLMEZ. State artık HTTP /api/state'ten geliyor.
     Hash'i gömmek owner'da (çok barista) Telegram buton-URL limitini aşıyordu
     ('Слишком много данных' hatası) ve URL kırpılınca aktif vardiya kayboluyordu.
     Sadece cache-buster ?v= ekliyoruz ki her açılışta TAZE HTML yüklensin."""
+    base_url = nero_base_url(user_id, db) or base_url
     ts = int(datetime.now(TZ).timestamp())
     sep = "&" if "?" in base_url else "?"
     return base_url + f"{sep}v={ts}"
@@ -6099,6 +6169,19 @@ def _app_build():
     return "0"
 
 
+async def web_nero(request):
+    """Nero sürümlerini /nero/<...> altından servis eder (flags.json dahil).
+    Dizin dışına çıkma engelli — /nero/../bot.py ile kaynak indirilemez."""
+    rel = request.match_info.get("path", "")
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero")
+    full = os.path.normpath(os.path.join(base, rel))
+    if not full.startswith(base + os.sep):
+        return _cors(web.Response(text="403: Forbidden", status=403))
+    if not os.path.isfile(full):
+        return _cors(web.Response(text="404: Not Found", status=404))
+    return _nocache(_cors(web.FileResponse(full)))
+
+
 async def web_ver(request):
     """Güncel build sürümünü döndür — client cache'li eskiyse kendini yeniler."""
     return _nocache(_cors(web.Response(text=_app_build(), content_type="text/plain")))
@@ -6200,6 +6283,7 @@ async def start_web_server(app):
         web.get("/", web_index),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
+        web.get("/nero/{path:.+}", web_nero),
         web.get("/api/ver", web_ver),
         web.get("/{fname:.+\\.jpg}", web_image),
         web.get("/{fname:.+\\.png}", web_image),

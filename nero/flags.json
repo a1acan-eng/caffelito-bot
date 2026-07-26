@@ -1,0 +1,87 @@
+{
+  "_comment": "Nero kademeli açılış ayarı. Kimin Nero göreceğini burası belirler. DİKKAT: allow.users içindeki sayılar GERÇEK Telegram ID olmalı (9-10 hane). 1001/1002/1003 sahte örnektir — bunlar dururken kimse Nero görmez.",
+  "_docs": "deployment.md",
+  "version": 3,
+  "updated": "2026-07-25",
+  "activeEnvironment": "production",
+  "kill": false,
+  "_kill": "true = every user goes to legacy on their next open. The <1 minute rollback.",
+  "allow": {
+    "users": [
+      1001,
+      1002,
+      1003
+    ],
+    "_users": "GERÇEK Telegram ID'ler. @userinfobot ile öğrenilir. Önce sadece kendini ekle, çalıştığını gör, sonra Hasan.",
+    "branches": [],
+    "_branches": "Branch ids that get Nero wholesale. Empty during wave 1."
+  },
+  "deny": {
+    "users": [],
+    "_users": "Beats allow and rollout. Use to pull one person back instantly without touching the wave.",
+    "branches": []
+  },
+  "rollout": {
+    "percent": 0,
+    "_percent": "Stable per-uid bucket. 0 during waves 1-2; raise only after branch-wide success."
+  },
+  "environments": {
+    "development": {
+      "bot": "@CaffelitoDevBot",
+      "legacyUrl": "https://dev.caffelito.app/legacy/index.html",
+      "neroUrl": "https://dev.caffelito.app/nero/dev/index.html",
+      "storage": "dev-sheet",
+      "_note": "Mutable path. Anyone may deploy at any time."
+    },
+    "staging": {
+      "bot": "@CaffelitoStagingBot",
+      "legacyUrl": "https://staging.caffelito.app/legacy/index.html",
+      "neroUrl": "https://staging.caffelito.app/nero/2026.07.25-1/index.html",
+      "storage": "staging-sheet",
+      "_note": "Separate bot token AND separate storage. Never points at production data."
+    },
+    "production": {
+      "bot": "@CaffelitoMrBot",
+      "legacyUrl": "https://caffelito.app/legacy/index.html",
+      "neroUrl": "https://caffelito.app/nero/2026.07.25-1/index.html",
+      "storage": "prod-sheet",
+      "_note": "Immutable versioned paths. Never overwrite a live build — publish a new folder and repoint."
+    }
+  },
+  "clientGuard": {
+    "enforce": true,
+    "_enforce": "Nero re-checks the flag at boot and sends itself back to legacy if it was opened by someone not on the list. Defence in depth against a bot-side routing mistake."
+  },
+  "waves": [
+    {
+      "n": 1,
+      "when": "day 1-3",
+      "who": "Хусейин, Хасанбей, 1 trusted barista",
+      "exit": "3 clean closings, kassa matches to the sum, no rollback"
+    },
+    {
+      "n": 2,
+      "when": "day 4-10",
+      "who": "+ all of C5",
+      "exit": "7 consecutive days, all shift types incl. trainee closing and пересменка"
+    },
+    {
+      "n": 3,
+      "when": "day 11-20",
+      "who": "+ Magic (all branches)",
+      "exit": "one full payroll cycle closed on Nero"
+    },
+    {
+      "n": 4,
+      "when": "after payroll",
+      "who": "rollout.percent 100, legacy kept warm 30 days",
+      "exit": "30 days no rollback → retire legacy"
+    }
+  ],
+  "_roster": {
+    "husein": 1001,
+    "hasan": 1002,
+    "abdulatif": 1003
+  },
+  "_rosterNote": "slot → Telegram ID. Written by Rollout Console; ignored by the resolver. Never infer identity from allow.users order."
+}
