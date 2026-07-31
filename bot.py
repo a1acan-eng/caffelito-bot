@@ -310,6 +310,25 @@ def get_db():
         body TEXT, total INTEGER, items TEXT,
         send_at TEXT, created_at TEXT,
         sent INTEGER DEFAULT 0, canceled INTEGER DEFAULT 0)""")
+    # ─── График (haftalık vardiya planı) — Nero owner atamaları ───
+    # week_key = o haftanın PAZARTESİ tarihi (YYYY-MM-DD) → göreli «week» offset'i
+    # mutlak tarihe çevrilir (week 0 bugün ≠ week 0 gelecek hafta). day = 0 Пн … 6 Вс.
+    # code = vardiya şablon anahtarı (ör. "c5m") veya "off" (выходной).
+    db.execute("""CREATE TABLE IF NOT EXISTS shift_grid (
+        week_key TEXT, day INTEGER, user_id INTEGER,
+        code TEXT, updated_by INTEGER, updated_by_name TEXT, updated_at TEXT,
+        PRIMARY KEY (week_key, day, user_id))""")
+    # ─── Выходной заявкаları (barista → owner onayı) ───
+    db.execute("""CREATE TABLE IF NOT EXISTS dayoff_requests (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER, week_key TEXT, day INTEGER, note TEXT,
+        status TEXT DEFAULT 'pending',
+        decided_by INTEGER, decided_by_name TEXT, decided_at TEXT, created_at TEXT)""")
+    # ─── Sipariş kategorileri (özel katalog başlıkları) — Nero owner düzenler ───
+    db.execute("""CREATE TABLE IF NOT EXISTS order_categories (
+        id TEXT PRIMARY KEY, name TEXT,
+        sort_order INTEGER DEFAULT 0,
+        created_by INTEGER, created_at TEXT, deleted INTEGER DEFAULT 0)""")
     # ─── Филиалы (şubeler) — çok şube desteği ───
     db.execute("""CREATE TABLE IF NOT EXISTS branches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -992,6 +1011,49 @@ FINE_PRESETS = {
     "insp_50": {"label": "🏢 Проверка 50-60%", "amount": 3000000},
     "foreign": {"label": "🚫 Посторонняя продукция", "amount": 4000000},
 }
+
+
+def grid_week_key(week_offset):
+    """Nero График'inin göreli «week» offset'ini (0=bu hafta, ±1) o haftanın
+    PAZARTESİ tarihine (YYYY-MM-DD) çevirir. Böylece «week 0» bugün ile gelecek
+    hafta aynı satıra yazmaz — plan mutlak tarihe bağlanır."""
+    try:
+        off = int(week_offset or 0)
+    except Exception:
+        off = 0
+    today = datetime.now(TZ).replace(tzinfo=None).date()
+    monday = today - timedelta(days=today.weekday()) + timedelta(days=off * 7)
+    return monday.isoformat()
+
+
+_GRID_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def grid_day_label(day):
+    try:
+        return _GRID_DAYS[int(day)]
+    except Exception:
+        return "?"
+
+
+def sched_body_lines(items, names=None):
+    """Планлы sipariş kalemlerinden ({key: qty}) grup mesajı satırları üretir —
+    anlık `order` aksiyonuyla aynı «• <b>Ad — Nx</b>» biçimi. `names` {key: ad}
+    verilirse okunur adlar; yoksa anahtar basılır (Nero adları göndermeye başlayınca
+    aynı handler otomatik düzgün render eder, kod değişmez)."""
+    from html import escape as _esc
+    names = names or {}
+    out = []
+    for k, v in (items or {}).items():
+        try:
+            q = int(v or 0)
+        except Exception:
+            q = 0
+        if q <= 0:
+            continue
+        nm = names.get(k) or names.get(str(k)) or str(k)
+        out.append(f"• <b>{_esc(str(nm))} — {q}x</b>")
+    return out or ["• (позиции)"]
 
 
 def fmt_sum(n):
@@ -5557,6 +5619,287 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     VALUES (?,?,?,?,?,1,?,?,?)""",
                     (user.id, new_level, new_max, xp, max_streak, correct, total, now))
             db.commit()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # НЕРО (yeni uygulama) — eski index.html'de OLMAYAN 7 action.
+        # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
+        # ═══════════════════════════════════════════════════════════════════
+        elif action == "shift_grid_set":
+            # График: bir güne vardiya/выходной ata. Kendine выходной koyulabilir;
+            # başkasına atama SADECE owner. Göreli hafta mutlak Пн tarihine bağlanır.
+            db = get_db()
+            try:
+                target_id = int(data.get("target_uid") or 0)
+            except Exception:
+                target_id = 0
+            code = (data.get("code") or "").strip()
+            if not target_id or not code:
+                await update.message.reply_text("❌ Не указан сотрудник или смена.")
+                return
+            if target_id != user.id and get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Изменять чужой график может только владелец.")
+                return
+            wk = grid_week_key(data.get("week"))
+            try:
+                day = int(data.get("day"))
+            except Exception:
+                day = 0
+            db.execute(
+                "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (wk, day, target_id, code, user.id, user.first_name, now.isoformat()))
+            db.commit()
+            _nm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "shift_grid_set", user.id, user.first_name, target_id, _nm,
+                       {"week_key": wk, "day": day, "code": code})
+            _dl = grid_day_label(day)
+            _what = "выходной" if code == "off" else f"смена «{code}»"
+            await update.message.reply_text(
+                f"🗓 График обновлён: *{_nm}* · {_dl} → {_what}", parse_mode="Markdown")
+            if target_id != user.id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl} — {_what}.")
+                except Exception:
+                    pass
+
+        elif action == "shift_reassign":
+            # График: bir günün vardiyası bir personelden diğerine devredilir.
+            # from_uid → выходной, to_uid → code. Sadece owner.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                from_id = int(data.get("from_uid") or 0)
+                to_id = int(data.get("to_uid") or 0)
+            except Exception:
+                from_id = to_id = 0
+            code = (data.get("code") or "").strip()
+            if not from_id or not to_id or not code:
+                await update.message.reply_text("❌ Не хватает данных для передачи смены.")
+                return
+            wk = grid_week_key(data.get("week"))
+            try:
+                day = int(data.get("day"))
+            except Exception:
+                day = 0
+            for _uid, _c in ((from_id, "off"), (to_id, code)):
+                db.execute(
+                    "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (wk, day, _uid, _c, user.id, user.first_name, now.isoformat()))
+            db.commit()
+            _fn = display_name_for(db, from_id, fallback="?")
+            _tn = display_name_for(db, to_id, fallback="?")
+            log_action(db, "shift_reassign", user.id, user.first_name, to_id, _tn,
+                       {"week_key": wk, "day": day, "code": code, "from": from_id})
+            _dl = grid_day_label(day)
+            await update.message.reply_text(
+                f"🔄 Смена передана: {_dl} · *{_fn}* → *{_tn}*", parse_mode="Markdown")
+            for _uid, _txt in ((from_id, f"🔄 Ваша смена {_dl} передана {_tn}. У вас выходной."),
+                               (to_id, f"🔄 Вам передали смену {_dl} (смена «{code}»).")):
+                try:
+                    await context.bot.send_message(chat_id=_uid, text=_txt)
+                except Exception:
+                    pass
+
+        elif action == "dayoff_decide":
+            # Выходной заявкasına owner kararı. ok → grid'e выходной + заявка 'ok';
+            # aksi → 'no'. request_id = client Date.now() (INTEGER).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                req_id = int(data.get("request_id") or 0)
+            except Exception:
+                req_id = 0
+            decision = "ok" if (data.get("decision") == "ok") else "no"
+            try:
+                target_id = int(data.get("target_uid") or 0)
+            except Exception:
+                target_id = 0
+            wk = grid_week_key(data.get("week"))
+            try:
+                day = int(data.get("day"))
+            except Exception:
+                day = 0
+            _ex = db.execute("SELECT * FROM dayoff_requests WHERE id=?", (req_id,)).fetchone() if req_id else None
+            if _ex:
+                db.execute(
+                    "UPDATE dayoff_requests SET status=?, decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                    (decision, user.id, user.first_name, now.isoformat(), req_id))
+                if not target_id:
+                    target_id = _ex["user_id"]
+                if not wk:
+                    wk = _ex["week_key"]
+            elif req_id:
+                db.execute(
+                    "INSERT OR REPLACE INTO dayoff_requests "
+                    "(id, user_id, week_key, day, note, status, decided_by, decided_by_name, decided_at, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (req_id, target_id, wk, day, "", decision, user.id, user.first_name, now.isoformat(), now.isoformat()))
+            if decision == "ok" and target_id:
+                db.execute(
+                    "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (wk, day, target_id, "off", user.id, user.first_name, now.isoformat()))
+            db.commit()
+            _nm = display_name_for(db, target_id, fallback="?") if target_id else "?"
+            log_action(db, "dayoff_decide", user.id, user.first_name, target_id or None, _nm,
+                       {"request_id": req_id, "decision": decision, "week_key": wk, "day": day})
+            _dl = grid_day_label(day)
+            if decision == "ok":
+                await update.message.reply_text(f"✅ Выходной согласован: *{_nm}* · {_dl}", parse_mode="Markdown")
+                _msg = f"✅ Ваш выходной на {_dl} согласован."
+            else:
+                await update.message.reply_text(f"❌ Выходной отклонён: *{_nm}* · {_dl}", parse_mode="Markdown")
+                _msg = f"❌ Ваша заявка на выходной ({_dl}) отклонена."
+            if target_id and target_id != user.id:
+                try:
+                    await context.bot.send_message(chat_id=target_id, text=_msg)
+                except Exception:
+                    pass
+
+        elif action == "schedule_order":
+            # Планлы sipariş oluştur → scheduled_orders'a yaz; scheduled_orders_loop
+            # zamanı gelince gruba gönderir. items = {key: qty}; names varsa okunur satırlar.
+            db = get_db()
+            _at = _parse_user_time((data.get("at") or "").strip())
+            if not _at or _at <= datetime.now(TZ).replace(tzinfo=None) + timedelta(minutes=1):
+                await update.message.reply_text("❌ Выберите время в будущем.")
+                return
+            items = data.get("items") or {}
+            try:
+                total = sum(int(v or 0) for v in items.values())
+            except Exception:
+                total = 0
+            if total <= 0:
+                await update.message.reply_text("❌ В заказе нет позиций.")
+                return
+            _bid = None
+            _br = data.get("branch")
+            if _br is not None and str(_br) != "":
+                if str(_br).isdigit():
+                    _bid = int(_br)
+                else:
+                    _row = db.execute(
+                        "SELECT id FROM branches WHERE name=? AND COALESCE(active,1)=1", (str(_br),)).fetchone()
+                    _bid = int(_row["id"]) if _row else None
+            if not _bid:
+                _bid = acting_branch_id(db, user.id)
+            _gid = branch_group_id(db, _bid) or ""
+            _lines = sched_body_lines(items, data.get("names"))
+            _shown = display_name_for(db, user.id, fallback=user.first_name)
+            db.execute(
+                "INSERT INTO scheduled_orders (user_id,user_name,group_id,branch_id,body,total,items,send_at,created_at,sent,canceled) "
+                "VALUES (?,?,?,?,?,?,?,?,?,0,0)",
+                (user.id, _shown, str(_gid) if _gid else "", _bid,
+                 "\n".join(_lines), total, json.dumps(items, ensure_ascii=False),
+                 _at.isoformat(), now.isoformat()))
+            db.commit()
+            log_action(db, "schedule_order", user.id, user.first_name, None, None,
+                       {"at": _at.isoformat(), "total": total, "branch_id": _bid})
+            await update.message.reply_text(
+                f"⏰ Заказ запланирован на *{_at.strftime('%d.%m.%Y %H:%M')}* ({total} поз.).\n"
+                f"Он автоматически уйдёт в группу в это время.\n"
+                f"_(Отменить — в приложении: Заказ → Запланированные.)_",
+                parse_mode="Markdown")
+
+        elif action == "schedule_update":
+            # Планлы siparişi düzenle: send_at + items + body güncelle (gönderilmemişse).
+            db = get_db()
+            try:
+                sid = int(data.get("id") or 0)
+            except Exception:
+                sid = 0
+            row = db.execute("SELECT * FROM scheduled_orders WHERE id=?", (sid,)).fetchone() if sid else None
+            if not row:
+                await update.message.reply_text("❌ Запланированный заказ не найден.")
+                return
+            if row["user_id"] != user.id and get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Изменять чужой заказ может только владелец.")
+                return
+            if int(row["sent"] or 0) or int(row["canceled"] or 0):
+                await update.message.reply_text("ℹ️ Заказ уже отправлен или отменён.")
+                return
+            _at = _parse_user_time((data.get("at") or "").strip())
+            if not _at or _at <= datetime.now(TZ).replace(tzinfo=None) + timedelta(minutes=1):
+                await update.message.reply_text("❌ Выберите время в будущем.")
+                return
+            items = data.get("items") or {}
+            try:
+                total = sum(int(v or 0) for v in items.values())
+            except Exception:
+                total = 0
+            if total <= 0:
+                await update.message.reply_text("❌ В заказе нет позиций.")
+                return
+            _lines = sched_body_lines(items, data.get("names"))
+            db.execute(
+                "UPDATE scheduled_orders SET send_at=?, items=?, body=?, total=? WHERE id=?",
+                (_at.isoformat(), json.dumps(items, ensure_ascii=False), "\n".join(_lines), total, sid))
+            db.commit()
+            log_action(db, "schedule_update", user.id, user.first_name, None, None,
+                       {"id": sid, "at": _at.isoformat(), "total": total})
+            await update.message.reply_text(
+                f"✏️ Заказ обновлён — уйдёт *{_at.strftime('%d.%m.%Y %H:%M')}* ({total} поз.).",
+                parse_mode="Markdown")
+
+        elif action == "category_save":
+            # Sipariş kataloğuna kategori başlığı ekle. Nero'da id = ad (setState catalog).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            name = (data.get("name") or "").strip()
+            if not name:
+                await update.message.reply_text("❌ Укажите название категории.")
+                return
+            _cid = name
+            _mx = db.execute("SELECT COALESCE(MAX(sort_order),0) AS m FROM order_categories").fetchone()
+            _so = int((_mx["m"] if _mx else 0) or 0) + 1
+            db.execute(
+                "INSERT OR REPLACE INTO order_categories (id, name, sort_order, created_by, created_at, deleted) "
+                "VALUES (?,?,?,?,?,0)",
+                (_cid, name, _so, user.id, now.isoformat()))
+            db.commit()
+            log_action(db, "category_save", user.id, user.first_name, None, None, {"id": _cid, "name": name})
+            await update.message.reply_text(f"✅ Категория добавлена: *{name}*", parse_mode="Markdown")
+
+        elif action == "category_delete":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _cid = str(data.get("id") or "").strip()
+            if not _cid:
+                await update.message.reply_text("❌ Категория не указана.")
+                return
+            db.execute("UPDATE order_categories SET deleted=1 WHERE id=?", (_cid,))
+            db.commit()
+            log_action(db, "category_delete", user.id, user.first_name, None, None, {"id": _cid})
+            await update.message.reply_text("🗑 Категория удалена.")
+
+        elif action == "order_item_delete":
+            # Kategori içinden ürün silindi. Sipariş kataloğunun ürünleri Nero tarafında
+            # (nero-data.js + client state) tutuluyor — bot'ta ürün deposu yok, bu yüzden
+            # karar AUDIT olarak kaydedilir (owner işlemi log_action'da izlenebilir).
+            # category = kategori id, index = kategori içindeki sıra.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _cat = str(data.get("category") or "").strip()
+            try:
+                _idx = int(data.get("index"))
+            except Exception:
+                _idx = -1
+            log_action(db, "order_item_delete", user.id, user.first_name, None, None,
+                       {"category": _cat, "index": _idx})
+            # Client zaten «Товар удалён» toast'ı gösterir; ek reply gerekmiyor
+            # (auto /start yine de klavyeyi tazeler). cancel_scheduled ile aynı sessiz desen.
 
     except Exception as e:
         logger.error(f"WEBAPP DATA ERROR: {e}")
