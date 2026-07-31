@@ -6657,10 +6657,29 @@ async def web_options(request):
 
 
 async def _read_json(request):
-    """Gövdeyi içerik tipinden bağımsız oku (text/plain de olabilir → CORS preflight'ı atlamak için)."""
+    """Gövdeyi içerik tipinden VE biçiminden bağımsız oku (text/plain olabilir →
+    CORS preflight'ı atlamak için). İki biçim desteklenir:
+      1) JSON              : {"initData":"...","data":"..."}
+      2) form/düz metin    : token=<uid>.<exp>.<sig>&data=...   (Content-Type: text/plain)
+    İkincisi olmadan jetonlu istemci «bad json» ile reddediliyordu."""
     try:
         raw = await request.text()
-        return json.loads(raw) if raw else {}
+        if not raw:
+            return {}
+        s = raw.strip()
+        try:
+            v = json.loads(s)
+            # JSON ama sözlük değilse (ör. düz string) → aşağıdaki key=value yolunu dene
+            if isinstance(v, dict):
+                return v
+        except Exception:
+            pass
+        # key=value[&key=value...] gövdesi (token=..., data=..., initData=..., period=...)
+        if "=" in s:
+            pairs = dict(parse_qsl(s, keep_blank_values=True))
+            if pairs:
+                return pairs
+        return None
     except Exception:
         return None
 
