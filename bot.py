@@ -2097,7 +2097,17 @@ def build_webapp_url(base_url, user_id, name, db):
     base_url = nero_base_url(user_id, db) or base_url
     ts = int(datetime.now(TZ).timestamp())
     sep = "&" if "?" in base_url else "?"
-    return base_url + f"{sep}v={ts}"
+    url = base_url + f"{sep}v={ts}"
+    # ── KİMLİK JETONU (initData yedeği) ──────────────────────────────────────────
+    # Telegram bu bot için tgWebAppData göndermiyor → initData boş. Kimliği FRAGMENT'e
+    # gömüyoruz (#t=): fragment sunucuya gitmez; uygulama okuyup /api/state ve
+    # /api/action'a `token=` olarak POST eder. Hata olursa jetonsuz URL döner.
+    try:
+        if BOT_TOKEN:
+            url += f"#t={make_web_token(user_id)}"
+    except Exception as e:
+        logger.warning(f"web token embed failed for {user_id}: {e}")
+    return url
 
 # ═══════════════════════════════════════
 #  ПРОДУКЦИЯ СКЛАДА (Sipariş Listesi)
@@ -6455,6 +6465,68 @@ def validate_init_data(init_data: str):
         return None
 
 
+# ═══ İMZALI WEB JETONU (initData yedeği) ═══════════════════════════════════════
+# Telegram bu bot için hiçbir açılışta `tgWebAppData` göndermiyor (iOS + tdesktop'ta
+# doğrulandı: hasData=NO, keys=...tgWebAppBotInline...) → initData boş → uygulama demo
+# veriye düşüyordu. Çözüm: kimliği adrese imzalı jetonla gömüyoruz.
+#   format : {uid}.{exp}.{sig}   ·  sig = HMAC_SHA256(BOT_TOKEN, "{uid}.{exp}")[:32]
+#   taşıma : URL fragment (#t=...) → sunucuya gitmez, uygulama okuyup POST eder.
+# NOT: jeton, süresi dolana dek o kullanıcı adına tam yetki verir; bu yüzden kısa TTL
+# (24s) + sabit-zamanlı karşılaştırma + hatada fail-closed.
+WEB_TOKEN_TTL = 86400  # 24 saat
+
+
+def make_web_token(uid, ttl=WEB_TOKEN_TTL):
+    """İmzalı jeton üret: '{uid}.{exp}.{sig}'."""
+    exp = int(datetime.now(TZ).timestamp()) + int(ttl)
+    body = f"{int(uid)}.{exp}"
+    sig = hmac.new(BOT_TOKEN.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{body}.{sig}"
+
+
+def verify_web_token(tok):
+    """Jetonu doğrula (imza + süre). Geçerliyse uid (int), değilse None."""
+    try:
+        if not tok:
+            return None
+        parts = str(tok).strip().split(".")
+        if len(parts) != 3:
+            return None
+        uid = int(parts[0])
+        exp = int(parts[1])
+        body = f"{uid}.{exp}"
+        calc = hmac.new(BOT_TOKEN.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(calc, parts[2]):
+            return None
+        if int(datetime.now(TZ).timestamp()) > exp:
+            return None  # süresi dolmuş → yeni açılışta taze jeton gelir
+        return uid
+    except Exception as e:
+        logger.warning(f"web token validation error: {e}")
+        return None
+
+
+def web_auth_user(body, db=None):
+    """API ucu için kimlik: önce initData (Telegram imzası), olmazsa imzalı jeton.
+    Dönen dict rest of the code'un beklediği şekilde {'id','first_name','username'}."""
+    u = validate_init_data((body or {}).get("initData", ""))
+    if u and u.get("id"):
+        return u
+    uid = verify_web_token((body or {}).get("token"))
+    if not uid:
+        return None
+    fn, un = "Бариста", None
+    try:
+        _d = db or get_db()
+        r = _d.execute("SELECT name, username, display_name FROM users WHERE user_id=?", (uid,)).fetchone()
+        if r:
+            fn = (r["display_name"] or r["name"] or "Бариста")
+            un = r["username"]
+    except Exception:
+        pass
+    return {"id": uid, "first_name": fn, "username": un}
+
+
 # ─── handle_webapp_data'yı değiştirmeden HTTP'den çağırabilmek için shim ───
 class _ShimUser:
     def __init__(self, uid, first_name, username):
@@ -6599,10 +6671,11 @@ async def api_state(request):
     body = await _read_json(request)
     if body is None:
         return _cors(web.json_response({"error": "bad json"}, status=400))
-    user = validate_init_data(body.get("initData", ""))
+    db = get_db()
+    # Kimlik: initData (Telegram imzası) → yoksa imzalı jeton (#t=, initData yedeği).
+    user = web_auth_user(body, db)
     if not user:
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
-    db = get_db()
     try:
         # Opsiyonel «period» (YYYY-MM): owner geçmiş ay maaşlarını görüntülerken gelir.
         payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"),
@@ -6620,12 +6693,13 @@ async def api_state(request):
 
 
 async def api_action(request):
-    """POST {initData, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
-    initData imzası doğrulanır, sonra handle_webapp_data değiştirilmeden çağrılır."""
+    """POST {initData|token, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
+    Kimlik: initData imzası VEYA imzalı jeton (#t=); sonra handle_webapp_data
+    değiştirilmeden çağrılır. Jeton kabulü olmadan uygulamadaki butonlar çalışmaz."""
     body = await _read_json(request)
     if body is None:
         return _cors(web.json_response({"error": "bad json"}, status=400))
-    user = validate_init_data(body.get("initData", ""))
+    user = web_auth_user(body)
     if not user:
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
     data_str = body.get("data")
