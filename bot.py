@@ -2500,8 +2500,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
         return
 
-    # Sade DM: kalıcı reply klavyeyi KALDIR (alttaki 'Открыть Caffelito' butonu gitsin).
-    # Açılış: owner → Main App ('Открыть Caffelito' alt bar); barista → ≡ menü butonu (sync_user_ui).
     role_now = get_role(db, user.id)
     if auto_owner:
         msg = "👑 Вы — владелец. Caffelito готов."
@@ -2509,8 +2507,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "☕ Caffelito готов."
     else:
         msg = "☕ Caffelito."
+    # ── OWNER: kalıcı web_app KLAVYE BUTONU (kritik) ──────────────────────────────
+    # Owner'ın menü butonu MenuButtonCommands (komut listesi) olarak KALIR — ona
+    # dokunmuyoruz. Ama owner'da başka hiçbir web_app girişi yoktu: Nero'yu sadece
+    # inline butondan açabiliyordu ve Telegram INLINE modda `tgWebAppData` GÖNDERMEZ
+    # (teşhis: hasData=NO, keys=...tgWebAppBotInline...) → initData boş → uygulama
+    # demo veriye düşüyordu. Çözüm: /start'ta web_app'li ReplyKeyboardMarkup ver →
+    # bu butondan açılınca initData dolu gelir (gerçek veri + tg.sendData çalışır).
+    _kb = None
+    if role_now == "owner" and WEBAPP_URL:
+        try:
+            _u = build_webapp_url(WEBAPP_URL, user.id, user.first_name, db)
+            _kb = ReplyKeyboardMarkup(
+                [[KeyboardButton("☕ Nero", web_app=WebAppInfo(url=_u))]],
+                resize_keyboard=True)
+        except Exception as e:
+            logger.warning(f"start owner webapp keyboard failed: {e}")
+            _kb = None
+    # Barista akışı AYNEN: ≡ menü butonu WebApp (sync_user_ui) → klavye temizlenir.
     try:
-        await update.message.reply_text(msg, reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(msg, reply_markup=(_kb or ReplyKeyboardRemove()))
     except Exception as e:
         logger.error(f"start reply failed: {e}")
 
