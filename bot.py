@@ -1626,11 +1626,17 @@ def build_reports(db, role, user_id):
     return rep
 
 
-def build_hash_payload(db, user_id, name):
+def build_hash_payload(db, user_id, name, sel_period=None):
     """URL-hash payload string'ini (uid=...&role=...&summary=...) üretir.
     Hem klavye-butonu URL'i (build_webapp_url) hem de /api/state HTTP ucu (Yol B)
-    bu aynı payload'ı kullanır — böylece ana ekrandan açınca da aynı veri gelir."""
+    bu aynı payload'ı kullanır — böylece ana ekrandan açınca da aynı veri gelir.
+
+    sel_period ('YYYY-MM'): owner «Все сотрудники» listesi için SEÇİLİ AY. Sadece
+    baristas listesini (maaş/vardiya/ödeme/düzeltme) etkiler — kullanıcının KENDİ
+    `summary`si HER ZAMAN içinde bulunulan aydır (vardiya/kapatma akışı bozulmasın)."""
     from urllib.parse import quote
+    # Geçersiz/boş → içinde bulunulan ay (savunmacı: dışarıdan gelen değer).
+    _selp = sel_period if (isinstance(sel_period, str) and re.fullmatch(r"\d{4}-\d{2}", sel_period or "")) else current_period()
     upsert_user(db, user_id, name, None, None)
     role = get_role(db, user_id)
     s = calc_summary(db, user_id)
@@ -1818,6 +1824,7 @@ def build_hash_payload(db, user_id, name):
         f"my_branch_closed_today={branch_closed_today}",
         f"closing_override_uid={closing_override}",
         f"my_last_closing_at={quote(last_closing_at)}",
+        f"sel_period={_selp}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
@@ -1892,27 +1899,28 @@ def build_hash_payload(db, user_id, name):
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
         for b in rows:
-            bs = calc_summary(db, b["user_id"])
-            # Bu baristanın bu ayki bitmiş vardiyaları (owner "kim, ne zaman çalıştı" görsün)
+            # SEÇİLİ AY (_selp): owner geçmiş ayın maaşını görebilsin/ödeyebilsin.
+            bs = calc_summary(db, b["user_id"], _selp)
+            # Bu baristanın SEÇİLİ AYdaki bitmiş vardiyaları (owner "kim, ne zaman çalıştı" görsün)
             _rsh = db.execute(
                 "SELECT id, start_time, end_time, hours, hourly_pay, bonus, "
                 "COALESCE(overtime,0) AS ot FROM shifts "
                 "WHERE user_id=? AND period=? AND end_time IS NOT NULL "
                 "ORDER BY COALESCE(start_time, created_at) DESC LIMIT 40",
-                (b["user_id"], current_period())).fetchall()
+                (b["user_id"], _selp)).fetchall()
             _recent = [{"sid": r["id"], "start_time": r["start_time"], "end_time": r["end_time"],
                         "hours": r["hours"] or 0, "hp": r["hourly_pay"] or 0,
                         "b": r["bonus"] or 0, "ot": r["ot"] or 0} for r in _rsh]
             # Bu ayki ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görüp siler (balans düzelir)
             _pays = db.execute(
                 "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",
-                (b["user_id"], current_period())).fetchall()
+                (b["user_id"], _selp)).fetchall()
             _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]} for r in _pays]
             # Bu ayki manuel düzeltmeler (Корректировка) — kişi kartında gösterilir/silinir
             try:
                 _adjs = db.execute(
                     "SELECT id, amount, note, created_at FROM adjustments WHERE user_id=? AND period=? ORDER BY id DESC",
-                    (b["user_id"], current_period())).fetchall()
+                    (b["user_id"], _selp)).fetchall()
                 _adj_list = [{"id": r["id"], "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _adjs]
             except Exception:
                 _adj_list = []
@@ -4719,7 +4727,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not target_id or amount == 0:
                 await update.message.reply_text("❌ Укажите сотрудника и сумму (не 0).")
                 return
-            _per = current_period()
+            # Düzeltme SEÇİLİ AYa yazılır (owner geçmiş ayı denkleştirebilsin); geçersizse güncel ay.
+            _rp = data.get("period")
+            _per = _rp if (isinstance(_rp, str) and re.fullmatch(r"\d{4}-\d{2}", _rp or "")) else current_period()
             _now = datetime.now(TZ).replace(tzinfo=None)
             try:
                 _abid = user_branch_id(db, target_id)
@@ -6578,7 +6588,9 @@ async def api_state(request):
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
     db = get_db()
     try:
-        payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"))
+        # Opsiyonel «period» (YYYY-MM): owner geçmiş ay maaşlarını görüntülerken gelir.
+        payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"),
+                                     sel_period=(body.get("period") or None))
     except Exception as e:
         # ÖNEMLİ: build patlarsa bile owner kilitlenmesin — en azından rol+isim dönsün.
         logger.error(f"build_hash_payload failed for {user.get('id')}: {e}")
