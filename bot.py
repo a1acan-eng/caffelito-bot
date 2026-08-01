@@ -3485,6 +3485,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
         # Tek şubede branch 1'in grubu = eski active_group olduğundan davranış değişmez.
         group_id = resolve_group_id(db, user.id, context)
+        # TEŞHİS: grup mesajı gitmiyorsa ilk bakılacak satır — grup GERÇEKTEN çözüldü mü?
+        # (None ise şubede group_chat_id yok + active_group/GROUP_CHAT_ID de boş demektir.)
+        logger.info(f"WEBAPP action={action} uid={user.id} branch={acting_branch_id(db, user.id)} group_id={group_id}")
 
         if action == "order":
             from html import escape as esc_html
@@ -3563,7 +3566,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await deliver_order(context.bot, group_id, header, esc_lines, footer)
                     logger.info("Order forwarded to group OK")
                 except Exception as e:
-                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
             # Siparişi DB'ye kaydet (Отчёт → Заказы odası)
             try:
                 _dbo = get_db()
@@ -3606,7 +3609,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         text += "\n🎉 <b>Всё выполнено!</b>"
                     await context.bot.send_message(chat_id=int(group_id), text=text, parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
         elif action == "shift_start":
             # Vardiya başlat (geliş zamanını kaydet)
@@ -3693,7 +3696,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                              f"⏰ {start_dt.strftime('%d.%m.%Y %H:%M')}")
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
         elif action == "shift_end":
             # Vardiyayı bitir (gidiş + bardak sayıları + bonus)
@@ -3770,7 +3773,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         gtext += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
                 # Сменный отчёт — 'закрыл смену'dan SONRA gönderilir (cash_report buffer'ladı)
                 try:
                     rep_t = context.bot_data.get("pending_report", {}).pop(user.id, None)
@@ -3857,7 +3860,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         gtext += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"GROUP FORWARD FAILED: {e}")
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
         elif action == "fine":
             # Tek veya çoklu (denetim — split) ceza
@@ -3937,6 +3940,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"Кому: {display_name_for(db, sent_to[0]['user_id'])}\n"
                     f"Сумма: -{fmt_sum(per_target)} сум\n"
                     f"Причина: {reason}" + tail)
+            # ── GRUP BİLDİRİMİ (штраф) — eskiden YOKTU: ceza sadece kişiye DM gidiyordu ──
+            if group_id and sent_to:
+                try:
+                    from html import escape as esc_html
+                    _who = ", ".join(esc_html(display_name_for(db, t["user_id"], fallback="?")) for t in sent_to)
+                    gtext = (f"⚠️ <b>ШТРАФ</b>\n"
+                             f"👤 {_who}\n"
+                             f"💸 -{fmt_sum(per_target)} сум"
+                             + (f" × {len(sent_to)} чел." if (split and len(sent_to) > 1) else "") + "\n"
+                             f"📝 {esc_html(reason)}\n"
+                             f"👮 {esc_html(shown)}")
+                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                except Exception as e:
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
         elif action == "pay":
             db = get_db()
@@ -4082,6 +4099,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💝 Чаевые распределены\n\n"
                 f"Всего: {fmt_sum(total_dist)} сум · Получателей: {len(recipients)}" +
                 (f"\n📝 {note}" if note else ""))
+            # ── GRUP BİLDİRİMİ (чаевые) — eskiden YOKTU: sadece alan kişiye DM gidiyordu ──
+            if group_id and recipients:
+                try:
+                    from html import escape as esc_html
+                    gtext = (f"💝 <b>ЧАЕВЫЕ РАСПРЕДЕЛЕНЫ</b>\n"
+                             f"💰 Всего: <b>{fmt_sum(total_dist)}</b> сум · {len(recipients)} чел.\n")
+                    for _tid, _amt in recipients:
+                        gtext += f"  • {esc_html(display_name_for(db, _tid, fallback='?'))}: +{fmt_sum(_amt)}\n"
+                    if note:
+                        gtext += f"📝 {esc_html(note)}\n"
+                    gtext += f"👤 {esc_html(shown)}"
+                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                except Exception as e:
+                    logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
         # ─── Yeni: Bardak fiyatı güncelle ───
         elif action == "price_update":
@@ -6554,14 +6585,22 @@ class _ShimMessage:
         self.web_app_data = _ShimWebAppData(data)
 
     async def reply_text(self, text, **kwargs):
-        # reply_text → kullanıcının özel sohbetine normal mesaj
+        # reply_text → kullanıcının özel sohbetine GERÇEK mesaj (no-op DEĞİL).
         kwargs.pop("reply_to_message_id", None)
         kwargs.pop("quote", None)
         kwargs.pop("do_quote", None)
         try:
             return await self._bot.send_message(chat_id=self._chat_id, text=text, **kwargs)
         except Exception as e:
-            logger.warning(f"shim reply_text failed: {e}")
+            # Onay mesajları sessizce kaybolmasın: tam traceback + parse_mode'suz yeniden dene
+            # (çoğu hata bozuk Markdown/HTML'den gelir; metin yine de kullanıcıya ulaşsın).
+            logger.exception(f"shim reply_text failed (chat_id={self._chat_id}): {e}")
+            if kwargs.get("parse_mode"):
+                try:
+                    kwargs.pop("parse_mode", None)
+                    return await self._bot.send_message(chat_id=self._chat_id, text=text, **kwargs)
+                except Exception as e2:
+                    logger.exception(f"shim reply_text retry (no parse_mode) failed: {e2}")
             return None
 
 
@@ -6574,9 +6613,16 @@ class _ShimUpdate:
 
 
 class _ShimContext:
-    def __init__(self, bot, bot_data):
-        self.bot = bot
-        self.bot_data = bot_data
+    def __init__(self, bot, bot_data, uid=None):
+        self.bot = bot            # GERÇEK Application.bot (grup send_message buradan gider)
+        self.bot_data = bot_data  # GERÇEK bot_data (group_id / pending_report paylaşılır)
+        # Bazı yollar context.user_data'ya dokunur; yoksa AttributeError tüm eylemi düşürür.
+        # Kullanıcı başına kalıcı olsun diye bot_data içinde tutulur (istekler arası korunur).
+        try:
+            self.user_data = bot_data.setdefault("_shim_user_data", {}).setdefault(int(uid or 0), {})
+        except Exception:
+            self.user_data = {}
+        self.chat_data = {}
 
 
 def _cors(resp):
@@ -6728,11 +6774,13 @@ async def api_action(request):
     shim_update = _ShimUpdate(
         tg_app.bot, user["id"], user.get("first_name", "Бариста"),
         user.get("username"), data_str)
-    shim_context = _ShimContext(tg_app.bot, tg_app.bot_data)
+    shim_context = _ShimContext(tg_app.bot, tg_app.bot_data, uid=user["id"])
     try:
         await handle_webapp_data(shim_update, shim_context)
     except Exception as e:
-        logger.error(f"api_action handle_webapp_data failed: {e}")
+        # TAM traceback — «eylem işlendi ama grup mesajı gitmedi» gibi sessiz hataların
+        # gerçek istisnası görünsün. İstemci sessizce başarılı sanmasın diye 500.
+        logger.exception(f"api_action handle_webapp_data FAILED uid={user.get('id')} data={str(data_str)[:200]}")
         return _cors(web.json_response({"error": str(e)}, status=500))
     return _cors(web.json_response({"ok": True}))
 
