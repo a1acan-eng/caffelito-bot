@@ -1844,6 +1844,37 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
         f"ts={ts}",
     ]
+    # ── График смен: kaydedilen plan + выходной заявкаları geri gönderilir.
+    #    shift_grid_set / dayoff_decide bunları YAZIYORDU ama payload OKUMUYORDU →
+    #    uygulama her açılışta boş/örnek tablo gösteriyordu. Önceki, bu ve sonraki
+    #    hafta (week -1/0/+1) taşınır; anahtar client'ın beklediği "uid-day" ya da
+    #    "uid-wN-day" biçimidir. Her hata yolu boş döner — payload asla patlamaz.
+    try:
+        _grid, _wkmap = {}, {}
+        for _w in (-1, 0, 1):
+            _wkmap[grid_week_key(_w)] = _w
+        _gq = ",".join("?" for _ in _wkmap)
+        for _r in db.execute(
+                f"SELECT week_key, day, user_id, code FROM shift_grid WHERE week_key IN ({_gq})",
+                tuple(_wkmap.keys())).fetchall():
+            _w = _wkmap.get(_r["week_key"], 0)
+            _key = f"{_r['user_id']}-{_r['day']}" if _w == 0 else f"{_r['user_id']}-w{_w}-{_r['day']}"
+            _grid[_key] = _r["code"] or "off"
+    except Exception:
+        _grid, _wkmap = {}, {}
+    try:
+        _reqs = [
+            {"id": _r["id"], "who": _r["user_id"], "day": _r["day"],
+             "note": _r["note"] or "", "status": _r["status"] or "pending",
+             "week": _wkmap.get(_r["week_key"], 0)}
+            for _r in db.execute(
+                "SELECT id, user_id, week_key, day, note, status FROM dayoff_requests "
+                "WHERE status='pending'" + ("" if role == "owner" else " AND user_id=?"),
+                () if role == "owner" else (user_id,)).fetchall()]
+    except Exception:
+        _reqs = []
+    parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
+    parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
     def _repq(sql, params=(), n=120):
         try:
