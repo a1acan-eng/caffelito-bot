@@ -1,8 +1,8 @@
 {
   "_comment": "Nero rollout configuration. THIS FILE IS THE ONLY THING YOU CHANGE TO MOVE A USER OR BRANCH. No redeploy, no code edit. The bot re-reads it on every Mini App open.",
   "_docs": "deployment.md",
-  "version": 4,
-  "updated": "2026-07-26",
+  "version": 5,
+  "updated": "2026-08-04",
   "activeEnvironment": "production",
   "kill": false,
   "_kill": "true = every user goes to legacy on their next open. The <1 minute rollback.",
@@ -21,8 +21,8 @@
     "branches": []
   },
   "rollout": {
-    "percent": 0,
-    "_percent": "Stable per-uid bucket. 0 during waves 1-2; raise only after branch-wide success."
+    "percent": 100,
+    "_percent": "100 = HERKES Nero'da (2026-08-04 tam geçiş). Geri alma: kill:true ya da percent:0."
   },
   "environments": {
     "development": {
@@ -42,7 +42,7 @@
     "production": {
       "bot": "@CaffelitoMrBot",
       "legacyUrl": "https://amusing-creativity-production-a2e7.up.railway.app/",
-      "neroUrl": "https://amusing-creativity-production-a2e7.up.railway.app/nero/2026-07-25/index.html",
+      "neroUrl": "https://amusing-creativity-production-a2e7.up.railway.app/nero/2026.08.01-16/index.html",
       "storage": "prod-sheet",
       "_note": "Immutable versioned paths. Never overwrite a live build — publish a new folder and repoint."
     }
