@@ -1827,6 +1827,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"sel_period={_selp}",
         f"branches={quote(json.dumps(branches_out, ensure_ascii=False))}",
         f"my_branch={my_branch}",
+        # ÇALIŞILAN şube: açık vardiya → girişte seçilen oturum şubesi → ev şubesi.
+        # my_branch yalnızca EV şubesidir; istemci onu kullanınca kullanıcının
+        # seçtiği şube unutuluyor ve sipariş yanlış şubenin grubuna gidiyordu.
+        f"acting_branch={acting_branch_id(db, user_id)}",
         f"scheduled={quote(json.dumps(scheduled_out, ensure_ascii=False))}",
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
