@@ -3516,9 +3516,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
         # Tek şubede branch 1'in grubu = eski active_group olduğundan davranış değişmez.
         group_id = resolve_group_id(db, user.id, context)
+        # Uygulama hangi ŞUBE için işlem yaptığını AÇIKÇA bildiriyorsa (Заказ ekranındaki
+        # şube seçimi gibi) rapor O şubenin grubuna gitsin. Önceden sipariş her zaman
+        # «oturum şubesinin» grubuna düşüyordu: kullanıcı C5 seçse bile Magic'e gidiyordu.
+        # Payload şube taşımıyorsa (eski uygulama) davranış hiç değişmez.
+        _payload_bid = None
+        try:
+            _pb = data.get("branch_id")
+            if _pb is None or str(_pb).strip() == "":
+                _pb = data.get("branch")
+            if _pb is not None and str(_pb).strip() != "" and get_branch(db, _pb):
+                _payload_bid = int(_pb)
+                group_id = resolve_group_id(db, user.id, context, branch_id=_payload_bid)
+        except Exception:
+            _payload_bid = None
         # TEŞHİS: grup mesajı gitmiyorsa ilk bakılacak satır — grup GERÇEKTEN çözüldü mü?
         # (None ise şubede group_chat_id yok + active_group/GROUP_CHAT_ID de boş demektir.)
-        logger.info(f"WEBAPP action={action} uid={user.id} branch={acting_branch_id(db, user.id)} group_id={group_id}")
+        logger.info(f"WEBAPP action={action} uid={user.id} branch={acting_branch_id(db, user.id)} "
+                    f"payload_branch={_payload_bid} group_id={group_id}")
 
         if action == "order":
             from html import escape as esc_html
@@ -3573,7 +3588,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _sa_raw = (data.get("send_at") or "").strip()
             _sched = _parse_user_time(_sa_raw) if _sa_raw else None
             if _sched and _sched > datetime.now(TZ).replace(tzinfo=None) + timedelta(minutes=1):
-                _bid = acting_branch_id(db, user.id)
+                _bid = _payload_bid or acting_branch_id(db, user.id)
                 db.execute(
                     "INSERT INTO scheduled_orders (user_id,user_name,group_id,branch_id,body,total,items,send_at,created_at,sent,canceled) "
                     "VALUES (?,?,?,?,?,?,?,?,?,0,0)",
@@ -3604,7 +3619,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _dbo.execute(
                     "INSERT INTO orders (chat_id, user_id, user_name, items, created_at, branch_id) VALUES (?,?,?,?,?,?)",
                     (int(group_id) if group_id else 0, user.id, shown,
-                     json.dumps(order_items, ensure_ascii=False), now.isoformat(), acting_branch_id(_dbo, user.id)))
+                     json.dumps(order_items, ensure_ascii=False), now.isoformat(),
+                     _payload_bid or acting_branch_id(_dbo, user.id)))
                 _dbo.commit()
             except Exception as e:
                 logger.warning(f"order save failed: {e}")
