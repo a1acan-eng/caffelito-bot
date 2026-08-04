@@ -6719,6 +6719,36 @@ async def web_nero(request):
     full = os.path.normpath(os.path.join(base, rel))
     if not full.startswith(base + os.sep):
         return _cors(web.Response(text="403: Forbidden", status=403))
+    # Sondaki «/» ya da klasör adı verilmişse içindeki index.html'i ver
+    # («/nero/2026.08.01-16/» de «/nero/2026.08.01-16» de çalışsın — 404 tuzağı bitsin).
+    if os.path.isdir(full):
+        full = os.path.join(full, "index.html")
+    if not os.path.isfile(full):
+        return _cors(web.Response(text="404: Not Found", status=404))
+    return _nocache(_cors(web.FileResponse(full)))
+
+
+async def web_app_current(request):
+    """SABİT ADRES: /app → NERO_WEBAPP_URL hangi sürümü gösteriyorsa onu servis eder.
+
+    Neden: BotFather'daki Mini App adresi her yeni sürümde elle güncellenmek zorundaydı
+    (uzun adres, kopyalarken kısalma → 404). Artık BotFather'a bir kez «/app» yazılır;
+    sürüm değiştirmek = sadece Railway'de NERO_WEBAPP_URL'i güncellemek.
+    Sürümlü klasörler olduğu gibi kalır (dokunulmazlık korunur)."""
+    from urllib.parse import urlparse
+    rel = ""
+    try:
+        rel = (urlparse(NERO_WEBAPP_URL or "").path or "").lstrip("/")
+    except Exception:
+        rel = ""
+    if rel.startswith("nero/"):
+        rel = rel[len("nero/"):]
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero")
+    full = os.path.normpath(os.path.join(base, rel)) if rel else ""
+    if not full or not full.startswith(base + os.sep):
+        return _cors(web.Response(text="404: Nero surumu ayarli degil", status=404))
+    if os.path.isdir(full):
+        full = os.path.join(full, "index.html")
     if not os.path.isfile(full):
         return _cors(web.Response(text="404: Not Found", status=404))
     return _nocache(_cors(web.FileResponse(full)))
@@ -6850,6 +6880,7 @@ async def start_web_server(app):
         web.get("/", web_index),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
+        web.get("/app", web_app_current),
         web.get("/nero/{path:.+}", web_nero),
         web.get("/api/ver", web_ver),
         web.get("/{fname:.+\\.jpg}", web_image),
