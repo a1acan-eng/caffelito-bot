@@ -1013,6 +1013,40 @@ FINE_PRESETS = {
 }
 
 
+def _drop_shift_daily_pay(db, shift_id):
+    """Bir vardiya silinirken, o kapanışta KASADAN ödenen günlük bardak bonusunu
+    da geri alır (payments'tan siler). Böylece «kazanç gitti ama ödendi kaydı
+    kaldı» durumu oluşmaz — bakiye bonus kadar eksiye düşmez.
+
+    Güvenlik: yalnızca KENDİ KENDİNE ödeme (paid_by = user_id → günlük bonus),
+    tutarı vardiyanın bonusuyla AYNI ve kapanış saatine ±2 saat yakın olan TEK
+    kayıt silinir. Owner'ın elle yaptığı maaş ödemeleri (paid_by != user_id)
+    ASLA silinmez. Eşleşme bulunamazsa hiçbir şey yapılmaz.
+    Silinen ödemenin id'sini döner, yoksa None."""
+    try:
+        sh = db.execute("SELECT user_id, bonus, end_time FROM shifts WHERE id=?", (shift_id,)).fetchone()
+        if not sh or not sh["end_time"]:
+            return None
+        amt = int(sh["bonus"] or 0)
+        if amt <= 0:
+            return None
+        uid = sh["user_id"]
+        end = datetime.fromisoformat(sh["end_time"])
+        lo = (end - timedelta(hours=2)).isoformat()
+        hi = (end + timedelta(hours=2)).isoformat()
+        row = db.execute(
+            "SELECT id FROM payments WHERE user_id=? AND paid_by=? AND amount=? "
+            "AND paid_at BETWEEN ? AND ? ORDER BY id DESC LIMIT 1",
+            (uid, uid, amt, lo, hi)).fetchone()
+        if not row:
+            return None
+        db.execute("DELETE FROM payments WHERE id=?", (row["id"],))
+        return row["id"]
+    except Exception as e:
+        logger.warning(f"_drop_shift_daily_pay({shift_id}): {e}")
+        return None
+
+
 def grid_week_key(week_offset):
     """Nero График'inin göreli «week» offset'ini (0=bu hafta, ±1) o haftanın
     PAZARTESİ tarihine (YYYY-MM-DD) çevirir. Böylece «week 0» bugün ile gelecek
@@ -4734,6 +4768,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 sid = 0
             if sid:
                 row = db.execute("SELECT user_id FROM shifts WHERE id=?", (sid,)).fetchone()
+                # Vardiya ile birlikte, o kapanışta kasadan ödenen günlük bardak
+                # bonusunu da geri al (yoksa bakiye bonus kadar eksiye düşüyordu).
+                _rm = _drop_shift_daily_pay(db, sid)
+                if _rm:
+                    logger.info(f"vardiya {sid} silindi → gunluk bonus odemesi {_rm} de silindi")
                 db.execute("DELETE FROM shifts WHERE id=?", (sid,))
                 db.commit()
                 if row:
@@ -4963,6 +5002,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             tbl = _TBL.get(kind)
             if tbl and rid:
                 try:
+                    # VARDİYA siliniyorsa: o kapanışta KASADAN ödenen günlük bardak
+                    # bonusunu da geri al. Yoksa kazanç kayboluyor ama «ödendi»
+                    # kaydı kalıyordu → bakiye bonus kadar eksiye düşüyordu.
+                    # Sadece KENDİ KENDİNE ödeme (paid_by=user_id → günlük bonus),
+                    # tutarı vardiyanın bonusuyla aynı ve kapanış saatine yakın olan
+                    # TEK kayıt silinir; owner'ın yaptığı gerçek ödemelere dokunulmaz.
+                    if kind == "shift":
+                        _rm = _drop_shift_daily_pay(db, rid)
+                        if _rm:
+                            logger.info(f"vardiya {rid} silindi → gunluk bonus odemesi {_rm} de silindi")
                     db.execute(f"DELETE FROM {tbl} WHERE id=?", (rid,))
                     db.commit()
                     log_action(db, "delete_record", user.id, user.first_name, None, None, {"kind": kind, "id": rid})
