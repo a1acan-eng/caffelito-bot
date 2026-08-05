@@ -5333,6 +5333,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _e["a"] = _norm_amt(_e.get("a", 0))
             note = (data.get("note") or "").strip()
             daily_pay = int(data.get("daily_pay", 0) or 0)  # günlük bonus (satılan bardak) — kasadan alınır
+            # PARA GÜVENLİĞİ: kasadan alınan bonus, vardiyaya GERÇEKTEN yazılan
+            # bonusu ASLA aşamaz. İstemci yanlış tarife kullanırsa (ör. kategorisi
+            # Caffelito olan kişi için «Наша» fiyatları) kasadan fazla para
+            # alınıyor, hesabına azı yazılıyordu → kasa açık veriyordu.
+            # shift_end cash_report'tan ÖNCE geldiği için son kapanan vardiyanın
+            # bonusu burada hazırdır.
+            if daily_pay > 0:
+                try:
+                    _lsh = db.execute(
+                        "SELECT COALESCE(bonus,0) AS b FROM shifts WHERE user_id=? AND end_time IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
+                    _earned = int(_lsh["b"] or 0) if _lsh else 0
+                    if _earned >= 0 and daily_pay > _earned:
+                        logger.warning(
+                            f"daily_pay kirpildi uid={user.id}: istemci={daily_pay} vardiya_bonusu={_earned}")
+                        daily_pay = _earned
+                except Exception as e:
+                    logger.warning(f"daily_pay dogrulama basarisiz: {e}")
             cashless = clk + pay + kar + term
             schitano = itg - cashless
             exp_total = sum(int(e.get("a", 0) or 0) for e in exps)
