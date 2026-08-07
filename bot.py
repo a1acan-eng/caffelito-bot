@@ -5415,7 +5415,34 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             shift_start = (data.get("start_time") or "")
             shift_end = (data.get("end_time") or "")
             coffee_kg = float(data.get("coffee_kg", 0) or 0)  # kalan kahve çekirdeği (kg) — stok uyarısı için
-            _cr_branch = acting_branch_id(db, user.id)
+            # ŞUBE: kasa raporu KAPANAN VARDİYANIN şubesine yazılmalı. Bu istek
+            # shift_end'den SONRA geldiği için vardiya artık kapalıdır →
+            # acting_branch_id() onu açık vardiyadan çözemez ve «oturum şubesi»ne
+            # (cur_branch) ya da EV şubesine düşer. Owner başkası adına vardiya
+            # başlattığında veya kapatma devredildiğinde rapor yanlış şubeye
+            # yazılıyor, «Было» zinciri iki şube arasında karışıyordu.
+            # Öncelik: istemcinin gönderdiği şube → az önce kapanan vardiyanın
+            # şubesi → eski davranış (acting_branch_id).
+            _cr_branch = None
+            try:
+                _pb = int(data.get("branch_id") or data.get("branch") or 0)
+                if _pb and get_branch(db, _pb):
+                    _cr_branch = _pb
+            except Exception:
+                pass
+            if not _cr_branch:
+                try:
+                    _lb = db.execute(
+                        "SELECT branch_id FROM shifts WHERE user_id=? AND end_time IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
+                    if _lb and _lb["branch_id"]:
+                        _cr_branch = int(_lb["branch_id"])
+                except Exception:
+                    pass
+            if not _cr_branch:
+                _cr_branch = acting_branch_id(db, user.id)
+            # Сменный отчёт + stok uyarısı da O şubenin grubuna gitsin.
+            group_id = resolve_group_id(db, user.id, context, branch_id=_cr_branch) or group_id
             db.execute(
                 "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,expenses,expenses_total,note,daily_pay,hours,start_time,end_time,coffee_kg,branch_id) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
