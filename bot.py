@@ -1047,6 +1047,54 @@ def _drop_shift_daily_pay(db, shift_id):
         return None
 
 
+def daily_bonus_pay_ids(db, user_id, period):
+    """Bir dönemdeki GÜNLÜK BARDAK BONUSU ödemelerinin payments id'leri.
+
+    İş kuralı: bardak bonusu her gün kapanışta KASADAN nakit veriliyor (yol
+    parası). Yani maaşın parçası değil — ne aylık alacağa eklenir ne de
+    «выплата» olarak sayılır. Ay sonu alacak SADECE saatlik ücret.
+
+    Yeni kapanışlarda böyle bir payments kaydı ARTIK OLUŞTURULMUYOR
+    (bkz. cash_report). Bu fonksiyon yalnızca kural değişmeden ÖNCE yazılmış
+    kayıtları tanır: hiçbiri silinmez, sadece maaş hesabının ve «Выплаты»
+    listesinin dışında tutulur. Böylece geçmiş bakiyeler de «sadece saatlik»
+    olur ve karar geri alınabilir kalır.
+
+    İmza `_drop_shift_daily_pay` ile AYNI (o da kanıtlanmış): kendi kendine
+    ödeme (paid_by = user_id) + tutar o vardiyanın bonusuyla birebir aynı +
+    kapanış saatine ±2 saat. Owner'ın elle yaptığı maaş ödemeleri
+    (paid_by != user_id) ASLA eşleşmez. Her vardiya en fazla BİR ödemeyi
+    tüketir — aynı tutarlı iki kapanış birbirinin kaydını yutmaz."""
+    ids = set()
+    try:
+        shifts = db.execute(
+            "SELECT id, bonus, end_time FROM shifts WHERE user_id=? AND period=? "
+            "AND end_time IS NOT NULL AND COALESCE(bonus,0) > 0 ORDER BY id",
+            (user_id, period)).fetchall()
+        if not shifts:
+            return ids
+        for sh in shifts:
+            amt = int(sh["bonus"] or 0)
+            try:
+                end = datetime.fromisoformat(sh["end_time"])
+            except Exception:
+                continue
+            lo = (end - timedelta(hours=2)).isoformat()
+            hi = (end + timedelta(hours=2)).isoformat()
+            rows = db.execute(
+                "SELECT id FROM payments WHERE user_id=? AND paid_by=? AND amount=? "
+                "AND paid_at BETWEEN ? AND ? ORDER BY id",
+                (user_id, user_id, amt, lo, hi)).fetchall()
+            for r in rows:
+                if r["id"] not in ids:
+                    ids.add(r["id"])
+                    break          # bu vardiya için tek kayıt
+    except Exception as e:
+        logger.warning(f"daily_bonus_pay_ids({user_id},{period}): {e}")
+        return set()
+    return ids
+
+
 def grid_week_key(week_offset):
     """Nero График'inin göreli «week» offset'ini (0=bu hafta, ±1) o haftanın
     PAZARTESİ tarihine (YYYY-MM-DD) çevirir. Böylece «week 0» bugün ile gelecek
@@ -1329,9 +1377,21 @@ def calc_summary(db, user_id, period=None):
     fines = db.execute(
         "SELECT * FROM fines WHERE user_id=? AND period=? ORDER BY created_at",
         (user_id, period)).fetchall()
-    paid_row = db.execute(
-        "SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE user_id=? AND period=?",
-        (user_id, period)).fetchone()
+    # «Ödendi» toplamı = GERÇEK maaş ödemeleri/avanslar. Günlük bardak bonusu
+    # kasadan nakit veriliyor, maaşın parçası değil → ne brüte girer ne buraya.
+    # Kural değişmeden önce yazılmış bonus kayıtları silinmedi, sadece dışarıda
+    # bırakılıyor (bkz. daily_bonus_pay_ids).
+    _dbp = daily_bonus_pay_ids(db, user_id, period)
+    if _dbp:
+        _ph = ",".join("?" * len(_dbp))
+        paid_row = db.execute(
+            "SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE user_id=? AND period=? "
+            f"AND id NOT IN ({_ph})",
+            (user_id, period, *sorted(_dbp))).fetchone()
+    else:
+        paid_row = db.execute(
+            "SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE user_id=? AND period=?",
+            (user_id, period)).fetchone()
     tips = db.execute(
         "SELECT * FROM tips WHERE user_id=? AND period=? ORDER BY created_at",
         (user_id, period)).fetchall()
@@ -1368,7 +1428,13 @@ def calc_summary(db, user_id, period=None):
             (user_id, period)).fetchall()
     except Exception:
         adj_total, _adj_rows = 0, []
-    gross = hourly + bonus + tips_total + ot_bonus + prod_bonus
+    # BARDAK BONUSU BRÜTE GİRMEZ: her gün kapanışta kasadan nakit ödeniyor,
+    # ay sonu alacak sadece saatlik (+ переработка/товары/чаевые). Eskiden brüte
+    # eklenip aynı tutarda «ödendi» kaydıyla geri düşülüyordu; ikisi birbirini
+    # götürüyordu ama kasa raporu gelmeyen bir kapanışta ödeme kaydı hiç
+    # oluşmuyor ve bonus kişinin alacağı olarak kalıyordu (gerçek fark).
+    # `bonus` bilgi olarak yine döndürülür (vardiya detayı, kasa raporu).
+    gross = hourly + tips_total + ot_bonus + prod_bonus
     net = gross - fine_total - paid_total + adj_total
 
     return {
@@ -1980,11 +2046,15 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _recent = [{"sid": r["id"], "start_time": r["start_time"], "end_time": r["end_time"],
                         "hours": r["hours"] or 0, "hp": r["hourly_pay"] or 0,
                         "b": r["bonus"] or 0, "ot": r["ot"] or 0} for r in _rsh]
-            # Bu ayki ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görüp siler (balans düzelir)
+            # Bu ayki ödeme kayıtları — owner yanlış/fazla ödemeyi buradan görüp siler (balans düzelir).
+            # Günlük bardak bonusu kayıtları LİSTEYE GİRMEZ: maaş ödemesi değil, kasadan
+            # verilen nakit. Karışınca «bir tanesi eksik» gibi görünüyordu (bkz. daily_bonus_pay_ids).
+            _dbp_b = daily_bonus_pay_ids(db, b["user_id"], _selp)
             _pays = db.execute(
                 "SELECT id, amount, paid_at FROM payments WHERE user_id=? AND period=? ORDER BY id DESC",
                 (b["user_id"], _selp)).fetchall()
-            _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]} for r in _pays]
+            _pay_list = [{"id": r["id"], "amount": r["amount"] or 0, "at": r["paid_at"]}
+                         for r in _pays if r["id"] not in _dbp_b]
             # Bu ayki manuel düzeltmeler (Корректировка) — kişi kartında gösterilir/silinir
             try:
                 _adjs = db.execute(
@@ -5405,11 +5475,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             exp_total = sum(int(e.get("a", 0) or 0) for e in exps)
             kassa = vsh - sdachi - daily_pay
             cups_total = sum(int(c.get("s", 0) or 0) for c in cups)
-            # Günlük bonus kasadan alındı → aylık maaşta çift sayılmasın diye 'ödendi' kaydet
-            if daily_pay > 0:
-                db.execute(
-                    "INSERT INTO payments (user_id, amount, period, paid_by, paid_by_name, paid_at) VALUES (?,?,?,?,?,?)",
-                    (user.id, daily_pay, now.strftime("%Y-%m"), user.id, user.first_name, now.isoformat()))
+            # Günlük bonus için ARTIK «ödendi» KAYDI YAZILMIYOR.
+            # Eskiden bonus aylık brüte eklenip burada aynı tutarda bir payments
+            # kaydıyla geri düşülüyordu. İkisi normalde birbirini götürüyordu, ama:
+            #   · kasa raporu gelmezse (ya da kasayı BAŞKASI gönderirse) kayıt hiç
+            #     oluşmuyor ve bonus kişinin ay sonu alacağında kalıyordu;
+            #   · oluşan kayıtlar «Выплаты» listesini maaş ödemeleriyle karıştırıyordu.
+            # Artık bonus maaş hesabının hiçbir yerine girmiyor (calc_summary brütten
+            # de çıkardı). Kasadan çıkan para `kassa` hesabında ve cashreports.daily_pay
+            # alanında kayıtlı — bilgi kaybı yok.
             ostalos = {str(c.get("n", "")): int(c.get("o", 0) or 0) for c in cups}
             shift_hours = float(data.get("hours", 0) or 0)
             shift_start = (data.get("start_time") or "")
