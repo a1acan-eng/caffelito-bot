@@ -1836,8 +1836,12 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         kasa_last = {}
     # Kasa raporları listesi: owner hepsini, barista kendininkini görür
     try:
-        _crcols = ("SELECT id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
-                   "cashless,schitano,vyshlo,kassa,sold,expenses,daily_pay,hours,start_time,end_time,note,branch_id FROM cashreports ")
+        # user_id: vardiya ile kasa raporunu KİŞİ üzerinden eşleştirmek için.
+        # bylo/restock/ostalos: uygulamadaki «Сменный отчёт» gruba giden mesajın
+        # aynısını göstersin diye (было +завоз → осталось = продано).
+        _crcols = ("SELECT id,user_id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
+                   "cashless,schitano,vyshlo,kassa,bylo,restock,ostalos,sold,expenses,daily_pay,hours,"
+                   "start_time,end_time,note,branch_id FROM cashreports ")
         if role == "owner":
             crs = db.execute(_crcols + "ORDER BY id DESC LIMIT 15").fetchall()
         else:
