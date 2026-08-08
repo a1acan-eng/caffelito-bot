@@ -41,8 +41,8 @@
     },
     "production": {
       "bot": "@CaffelitoMrBot",
-      "legacyUrl": "https://amusing-creativity-production-a2e7.up.railway.app/",
-      "neroUrl": "https://amusing-creativity-production-a2e7.up.railway.app/nero/2026.08.01-16/index.html",
+      "legacyUrl": "https://amusing-creativity-production-a2e7.up.railway.app/legacy",
+      "neroUrl": "https://amusing-creativity-production-a2e7.up.railway.app/app",
       "storage": "prod-sheet",
       "_note": "Immutable versioned paths. Never overwrite a live build — publish a new folder and repoint."
     }

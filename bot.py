@@ -29,7 +29,7 @@ if _RW_DOMAIN and (not WEBAPP_URL or "github.io" in WEBAPP_URL):
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
 # ─── Nero kademeli açılış (flags.json ile yönlendirme) ───
-# NERO_WEBAPP_URL boşsa YAMA TAMAMEN PASİF: herkes eski uygulamada kalır.
+# NERO_WEBAPP_URL artık SÜRÜM SEÇMEZ (bkz. nero_app_url): Nero hep /app.
 NERO_FLAGS_URL  = os.getenv("NERO_FLAGS_URL", "")
 NERO_WEBAPP_URL = os.getenv("NERO_WEBAPP_URL", "")
 _nero_cache = {"cfg": None, "at": 0.0}
@@ -1235,6 +1235,39 @@ def is_authorized(db, user_id):
     return bool(row["authorized"])
 
 
+def nero_access_ok(db, user_id):
+    """Nero (Mini App) ERİŞİM KAPISI — okuma dahil.
+
+    Eskiden `/api/state` kimseye bakmıyordu: geçerli Telegram imzası olan HERKES
+    tam payload alıyordu. İstemci de yalnızca PIN TANIMLIYSA kilitliyordu, yani
+    PIN'i olmayan (= kayıtsız) kişi doğrudan içeri giriyordu. İki hata birleşince
+    botu açan her telefon/tablet uygulamayı görebiliyordu.
+
+    Kural:
+      · owner → her zaman
+      · arşivli → asla
+      · kaydı yok / owner onayı yok (approved=0) → HAYIR
+      · onaylı ise `is_authorized` (PIN atanmış ya da authorized=1)
+    `approved=0` yeni /start yapanların varsayılanı; mevcut personel migration'da
+    approved=1 aldı, yani kimse dışarıda kalmaz. Onay owner'da:
+    «Заявки на доступ» → approve_user.
+    """
+    try:
+        row = db.execute(
+            "SELECT role, COALESCE(approved,0) AS ap, COALESCE(archived,0) AS ar "
+            "FROM users WHERE user_id=?", (user_id,)).fetchone()
+    except Exception as e:
+        logger.warning(f"nero_access_ok({user_id}): {e}")
+        return False          # şüphede KAPALI (fail-closed)
+    if not row:
+        return False
+    if (row["role"] or "") == "owner":
+        return True
+    if row["ar"] or not row["ap"]:
+        return False
+    return is_authorized(db, user_id)
+
+
 async def require_auth(update, context):
     """Yetkisizse uyarı gönder ve False döndür."""
     db = get_db()
@@ -2197,13 +2230,27 @@ def _nero_flags():
     return _nero_cache["cfg"]
 
 
+def nero_app_url():
+    """Nero'nun SABİT adresi: `<domain>/app` → her zaman `nero/index.html`.
+
+    Sürüm klasörü YOK. Eskiden her değişiklik için `nero/<tarih-N>/` klasörü
+    üretilip Railway'de `NERO_WEBAPP_URL` elle güncelleniyordu; bu, her küçük
+    düzeltmeyi iki adımlık bir işe çeviriyordu. Artık yeni sürüm =
+    `nero/index.html`'i değiştir + push. Geri alma = git'te o dosyayı geri al.
+
+    `NERO_WEBAPP_URL` artık sürüm seçmek için KULLANILMIYOR; yalnızca uygulamayı
+    başka bir yerden servis etmek gerekirse (tam http(s) adresi) devreye girer.
+    """
+    env = (NERO_WEBAPP_URL or "").strip()
+    if env.startswith("http") and "/nero/" not in env:
+        return env                       # açık dış adres (acil durum)
+    return (WEBAPP_URL or "").rstrip("/") + "/app"
+
+
 def nero_base_url(user_id, db=None):
     """Bu kullanıcı Nero'yu mu görecek? Evet → Nero adresi, hayır/şüphe → None.
     Öncelik: kill > deny.user > deny.branch > allow.user > allow.branch > yüzde > None.
     HER hata yolu None döner (fail-closed) → eski uygulama."""
-    if not NERO_WEBAPP_URL:
-        logger.info("NERO kapali: NERO_WEBAPP_URL bos")
-        return None
     cfg = _nero_flags()
     if not cfg:
         logger.info("NERO kapali: flags.json okunamadi")
@@ -2230,9 +2277,9 @@ def nero_base_url(user_id, db=None):
         elif bid is not None and bid in [int(x) for x in (deny.get("branches") or [])]:
             res, why = None, "deny.branch"
         elif uid in allow_u:
-            res, why = NERO_WEBAPP_URL, "allow.user"
+            res, why = nero_app_url(), "allow.user"
         elif bid is not None and bid in [int(x) for x in (allow.get("branches") or [])]:
-            res, why = NERO_WEBAPP_URL, "allow.branch"
+            res, why = nero_app_url(), "allow.branch"
         else:
             pct = int((cfg.get("rollout") or {}).get("percent") or 0)
             res, why = None, "listede-yok"
@@ -2243,7 +2290,7 @@ def nero_base_url(user_id, db=None):
                     h ^= ord(ch)
                     h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
                 if (h % 100) < min(100, pct):
-                    res, why = NERO_WEBAPP_URL, f"rollout-{pct}%"
+                    res, why = nero_app_url(), f"rollout-{pct}%"
         logger.info(f"NERO uid={uid} bid={bid} allow={allow_u} sonuc={'NERO' if res else 'ESKI'} ({why})")
         return res
     except Exception as e:
@@ -3592,9 +3639,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     db = get_db()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
-    if not is_authorized(db, user.id):
+    # Mini App'ten gelen HER eylem aynı kapıdan geçer (okuma /api/state'te aynı
+    # kontrolü yapıyor). Onay bekleyen (approved=0) kimse işlem yapamaz.
+    if not nero_access_ok(db, user.id):
+        logger.info(f"NERO eylem reddedildi uid={user.id}")
         await update.message.reply_text(
-            "🔒 У вас нет доступа. Попросите владельца назначить пароль.",
+            "🔒 У вас нет доступа. Попросите владельца подтвердить вас и назначить PIN-код.",
             parse_mode="Markdown")
         return
     # Grup/owner mesajlarında gösterilecek ad: owner'ın atadığı display_name (yoksa TG adı)
@@ -6883,14 +6933,30 @@ def _nocache(resp):
 
 
 async def web_index(request):
-    """Mini App HTML'ini sun (aynı origin → CORS yok, hash gerekmez)."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    """Kök adres → GÜNCEL NERO (`nero/index.html`).
+
+    Eskiden burası eski uygulamayı (kökteki index.html) sunuyordu ve Nero ayrı bir
+    sürüm klasöründeydi. Eski uygulamaya dönülmeyeceği için kök artık Nero'yu
+    sunar; eski uygulama `legacy.html` olarak duruyor (flags.json «kill» yolu ve
+    olası acil dönüş için silinmedi)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "index.html")
+    if not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
         with open(path, "r", encoding="utf-8") as f:
             html = f.read()
         return _nocache(_cors(web.Response(text=html, content_type="text/html")))
     except Exception as e:
         return web.Response(text=f"index.html bulunamadı: {e}", status=500)
+
+
+async def web_legacy(request):
+    """Eski uygulama — SADECE acil dönüş yolu (flags.json «kill»/legacyUrl).
+    Kök adres artık Nero'yu sunduğu için eski uygulamanın kendi adresi bu."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    if not os.path.isfile(path):
+        return _cors(web.Response(text="404: legacy index.html yok", status=404))
+    return _nocache(_cors(web.FileResponse(path)))
 
 
 async def web_image(request):
@@ -6940,28 +7006,14 @@ async def web_nero(request):
 
 
 async def web_app_current(request):
-    """SABİT ADRES: /app → NERO_WEBAPP_URL hangi sürümü gösteriyorsa onu servis eder.
+    """SABİT ADRES: /app → HER ZAMAN `nero/index.html` (güncel Nero).
 
-    Neden: BotFather'daki Mini App adresi her yeni sürümde elle güncellenmek zorundaydı
-    (uzun adres, kopyalarken kısalma → 404). Artık BotFather'a bir kez «/app» yazılır;
-    sürüm değiştirmek = sadece Railway'de NERO_WEBAPP_URL'i güncellemek.
-    Sürümlü klasörler olduğu gibi kalır (dokunulmazlık korunur)."""
-    from urllib.parse import urlparse
-    rel = ""
-    try:
-        rel = (urlparse(NERO_WEBAPP_URL or "").path or "").lstrip("/")
-    except Exception:
-        rel = ""
-    if rel.startswith("nero/"):
-        rel = rel[len("nero/"):]
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero")
-    full = os.path.normpath(os.path.join(base, rel)) if rel else ""
-    if not full or not full.startswith(base + os.sep):
-        return _cors(web.Response(text="404: Nero surumu ayarli degil", status=404))
-    if os.path.isdir(full):
-        full = os.path.join(full, "index.html")
+    BotFather'a bir kez «/app» yazılır ve bir daha dokunulmaz. Sürüm klasörü ve
+    her değişiklikte env güncelleme dönemi bitti: yeni sürüm = `nero/index.html`'i
+    değiştir + push. Geri alma = git'te o dosyayı geri al."""
+    full = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "index.html")
     if not os.path.isfile(full):
-        return _cors(web.Response(text="404: Not Found", status=404))
+        return _cors(web.Response(text="404: nero/index.html yok", status=404))
     return _nocache(_cors(web.FileResponse(full)))
 
 
@@ -7013,6 +7065,16 @@ async def api_state(request):
     user = web_auth_user(body, db)
     if not user:
         return _cors(web.json_response({"error": "unauthorized"}, status=403))
+    # ERİŞİM KAPISI: imza geçerli olsa bile kayıtlı/onaylı değilse VERİ YOK.
+    # 403 yerine minik bir «locked» payload dönüyoruz ki uygulama bozuk görünmesin,
+    # kişi net bir «Доступ ограничен» ekranı görsün. İçinde şube/katalog/personel
+    # gibi HİÇBİR işletme verisi yok.
+    if not nero_access_ok(db, user["id"]):
+        from urllib.parse import quote as _q
+        logger.info(f"NERO erisim reddedildi uid={user['id']} ({user.get('first_name','')})")
+        return _nocache(_cors(web.Response(
+            text=f"uid={user['id']}&locked=1&name={_q(user.get('first_name','') or '')}",
+            content_type="text/plain")))
     try:
         # Opsiyonel «period» (YYYY-MM): owner geçmiş ay maaşlarını görüntülerken gelir.
         payload = build_hash_payload(db, user["id"], user.get("first_name", "Бариста"),
@@ -7089,6 +7151,7 @@ async def start_web_server(app):
     web_app["tg_app"] = app
     web_app.add_routes([
         web.get("/", web_index),
+        web.get("/legacy", web_legacy),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
         web.get("/app", web_app_current),
