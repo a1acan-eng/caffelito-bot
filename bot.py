@@ -1922,7 +1922,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                              "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
                             for b in get_branches(db, only_active=False)]
         else:
-            branches_out = [{"id": b["id"], "name": b["name"]} for b in get_branches(db, only_active=True)]
+            # BARISTA'YA DA ÇALIŞMA SAATLERİ GİDER. Eskiden sadece {id, name}
+            # gönderiliyordu; istemci eksik alanları GÖRÜNCE VARSAYILANA düşüyordu
+            # (07:00–03:00 + «ödenmez») → kapanış ekranı, owner şubeyi ne yaparsa
+            # yapsın HER ZAMAN 03:00–07:00 = tam 4 saat kesiyordu. Owner'da doğru
+            # görünüp baristada görünmemesinin sebebi buydu.
+            # Bunlar gizli veri değil: kişi kendi ödenen saatini doğru görmeli.
+            branches_out = [{"id": b["id"], "name": b["name"],
+                             "open": (b["open_hour"] if b["open_hour"] is not None else 7),
+                             "close": (b["close_hour"] if b["close_hour"] is not None else 3),
+                             "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
+                             "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
+                            for b in get_branches(db, only_active=True)]
     except Exception:
         branches_out = []
     my_branch = user_branch_id(db, user_id)
