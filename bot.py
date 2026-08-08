@@ -4714,8 +4714,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Филиал не найден.")
                 return
             def _ci(v, lo, hi, d):
+                """Saat değeri. Nero «ЧЧ:ММ» (time input) gönderir, eski istemci
+                düz sayı. Eskiden yalnızca int() deneniyordu: «02:00» patlıyor,
+                sessizce VARSAYILANA (07/03) düşülüyordu → owner kapanışı 03:00'ten
+                02:00'a çekse de kaydolmuyor, ekranda hep 03:00 kalıyordu ve
+                ödenmeyen pencere 4 saat olarak duruyordu."""
                 try:
-                    return max(lo, min(hi, int(v)))
+                    s = str(v).strip()
+                    if ":" in s:
+                        s = s.split(":")[0]
+                    return max(lo, min(hi, int(float(s))))
                 except Exception:
                     return d
             oh = _ci(data.get("open"), 0, 23, 7)
