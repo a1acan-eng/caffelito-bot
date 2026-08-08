@@ -1060,12 +1060,32 @@ def daily_bonus_pay_ids(db, user_id, period):
     listesinin dışında tutulur. Böylece geçmiş bakiyeler de «sadece saatlik»
     olur ve karar geri alınabilir kalır.
 
-    İmza `_drop_shift_daily_pay` ile AYNI (o da kanıtlanmış): kendi kendine
-    ödeme (paid_by = user_id) + tutar o vardiyanın bonusuyla birebir aynı +
-    kapanış saatine ±2 saat. Owner'ın elle yaptığı maaş ödemeleri
-    (paid_by != user_id) ASLA eşleşmez. Her vardiya en fazla BİR ödemeyi
-    tüketir — aynı tutarlı iki kapanış birbirinin kaydını yutmaz."""
+    İki aşamalı eşleşme; ikisinde de `paid_by = user_id` şartı var, yani
+    owner'ın elle yaptığı maaş ödemeleri (paid_by != user_id) ASLA eşleşmez.
+
+    1) KESİN: bonus kaydı, kasa raporuyla AYNI istekte ve AYNI `now` ile
+       yazılıyordu → `payments.paid_at` ile `cashreports.created_at` birebir
+       aynı ve tutar `cashreports.daily_pay`e eşit. Vardiya saatleri sonradan
+       elle düzeltilmiş olsa bile (edit_shift / «другое время ухода») bu
+       eşleşme kaymaz.
+    2) YEDEK: kasa raporu silinmişse eski imza — `_drop_shift_daily_pay` ile
+       aynı: tutar o vardiyanın bonusuyla birebir + kapanış saatine ±2 saat.
+       Her vardiya en fazla BİR ödemeyi tüketir (aynı tutarlı iki kapanış
+       birbirinin kaydını yutmaz)."""
     ids = set()
+    # 1) Kasa raporuyla birebir zaman+tutar eşleşmesi
+    try:
+        rows = db.execute(
+            "SELECT p.id AS id FROM payments p "
+            "JOIN cashreports c ON c.user_id = p.user_id AND c.created_at = p.paid_at "
+            "AND c.daily_pay = p.amount "
+            "WHERE p.user_id=? AND p.period=? AND p.paid_by = p.user_id "
+            "AND COALESCE(c.daily_pay,0) > 0", (user_id, period)).fetchall()
+        for r in rows:
+            ids.add(r["id"])
+    except Exception as e:
+        logger.warning(f"daily_bonus_pay_ids/kassa({user_id},{period}): {e}")
+    # 2) Yedek: vardiya bonusu + ±2 saat
     try:
         shifts = db.execute(
             "SELECT id, bonus, end_time FROM shifts WHERE user_id=? AND period=? "
@@ -1090,8 +1110,7 @@ def daily_bonus_pay_ids(db, user_id, period):
                     ids.add(r["id"])
                     break          # bu vardiya için tek kayıt
     except Exception as e:
-        logger.warning(f"daily_bonus_pay_ids({user_id},{period}): {e}")
-        return set()
+        logger.warning(f"daily_bonus_pay_ids/shift({user_id},{period}): {e}")
     return ids
 
 
