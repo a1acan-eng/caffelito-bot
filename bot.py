@@ -180,9 +180,13 @@ def get_db():
         cashless INTEGER, schitano INTEGER, vyshlo INTEGER, na_sdachi INTEGER, kassa INTEGER,
         expenses TEXT, expenses_total INTEGER, note TEXT)""")
     # cashreports — sonradan eklenen sütunlar (eski DB'ler için)
+    # edits: owner'ın sonradan yaptığı düzeltmelerin APPEND-ONLY geçmişi (JSON dizi).
+    #        Her giriş {at, by, by_name, ch:{alan:[eski,yeni]}} — eski değer ASLA silinmez.
     for _col, _typ in (("daily_pay", "INTEGER"), ("hours", "REAL"),
                        ("start_time", "TEXT"), ("end_time", "TEXT"),
-                       ("coffee_kg", "REAL")):
+                       ("coffee_kg", "REAL"),
+                       ("edits", "TEXT"), ("edited_at", "TEXT"),
+                       ("edited_by", "INTEGER"), ("edited_by_name", "TEXT")):
         try:
             db.execute(f"ALTER TABLE cashreports ADD COLUMN {_col} {_typ}")
         except sqlite3.OperationalError:
@@ -1874,12 +1878,21 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         # aynısını göstersin diye (было +завоз → осталось = продано).
         _crcols = ("SELECT id,user_id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
                    "cashless,schitano,vyshlo,kassa,bylo,restock,ostalos,sold,expenses,daily_pay,hours,"
-                   "start_time,end_time,note,branch_id FROM cashreports ")
+                   "start_time,end_time,note,branch_id,edits,edited_at,edited_by_name FROM cashreports ")
         if role == "owner":
             crs = db.execute(_crcols + "ORDER BY id DESC LIMIT 15").fetchall()
         else:
             crs = db.execute(_crcols + "WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
         kasa_reports = [dict(r) for r in crs]
+        # `edits` DB'de sınırsız büyür (her düzeltme eski+yeni tam kırılımı taşır).
+        # Payload'a yalnızca SON 20 düzeltme gider — geçmişin tamamı DB'de kalır.
+        for _kr in kasa_reports:
+            try:
+                _h = json.loads(_kr.get("edits") or "[]")
+                if isinstance(_h, list) and len(_h) > 20:
+                    _kr["edits"] = json.dumps(_h[-20:], ensure_ascii=False)
+            except Exception:
+                _kr["edits"] = ""
     except Exception:
         kasa_reports = []
     # ── CLOSING OWNER guard: bu şube, benim vardiyam başladıktan SONRA zaten kapatıldı mı?
@@ -5692,6 +5705,126 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
+
+        # ─── Kasa raporu DÜZELTMESİ (owner) ───
+        # Kapanış raporu sonradan düzeltilebilir: bardak zinciri (было/завоз/осталось),
+        # расходы ve заметка. «Продано» ve toplamlar TÜRETİLİR, elle girilmez.
+        # PARA alanlarına (итого/click/payme/karta/terminal/вышло/на сдачу/касса/
+        # дневной бонус) DOKUNULMAZ — onlar POS ve ödenmiş nakitle bağlı.
+        # ESKİ VERİ SİLİNMEZ: her düzeltme `cashreports.edits` dizisine {ne zaman,
+        # kim, hangi alan eski→yeni} olarak eklenir + audit log'a yazılır.
+        # Zincir etkisi: bu şubenin EN SON raporunun «осталось»u düzeltilirse
+        # sonraki vardiyanın «Было» ön-dolumu (kasa_last) otomatik düzelir.
+        elif action == "cash_report_edit":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                rid = int(data.get("id") or 0)
+            except Exception:
+                rid = 0
+            rep = db.execute("SELECT * FROM cashreports WHERE id=?", (rid,)).fetchone() if rid else None
+            if not rep:
+                await update.message.reply_text("❌ Отчёт не найден.")
+                return
+            _rk = rep.keys()
+
+            def _cr_j(v, d):
+                try:
+                    x = json.loads(v) if isinstance(v, str) and v else v
+                    return x if isinstance(x, type(d)) else d
+                except Exception:
+                    return d
+
+            old_bylo = _cr_j(rep["bylo"], {})
+            old_rest = _cr_j(rep["restock"], {})
+            old_ost = _cr_j(rep["ostalos"], {})
+            old_sold = _cr_j(rep["sold"], {})
+            old_exps = _cr_j(rep["expenses"], [])
+            old_note = rep["note"] or ""
+            # Bardaklar: istemci TÜM satırları [{n,b,r,o}] gönderir. «Завоз» negatif
+            # olabilir (başka noktaya verildi) → max(0,…) UYGULANMAZ.
+            cups_in = data.get("cups")
+            if isinstance(cups_in, list) and cups_in:
+                new_bylo, new_rest, new_ost, new_sold = {}, {}, {}, {}
+                for _c in cups_in:
+                    if not isinstance(_c, dict):
+                        continue
+                    _n = str(_c.get("n", "") or "")
+                    if not _n:
+                        continue
+                    _b = max(0, int(_c.get("b", 0) or 0))
+                    _r = int(_c.get("r", 0) or 0)
+                    _o = max(0, int(_c.get("o", 0) or 0))
+                    new_bylo[_n] = _b
+                    new_rest[_n] = _r
+                    new_ost[_n] = _o
+                    new_sold[_n] = max(0, _b + _r - _o)
+            else:
+                new_bylo, new_rest, new_ost, new_sold = old_bylo, old_rest, old_ost, old_sold
+            exps_in = data.get("expenses")
+            if isinstance(exps_in, list):
+                new_exps = [{"n": str(_e.get("n", "") or "").strip(), "a": _norm_amt(_e.get("a", 0))}
+                            for _e in exps_in if isinstance(_e, dict)]
+                new_exps = [_e for _e in new_exps if _e["n"] or _e["a"]]
+            else:
+                new_exps = old_exps
+            new_note = data.get("note")
+            new_note = old_note if new_note is None else str(new_note).strip()
+            cups_total = sum(int(v or 0) for v in new_sold.values())
+            exp_total = sum(int(_e.get("a", 0) or 0) for _e in new_exps)
+
+            ch = {}
+
+            def _cr_norm(x):
+                # Karşılaştırma için: SIFIR = «yok». Eski raporlarda bir boy hiç
+                # yazılmamış olabilir ({} vs {"300 мл":0}); istemci ise her boyu
+                # gönderir → aksi hâlde hiçbir şey değişmeden «değişti» sanılırdı.
+                return {k: int(v or 0) for k, v in x.items() if int(v or 0) != 0} if isinstance(x, dict) else x
+
+            def _cr_cmp(key, o, n):
+                _o, _n = _cr_norm(o), _cr_norm(n)
+                if json.dumps(_o, ensure_ascii=False, sort_keys=True) != json.dumps(_n, ensure_ascii=False, sort_keys=True):
+                    ch[key] = [o, n]
+
+            _cr_cmp("bylo", old_bylo, new_bylo)
+            _cr_cmp("restock", old_rest, new_rest)
+            _cr_cmp("ostalos", old_ost, new_ost)
+            _cr_cmp("sold", old_sold, new_sold)
+            _cr_cmp("expenses", old_exps, new_exps)
+            _cr_cmp("note", old_note, new_note)
+            if not ch:
+                await update.message.reply_text("ℹ️ Изменений нет.")
+                return
+            hist = _cr_j(rep["edits"] if "edits" in _rk else None, [])
+            hist.append({"at": now.isoformat(), "by": user.id, "by_name": shown, "ch": ch})
+            db.execute(
+                "UPDATE cashreports SET bylo=?,restock=?,ostalos=?,sold=?,cups_total=?,"
+                "expenses=?,expenses_total=?,note=?,edits=?,edited_at=?,edited_by=?,edited_by_name=? "
+                "WHERE id=?",
+                (json.dumps(new_bylo, ensure_ascii=False), json.dumps(new_rest, ensure_ascii=False),
+                 json.dumps(new_ost, ensure_ascii=False), json.dumps(new_sold, ensure_ascii=False),
+                 cups_total, json.dumps(new_exps, ensure_ascii=False), exp_total, new_note,
+                 json.dumps(hist, ensure_ascii=False), now.isoformat(), user.id, shown, rid))
+            db.commit()
+            log_action(db, "cash_report_edit", user.id, user.first_name,
+                       rep["user_id"], rep["user_name"] or "",
+                       {"report_id": rid, "changes": ch})
+            _lbl = {"bylo": "было", "restock": "завоз", "ostalos": "осталось",
+                    "sold": "продано", "expenses": "расходы", "note": "заметка"}
+            _what = " · ".join(_lbl.get(k, k) for k in ch)
+            try:
+                _rd = datetime.fromisoformat(rep["created_at"]).strftime("%d.%m %H:%M")
+            except Exception:
+                _rd = rep["date"] or "?"
+            await update.message.reply_text(
+                f"✏️ Отчёт исправлен — *{rep['user_name'] or '?'}* · {_rd}\n"
+                f"Изменено: {_what}\n"
+                f"🥤 Продано: {cups_total} шт · 💸 Расходы: {fmt_sum(exp_total)} сум\n"
+                "_Прежние значения сохранены в истории отчёта._",
+                parse_mode="Markdown")
+            await refresh_webapp_keyboard(update, context, db, user, "🔄 Отчёт обновлён 👇")
 
         # ─── Ступени обслуживания: günlük ознакомление onayı ───
         elif action == "standard_ack":
