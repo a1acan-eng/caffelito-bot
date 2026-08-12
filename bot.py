@@ -2195,15 +2195,41 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(u.display_name,u.name) AS nm "
+                    "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _repq("SELECT t.id, t.amount, t.note, t.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM tips t LEFT JOIN users u ON u.user_id=t.user_id ORDER BY t.id DESC", (), 60)
-        _pa = _repq("SELECT p.id, p.amount, p.kind, p.note, p.paid_at, COALESCE(u.display_name,u.name) AS nm "
+        # KENDİNE ÖDEME DIŞLANMIYOR ARTIK. Eski `p.paid_by != p.user_id` filtresi
+        # kaba bir aletti: amacı kural değişmeden önce yazılmış GÜNLÜK BARDAK
+        # BONUSU kayıtlarını listeden çıkarmaktı (onlar da paid_by=user_id'dir),
+        # ama aynı anda owner'ın KENDİNE yaptığı GERÇEK maaş ödemelerini de
+        # siliyordu → «Выплачено» listesinde herkes vardı, owner yoktu ve
+        # işletmeden çıkan toplam para eksik görünüyordu.
+        # Artık kendine ödemeler de geliyor; yalnızca bonus imzasına UYAN kayıtlar
+        # (daily_bonus_pay_ids — aynı kişi, tutar vardiyanın bonusuyla birebir,
+        # ödeme anı vardiya kapanışının ±2 saatinde) ayıklanıyor.
+        _pa = _repq("SELECT p.id, p.amount, p.kind, p.note, p.paid_at, p.user_id AS puid, "
+                    "COALESCE(u.display_name,u.name) AS nm "
                     "FROM payments p LEFT JOIN users u ON u.user_id=p.user_id "
-                    "WHERE p.paid_by!=p.user_id ORDER BY p.id DESC", (), 60)
+                    "ORDER BY p.id DESC", (), 120)
+        try:
+            _skip = set()
+            _seen = set()
+            for _r in _pa:
+                _u = _r["puid"]
+                _pr = str(_r["paid_at"] or "")[:7]
+                if not _u or not _pr or (_u, _pr) in _seen:
+                    continue
+                _seen.add((_u, _pr))
+                _skip |= set(daily_bonus_pay_ids(db, _u, _pr) or [])
+            if _skip:
+                _pa = [_r for _r in _pa if _r["id"] not in _skip]
+            _pa = _pa[:60]
+        except Exception as e:
+            logger.warning(f"pays bonus filtresi: {e}")
+            _pa = _pa[:60]
         _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
         _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
@@ -2214,14 +2240,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "? AS nm FROM shifts s "
+                    "? AS nm, s.user_id AS uid FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
                     (user_id,), 50)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
