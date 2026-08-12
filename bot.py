@@ -245,6 +245,18 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, user_name TEXT, date TEXT, created_at TEXT,
         UNIQUE(user_id, date))""")
+    # ─── Cihaz kaydı (Device ID) — Nero erişiminin İKİNCİ kapısı ───
+    # `nero_access_ok` KİMLİK kapısıdır (kim girebilir); bu CİHAZ kapısıdır
+    # (hangi telefondan/tabletten girebilir). Kural TOFU: kişinin İLK cihazı
+    # sessizce güvenilir sayılır — mevcut kimse kilitlenmesin — sonraki her
+    # cihaz owner onayı bekler. Owner asla engellenmez (onayı o veriyor).
+    db.execute("""CREATE TABLE IF NOT EXISTS devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, device_id TEXT,
+        label TEXT, platform TEXT,
+        approved INTEGER DEFAULT 0, revoked INTEGER DEFAULT 0,
+        first_seen TEXT, last_seen TEXT, seen_count INTEGER DEFAULT 0,
+        UNIQUE(user_id, device_id))""")
     # ─── Audit log ───
     db.execute("""CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1239,6 +1251,62 @@ def is_authorized(db, user_id):
     return bool(row["authorized"])
 
 
+def device_gate(db, user_id, device_id, platform="", label=""):
+    """Nero CİHAZ kapısı. Döner: 'ok' | 'pending' | 'revoked' | 'new' (yeni onay bekliyor).
+
+    `nero_access_ok` kişinin girip giremeyeceğini söyler; bu ise HANGİ CİHAZDAN.
+    Kural (TOFU — trust on first use):
+      · cihaz kimliği YOKSA (eski istemci, depolama kapalı) → 'ok'. Yeni katman
+        hiçbir mevcut kullanımı bozmaz.
+      · owner → HER ZAMAN 'ok' (onayı veren o; kilitlenirse kimse açamaz).
+        Cihazı yine de kaydedilir, listede görünür.
+      · kişinin İLK cihazı → sessizce onaylı. Bugün çalışan herkes bir sonraki
+        açılışta buradan geçer, kimse kapıda kalmaz.
+      · sonraki her YENİ cihaz → 'new' (kayıt açılır, approved=0) → owner onaylayana
+        kadar 'pending'.
+      · owner tarafından çıkarılan cihaz → 'revoked'.
+    HATA DURUMUNDA 'ok' döner (fail-OPEN). Kimlik kapısı fail-closed'dur; bu
+    katmanın bir arızası yüzünden ekip işten kalmasın.
+    """
+    did = (device_id or "").strip()[:64]
+    if not did:
+        return "ok"
+    try:
+        _r = db.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
+        is_owner = bool(_r and (_r["role"] or "") == "owner")
+        now = datetime.now(TZ).isoformat()
+        row = db.execute("SELECT * FROM devices WHERE user_id=? AND device_id=?",
+                         (user_id, did)).fetchone()
+        if row:
+            db.execute("UPDATE devices SET last_seen=?, seen_count=COALESCE(seen_count,0)+1, "
+                       "platform=CASE WHEN ?='' THEN platform ELSE ? END WHERE id=?",
+                       (now, platform or "", platform or "", row["id"]))
+            db.commit()
+            if is_owner:
+                return "ok"
+            if row["revoked"]:
+                return "revoked"
+            return "ok" if row["approved"] else "pending"
+        # YENİ cihaz
+        n = db.execute("SELECT COUNT(*) AS c FROM devices WHERE user_id=?", (user_id,)).fetchone()["c"] or 0
+        auto = 1 if (is_owner or n == 0) else 0
+        db.execute(
+            "INSERT INTO devices (user_id,device_id,label,platform,approved,revoked,first_seen,last_seen,seen_count) "
+            "VALUES (?,?,?,?,?,0,?,?,1)",
+            (user_id, did, (label or "")[:64], (platform or "")[:32], auto, now, now))
+        db.commit()
+        try:
+            log_action(db, "device_new", user_id, display_name_for(db, user_id, fallback=""),
+                       user_id, display_name_for(db, user_id, fallback=""),
+                       {"device": did[:12], "platform": platform or "", "auto": auto})
+        except Exception:
+            pass
+        return "ok" if auto else "new"
+    except Exception as e:
+        logger.warning(f"device_gate({user_id}): {e}")
+        return "ok"
+
+
 def nero_access_ok(db, user_id):
     """Nero (Mini App) ERİŞİM KAPISI — okuma dahil.
 
@@ -1895,6 +1963,26 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── Kayıtlı cihazlar (Устройства) — SADECE owner ──
+    # Onay bekleyenler en üstte; sonra en son görülen.
+    devices_out = []
+    if role == "owner":
+        try:
+            for _d in db.execute(
+                    "SELECT d.*, u.name AS uname, u.display_name AS udisp FROM devices d "
+                    "LEFT JOIN users u ON u.user_id = d.user_id "
+                    "ORDER BY (CASE WHEN COALESCE(d.revoked,0)=0 AND COALESCE(d.approved,0)=0 "
+                    "THEN 0 ELSE 1 END), d.last_seen DESC LIMIT 60").fetchall():
+                devices_out.append({
+                    "id": _d["id"], "uid": _d["user_id"],
+                    "n": (_d["udisp"] or _d["uname"] or "?"),
+                    "dev": (_d["device_id"] or "")[:8],
+                    "pf": _d["platform"] or "", "ap": int(_d["approved"] or 0),
+                    "rv": int(_d["revoked"] or 0),
+                    "first": _d["first_seen"] or "", "last": _d["last_seen"] or "",
+                    "cnt": int(_d["seen_count"] or 0)})
+        except Exception:
+            devices_out = []
     # ── Denetim günlüğü (Журнал действий) — SADECE owner ──
     # `logs` tablosu yıllardır doluyordu ama hiçbir ekran göstermiyordu.
     # Başarılı girişler (login_ok) hariç: her açılışta yazılıyorlar ve gerçek
@@ -2021,6 +2109,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
+        f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
         f"my_branch_closed_today={branch_closed_today}",
         f"closing_override_uid={closing_override}",
         f"my_last_closing_at={quote(last_closing_at)}",
@@ -3737,6 +3826,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             action = "order"
         user = update.effective_user
         now = datetime.now(TZ)
+
+        # CİHAZ KAPISI — okuma tarafıyla (/api/state) aynı kural. Onaylanmamış
+        # cihazdan gelen EYLEM işlenmez; yoksa kişi veriyi göremez ama yine de
+        # vardiya başlatıp kasa gönderebilirdi.
+        _dg = device_gate(db, user.id, str(data.get("device") or "")[:64],
+                          platform=str(data.get("dev_platform") or "")[:32])
+        if _dg in ("new", "pending", "revoked"):
+            logger.info(f"NERO cihaz eylemi reddedildi uid={user.id} durum={_dg}")
+            await update.message.reply_text(
+                "📱 Это устройство не подтверждено. Обратитесь к владельцу."
+                if _dg != "revoked" else
+                "📱 Доступ с этого устройства отключён владельцем.")
+            return
 
         # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
         # Tek şubede branch 1'in grubu = eski active_group olduğundan davranış değişmez.
@@ -5846,6 +5948,49 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Отчёт обновлён 👇")
 
+        # ─── Cihaz kararı (owner): onayla · çıkar · geri al ───
+        elif action == "device_decide":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _did = int(data.get("id") or 0)
+            except Exception:
+                _did = 0
+            dec = str(data.get("decision") or "").strip()
+            drow = db.execute("SELECT * FROM devices WHERE id=?", (_did,)).fetchone() if _did else None
+            if not drow or dec not in ("approve", "revoke", "delete"):
+                await update.message.reply_text("❌ Устройство не найдено.")
+                return
+            _dnm = display_name_for(db, drow["user_id"], fallback="?")
+            if dec == "approve":
+                db.execute("UPDATE devices SET approved=1, revoked=0 WHERE id=?", (_did,))
+                _txt = f"✅ Устройство подтверждено — *{md_safe(_dnm)}*"
+            elif dec == "revoke":
+                db.execute("UPDATE devices SET revoked=1, approved=0 WHERE id=?", (_did,))
+                _txt = f"🚫 Устройство отключено — *{md_safe(_dnm)}*"
+            else:
+                # Kaydı tamamen sil: o cihaz bir daha girerse YENİDEN sıfırdan
+                # değerlendirilir (kişinin başka cihazı varsa yine onay bekler).
+                db.execute("DELETE FROM devices WHERE id=?", (_did,))
+                _txt = f"🗑 Устройство удалено — *{md_safe(_dnm)}*"
+            db.commit()
+            log_action(db, "device_" + dec, user.id, user.first_name,
+                       drow["user_id"], _dnm,
+                       {"device": (drow["device_id"] or "")[:12], "platform": drow["platform"] or ""})
+            # Sahibine haber ver — beklediği onay geldiyse uygulamayı yeniden açsın.
+            try:
+                if dec == "approve":
+                    await context.bot.send_message(
+                        drow["user_id"], "✅ Ваше устройство подтверждено. Откройте приложение заново.")
+                elif dec == "revoke":
+                    await context.bot.send_message(
+                        drow["user_id"], "🚫 Доступ с этого устройства отключён владельцем.")
+            except Exception as e:
+                logger.warning(f"device notify user failed: {e}")
+            await update.message.reply_text(_txt, parse_mode="Markdown")
+
         # ─── Ступени обслуживания: günlük ознакомление onayı ───
         elif action == "standard_ack":
             today_str = now.strftime("%Y-%m-%d")
@@ -7246,6 +7391,37 @@ async def api_state(request):
         logger.info(f"NERO erisim reddedildi uid={user['id']} ({user.get('first_name','')})")
         return _nocache(_cors(web.Response(
             text=f"uid={user['id']}&locked=1&name={_q(user.get('first_name','') or '')}",
+            content_type="text/plain")))
+    # CİHAZ KAPISI: kişi yetkili olsa bile onaylanmamış bir telefondan/tabletten
+    # veri verilmez. Kişinin ilk cihazı otomatik güvenilir (kimse kilitlenmesin);
+    # sonraki cihazlar owner onayı bekler. Cihaz kimliği göndermeyen istemci
+    # eski davranışı görür.
+    _dev = str(body.get("device") or "")[:64]
+    _dst = device_gate(db, user["id"], _dev,
+                       platform=str(body.get("dev_platform") or "")[:32],
+                       label=str(body.get("dev_label") or "")[:64])
+    if _dst in ("new", "pending", "revoked"):
+        from urllib.parse import quote as _q
+        if _dst == "new":
+            # Owner'lara HABER VER — yoksa çalışan kapıda kalır, kimsenin haberi olmaz.
+            try:
+                _tg = request.app.get("tg_app")
+                _nm = display_name_for(db, user["id"], fallback=user.get("first_name", "?"))
+                _pl = str(body.get("dev_platform") or "?")
+                for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                    await _tg.bot.send_message(
+                        _o["user_id"],
+                        f"📱 *Новое устройство* — {md_safe(_nm)}\n"
+                        f"Платформа: {md_safe(_pl)} · код `{_dev[:8]}`\n"
+                        "Вход заблокирован до подтверждения.\n"
+                        "Управление → Устройства",
+                        parse_mode="Markdown")
+            except Exception as e:
+                logger.warning(f"device notify failed: {e}")
+        logger.info(f"NERO cihaz reddedildi uid={user['id']} dev={_dev[:8]} durum={_dst}")
+        return _nocache(_cors(web.Response(
+            text=(f"uid={user['id']}&locked=1&lock_reason=device&lock_dev={_q(_dev[:8])}"
+                  f"&name={_q(user.get('first_name','') or '')}"),
             content_type="text/plain")))
     try:
         # Opsiyonel «period» (YYYY-MM): owner geçmiş ay maaşlarını görüntülerken gelir.
