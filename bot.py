@@ -2059,17 +2059,32 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     my_branch = user_branch_id(db, user_id)
     # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
     try:
+        # `items` DE GÖNDERİLİR: uygulama planlı siparişi açtığında içindekileri
+        # gösterebilsin. Eskiden yalnızca toplam gidiyordu; Nero listeyi boş
+        # kuruyor ve ekran «0 позиций» görünüyordu — sipariş aslında doluydu.
+        # `body` yedek: katalog değiştiyse anahtarlar çözülemese bile ne
+        # sipariş edildiği metin olarak okunabilsin.
         if role == "owner":
             _srows = db.execute(
-                "SELECT id,user_name,total,send_at,branch_id FROM scheduled_orders "
+                "SELECT id,user_name,total,send_at,branch_id,items,body FROM scheduled_orders "
                 "WHERE COALESCE(sent,0)=0 AND COALESCE(canceled,0)=0 ORDER BY send_at LIMIT 40").fetchall()
         else:
             _srows = db.execute(
-                "SELECT id,user_name,total,send_at,branch_id FROM scheduled_orders "
+                "SELECT id,user_name,total,send_at,branch_id,items,body FROM scheduled_orders "
                 "WHERE user_id=? AND COALESCE(sent,0)=0 AND COALESCE(canceled,0)=0 ORDER BY send_at LIMIT 20",
                 (user_id,)).fetchall()
-        scheduled_out = [{"id": r["id"], "nm": r["user_name"] or "?", "total": r["total"] or 0,
-                          "at": r["send_at"], "bid": r["branch_id"] or 1} for r in _srows]
+        scheduled_out = []
+        for r in _srows:
+            try:
+                _it = json.loads(r["items"] or "{}")
+                if not isinstance(_it, dict):
+                    _it = {}
+            except Exception:
+                _it = {}
+            scheduled_out.append({"id": r["id"], "nm": r["user_name"] or "?",
+                                  "total": r["total"] or 0, "at": r["send_at"],
+                                  "bid": r["branch_id"] or 1, "items": _it,
+                                  "body": (r["body"] or "")[:600]})
     except Exception:
         scheduled_out = []
     # Bu kullanıcının maaş bilgisi (canlı saatlik hesap kategorisine göre olsun).
