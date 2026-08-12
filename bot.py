@@ -1895,6 +1895,25 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── Denetim günlüğü (Журнал действий) — SADECE owner ──
+    # `logs` tablosu yıllardır doluyordu ama hiçbir ekran göstermiyordu.
+    # Başarılı girişler (login_ok) hariç: her açılışta yazılıyorlar ve gerçek
+    # işlemleri listeden süpürüyorlar. Başarısız giriş (login_fail) KALIR.
+    audit_logs = []
+    if role == "owner":
+        try:
+            _lg = db.execute(
+                "SELECT id,action,actor_id,actor_name,target_name,details,created_at FROM logs "
+                "WHERE action != 'login_ok' ORDER BY id DESC LIMIT 80").fetchall()
+            for _r in _lg:
+                _d = _r["details"] or ""
+                if len(_d) > 400:      # payload şişmesin; ekranda zaten özet gösteriliyor
+                    _d = ""
+                audit_logs.append({"id": _r["id"], "a": _r["action"], "au": _r["actor_id"],
+                                   "an": _r["actor_name"] or "", "tn": _r["target_name"] or "",
+                                   "d": _d, "at": _r["created_at"] or ""})
+        except Exception:
+            audit_logs = []
     # ── CLOSING OWNER guard: bu şube, benim vardiyam başladıktan SONRA zaten kapatıldı mı?
     #    (biri kasa raporu verdiyse tekrar kapatılmaz — rol-öncelikli sorumlu kapattı).
     branch_closed_today = 0
@@ -2001,6 +2020,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
+        f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"my_branch_closed_today={branch_closed_today}",
         f"closing_override_uid={closing_override}",
         f"my_last_closing_at={quote(last_closing_at)}",
