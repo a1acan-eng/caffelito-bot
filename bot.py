@@ -2369,7 +2369,26 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "WHERE COALESCE(approved,0)=0 AND COALESCE(archived,0)=0 AND role!='owner' "
             "ORDER BY created_at DESC").fetchall()
         pending = [{"id": p["user_id"], "n": (p["name"] or "?"),
-                    "u": p["username"] or "", "at": p["created_at"] or ""} for p in pend_rows]
+                    "u": p["username"] or "", "at": p["created_at"] or "", "req": 0} for p in pend_rows]
+        # ERİŞİM İSTEYENLER de bu listeye girer. Owner bir baristanın PIN'ini
+        # kaldırınca kişi kilitlenir AMA `approved` 1 kalır → yukarıdaki sorgu
+        # onu HİÇ görmez. Sonuç: Telegram'a haber gidiyordu, Nero'da hiçbir şey
+        # çıkmıyordu. Ölçüt «onaylı mı» değil, GERÇEKTEN GİREBİLİYOR MU.
+        # Kişi girebilir hâle gelince (PIN verilince) listeden kendiliğinden düşer.
+        try:
+            _seen = {p["id"] for p in pending}
+            for _r in db.execute(
+                    "SELECT u.user_id AS uid, u.name AS nm, u.username AS un, m.val AS at "
+                    "FROM meta m JOIN users u ON ('accessreq_' || u.user_id) = m.k "
+                    "WHERE m.k LIKE 'accessreq_%' AND COALESCE(u.archived,0)=0 "
+                    "AND COALESCE(u.role,'') != 'owner' ORDER BY m.val DESC LIMIT 40").fetchall():
+                if _r["uid"] in _seen or nero_access_ok(db, _r["uid"]):
+                    continue
+                _seen.add(_r["uid"])
+                pending.append({"id": _r["uid"], "n": _r["nm"] or "?",
+                                "u": _r["un"] or "", "at": _r["at"] or "", "req": 1})
+        except Exception as e:
+            logger.warning(f"access istekleri listelenemedi: {e}")
         parts.append(f"pending={quote(json.dumps(pending, ensure_ascii=False))}")
         # Loglar (son 50) — Настройки→Логи için. Client en yeniyi üstte göstersin diye eski→yeni sırada gönder.
         try:
