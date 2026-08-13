@@ -1470,12 +1470,19 @@ def get_prices(db):
 def get_overtime_cfg(db):
     """{hours, type, value}: aylık norm saat (0=kapalı), tip ('fixed'|'percent'),
     değer (fixed=ek сум/saat, percent=% artış). Norm üstü saatlere uygulanır."""
-    cfg = {"hours": 0, "type": "fixed", "value": 0}
+    # `on`: AÇIK/KAPALI anahtarı. Eskiden yoktu — «Считать переработку» düğmesi
+    # `enabled` gönderiyordu ama bot onu HİÇ okumuyordu, düğme her tazelemede
+    # eski hâline dönüyordu. Kapalıyken yapılandırılan saat/tutar KORUNUR,
+    # yalnızca hesaplama devre dışı kalır. Eski kurulumlarda anahtar yoksa
+    # davranış değişmesin diye varsayılan AÇIK (hesap zaten hours>0 ile kapalı).
+    cfg = {"hours": 0, "type": "fixed", "value": 0, "on": 1}
     try:
-        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('ot_hours','ot_type','ot_value')").fetchall():
+        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('ot_hours','ot_type','ot_value','ot_on')").fetchall():
             k = r["k"][3:]
             if k == "type":
                 cfg["type"] = r["val"] if r["val"] in ("fixed", "percent") else "fixed"
+            elif k == "on":
+                cfg["on"] = 1 if str(r["val"]) not in ("0", "", "None") else 0
             else:
                 try:
                     cfg[k] = int(float(r["val"]))
@@ -1803,7 +1810,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     try:
         _otc = get_overtime_cfg(db)
         _thr = float(_otc.get("hours") or 0)
-        if _thr > 0 and hours > _thr:
+        if _otc.get("on", 1) and _thr > 0 and hours > _thr:
             ot_h = round(hours - _thr, 2)  # bu vardiyanın norm-üstü saati
             _val = int(_otc.get("value") or 0)
             if _otc.get("type") == "percent":
@@ -4776,10 +4783,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ov = max(0, int(data.get("value") or 0))
             except Exception:
                 ov = 0
-            for k, v in (("ot_hours", oh), ("ot_type", ot), ("ot_value", ov)):
+            # `enabled` ARTIK SAKLANIYOR. Gönderilmezse mevcut değer korunur
+            # (yalnızca saat/tutar düzenleyen ekranlar anahtarı sıfırlamasın).
+            _oon = data.get("enabled")
+            _oon = get_overtime_cfg(db).get("on", 1) if _oon is None else (1 if str(_oon) not in ("0", "", "False", "false") else 0)
+            for k, v in (("ot_hours", oh), ("ot_type", ot), ("ot_value", ov), ("ot_on", _oon)):
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
             db.commit()
-            if oh > 0:
+            log_action(db, "overtime_settings", user.id, user.first_name, None, None,
+                       {"hours": oh, "type": ot, "value": ov, "on": _oon})
+            if not _oon:
+                await update.message.reply_text("⏸ Переработка выключена — не начисляется.")
+            elif oh > 0:
                 _d = f"+{fmt_sum(ov)}%/ч" if ot == "percent" else f"+{fmt_sum(ov)} сум/ч"
                 await update.message.reply_text(f"✅ Переработка: свыше {oh} ч за смену → {_d}")
             else:
@@ -5179,7 +5194,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 try:
                     _otc = get_overtime_cfg(db)
                     _thr = float(_otc.get("hours") or 0)
-                    if _thr > 0 and hours > _thr:
+                    if _otc.get("on", 1) and _thr > 0 and hours > _thr:
                         ot_h = round(hours - _thr, 2)
                         _val = int(_otc.get("value") or 0)
                         ot_shift = int(ot_h * _rate * (_val / 100.0)) if _otc.get("type") == "percent" else int(ot_h * _val)
@@ -5528,7 +5543,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(
                     "🚫 Доступ закрыт владельцем. Обратитесь к нему лично.")
                 return
-            if _me and (_me["approved"] or 0):
+            # KONTROL `approved` DEĞİL, GERÇEK ERİŞİM olmalı. `approved=1` olup da
+            # giremeyen bir durum var: owner PIN'i kaldırınca (authorized=0) kişi
+            # kilitleniyor ama onayı duruyor. Eski kontrol o kişiye «доступ уже
+            # есть» deyip owner'a HABER GÖNDERMİYORDU — kişi kapıda kalıyordu.
+            if nero_access_ok(db, user.id):
                 await update.message.reply_text("✅ Доступ у вас уже есть. Откройте приложение заново.")
                 return
             _nm = display_name_for(db, user.id, fallback=user.first_name or "?")
