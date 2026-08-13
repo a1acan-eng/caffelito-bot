@@ -1307,6 +1307,16 @@ def device_gate(db, user_id, device_id, platform="", label=""):
         return "ok"
 
 
+def _nero_archived(db, user_id):
+    """Kişi owner tarafından arşive alındı mı (= erişim isteği reddedildi)."""
+    try:
+        r = db.execute("SELECT COALESCE(archived,0) AS ar FROM users WHERE user_id=?",
+                       (user_id,)).fetchone()
+        return bool(r and r["ar"])
+    except Exception:
+        return False
+
+
 def nero_access_ok(db, user_id):
     """Nero (Mini App) ERİŞİM KAPISI — okuma dahil.
 
@@ -3815,7 +3825,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
     # Mini App'ten gelen HER eylem aynı kapıdan geçer (okuma /api/state'te aynı
     # kontrolü yapıyor). Onay bekleyen (approved=0) kimse işlem yapamaz.
-    if not nero_access_ok(db, user.id):
+    # TEK İSTİSNA: «доступ isteği». Kilitli ekrandaki kişi owner'a haber
+    # gönderebilmeli — kapının ARDINDAN hiçbir veri almadan. Başka her eylem
+    # kapıdan geçer.
+    _early = ""
+    try:
+        _early = (json.loads(update.effective_message.web_app_data.data) or {}).get("action") or ""
+    except Exception:
+        _early = ""
+    if _early != "access_request" and not nero_access_ok(db, user.id):
         logger.info(f"NERO eylem reddedildi uid={user.id}")
         await update.message.reply_text(
             "🔒 У вас нет доступа. Попросите владельца подтвердить вас и назначить PIN-код.",
@@ -3873,6 +3891,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # vardiya başlatıp kasa gönderebilirdi.
         _dg = device_gate(db, user.id, str(data.get("device") or "")[:64],
                           platform=str(data.get("dev_platform") or "")[:32])
+        if action == "access_request":
+            _dg = "ok"   # erişim isteği cihaz onayından da önce gelir
         if _dg in ("new", "pending", "revoked"):
             logger.info(f"NERO cihaz eylemi reddedildi uid={user.id} durum={_dg}")
             await update.message.reply_text(
@@ -5495,6 +5515,91 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "unapprove_user", user.id, user.first_name, target_id, shown_t, {})
             await update.message.reply_text(f"↩️ *{md_safe(shown_t)}* возвращён(а) в заявки.", parse_mode="Markdown")
+
+        # ─── Erişim isteği (kilitli ekrandaki kişi → owner) ───
+        # Eskiden kilit ekranı yalnızca owner'ın ID'sini yazıyordu ve kişi onu
+        # elle bulup yazmak zorundaydı. Artık tek dokunuşla haber gidiyor.
+        # ARŞİVDEKİ KİŞİ HABER GÖNDEREMEZ: owner reddettiyse konu kapanmıştır,
+        # arşivden çıkarılana kadar tekrar rahatsız edemez.
+        elif action == "access_request":
+            db = get_db()
+            _me = db.execute("SELECT * FROM users WHERE user_id=?", (user.id,)).fetchone()
+            if _me and (_me["archived"] or 0):
+                await update.message.reply_text(
+                    "🚫 Доступ закрыт владельцем. Обратитесь к нему лично.")
+                return
+            if _me and (_me["approved"] or 0):
+                await update.message.reply_text("✅ Доступ у вас уже есть. Откройте приложение заново.")
+                return
+            _nm = display_name_for(db, user.id, fallback=user.first_name or "?")
+            _un = ("@" + user.username) if getattr(user, "username", None) else ""
+            # Spam kalkanı: aynı kişi 10 dakikada bir kez haber gönderebilir.
+            _k = f"accessreq_{user.id}"
+            try:
+                _last = db.execute("SELECT val FROM meta WHERE k=?", (_k,)).fetchone()
+                if _last and _last["val"]:
+                    _dt = (now - datetime.fromisoformat(_last["val"])).total_seconds()
+                    if _dt < 600:
+                        await update.message.reply_text("⏳ Запрос уже отправлен. Владелец скоро ответит.")
+                        return
+            except Exception:
+                pass
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_k, now.isoformat()))
+            db.commit()
+            log_action(db, "access_request", user.id, user.first_name, user.id, _nm, {})
+            _sent = 0
+            for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                try:
+                    await context.bot.send_message(
+                        _o["user_id"],
+                        f"🙋 *Запрос доступа*\n{md_safe(_nm)} {md_safe(_un)}\n"
+                        f"ID `{user.id}`\n\n"
+                        "Управление → Заявки на доступ — подтвердить или отклонить.",
+                        parse_mode="Markdown")
+                    _sent += 1
+                except Exception as e:
+                    logger.warning(f"access_request notify: {e}")
+            await update.message.reply_text(
+                "📨 Запрос отправлен владельцу. Он подтвердит вас и выдаст PIN-код."
+                if _sent else
+                "📨 Запрос записан. Обратитесь к владельцу — уведомление не доставилось.")
+
+        # ─── Erişim isteğini REDDET (owner) ───
+        # Reddedilen kişi ARŞİVE düşer: uygulamaya giremez, «Заявки на доступ»
+        # listesinden kaybolur (o sorgu arşivlileri zaten dışlıyor) ve arşivden
+        # çıkarılmadıkça yeni istek gönderemez.
+        elif action == "reject_user":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            target_id = int(data.get("target", 0) or 0)
+            if not target_id or target_id == user.id:
+                await update.message.reply_text("❌ Неверный пользователь.")
+                return
+            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not target_row:
+                await update.message.reply_text("❌ Пользователь не найден.")
+                return
+            if (target_row["role"] or "") == "owner":
+                await update.message.reply_text("❌ Нельзя отклонить владельца.")
+                return
+            _rnm = target_row["display_name"] or target_row["name"] or "?"
+            db.execute(
+                "UPDATE users SET approved=0, archived=1, archived_at=?, authorized=0 WHERE user_id=?",
+                (now.isoformat(), target_id))
+            db.commit()
+            log_action(db, "reject_user", user.id, user.first_name, target_id, _rnm, {})
+            try:
+                await context.bot.send_message(
+                    target_id, "🚫 Владелец отклонил запрос на доступ.")
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"🚫 *{md_safe(_rnm)}* отклонён и перенесён в архив.\n"
+                "Новые запросы от него не придут, пока вы не вернёте его из архива.",
+                parse_mode="Markdown")
+            await refresh_webapp_keyboard(update, context, db, user, "🔄 Готово 👇")
 
         elif action == "archive_user":
             db = get_db()
@@ -7431,7 +7536,10 @@ async def api_state(request):
         from urllib.parse import quote as _q
         logger.info(f"NERO erisim reddedildi uid={user['id']} ({user.get('first_name','')})")
         return _nocache(_cors(web.Response(
-            text=f"uid={user['id']}&locked=1&name={_q(user.get('first_name','') or '')}",
+            # `arch`: owner bu kişiyi REDDETTİ (arşiv). Uygulama o zaman «istek
+            # gönder» düğmesini hiç göstermez — istek zaten reddedilirdi.
+            text=(f"uid={user['id']}&locked=1&name={_q(user.get('first_name','') or '')}"
+                  f"&arch={1 if _nero_archived(db, user['id']) else 0}"),
             content_type="text/plain")))
     # CİHAZ KAPISI: kişi yetkili olsa bile onaylanmamış bir telefondan/tabletten
     # veri verilmez. Kişinin ilk cihazı otomatik güvenilir (kimse kilitlenmesin);
