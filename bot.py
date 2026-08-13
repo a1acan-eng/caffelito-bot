@@ -2216,7 +2216,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
-        _ti = _repq("SELECT t.id, t.amount, t.note, t.created_at, COALESCE(u.display_name,u.name) AS nm "
+        _ti = _repq("SELECT t.id, t.amount, t.note, t.created_at, t.period AS per, COALESCE(u.display_name,u.name) AS nm "
                     "FROM tips t LEFT JOIN users u ON u.user_id=t.user_id ORDER BY t.id DESC", (), 60)
         # KENDİNE ÖDEME DIŞLANMIYOR ARTIK. Eski `p.paid_by != p.user_id` filtresi
         # kaba bir aletti: amacı kural değişmeden önce yazılmış GÜNLÜK BARDAK
@@ -2227,7 +2227,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         # Artık kendine ödemeler de geliyor; yalnızca bonus imzasına UYAN kayıtlar
         # (daily_bonus_pay_ids — aynı kişi, tutar vardiyanın bonusuyla birebir,
         # ödeme anı vardiya kapanışının ±2 saatinde) ayıklanıyor.
-        _pa = _repq("SELECT p.id, p.amount, p.kind, p.note, p.paid_at, p.user_id AS puid, "
+        _pa = _repq("SELECT p.id, p.amount, p.kind, p.note, p.paid_at, p.period AS per, p.user_id AS puid, "
                     "COALESCE(u.display_name,u.name) AS nm "
                     "FROM payments p LEFT JOIN users u ON u.user_id=p.user_id "
                     "ORDER BY p.id DESC", (), 120)
@@ -2247,7 +2247,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         except Exception as e:
             logger.warning(f"pays bonus filtresi: {e}")
             _pa = _pa[:60]
-        _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, COALESCE(u.display_name,u.name) AS nm "
+        _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, f.period AS per, COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
         _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
@@ -2266,9 +2266,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     rep = {
         "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
-        "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"]} for r in _ti],
-        "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"]} for r in _pa],
-        "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"]} for r in _fi],
+        "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _ti],
+        "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
+        "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _fi],
         "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
