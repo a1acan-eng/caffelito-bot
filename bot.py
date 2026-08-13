@@ -6132,6 +6132,47 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Отчёт обновлён 👇")
 
+        # ─── Ödemeyi başka bir maaş ayına taşı (owner) ───
+        # Ödeme YAPILDIĞI ay ile AİT OLDUĞU ay farklı olabilir: temmuz maaşı
+        # 1 Ağustos'ta ödenir. Nero eskiden ayı hiç göndermediği için bot
+        # «ödemenin yapıldığı ay» diye damgalıyordu → o ay fazla ödenmiş,
+        # önceki ay hâlâ borçlu görünüyordu. Bu eylem o damgayı düzeltir.
+        # Tutar ve tarih DEĞİŞMEZ; yalnızca hangi ayın hesabına sayılacağı değişir.
+        elif action == "pay_move_period":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _pid = int(data.get("id") or 0)
+            except Exception:
+                _pid = 0
+            _newp = str(data.get("period") or "").strip()[:7]
+            if not re.match(r"^\d{4}-\d{2}$", _newp or ""):
+                await update.message.reply_text("❌ Неверный месяц.")
+                return
+            prow = db.execute("SELECT * FROM payments WHERE id=?", (_pid,)).fetchone() if _pid else None
+            if not prow:
+                await update.message.reply_text("❌ Выплата не найдена.")
+                return
+            _oldp = prow["period"] or ""
+            if _oldp == _newp:
+                await update.message.reply_text("ℹ️ Выплата уже в этом месяце.")
+                return
+            db.execute("UPDATE payments SET period=? WHERE id=?", (_newp, _pid))
+            db.commit()
+            _pnm = display_name_for(db, prow["user_id"], fallback="?")
+            log_action(db, "pay_move_period", user.id, user.first_name,
+                       prow["user_id"], _pnm,
+                       {"pay_id": _pid, "amount": prow["amount"] or 0,
+                        "from": _oldp, "to": _newp, "paid_at": prow["paid_at"] or ""})
+            await update.message.reply_text(
+                f"↔️ Выплата *{md_safe(_pnm)}* — {fmt_sum(prow['amount'] or 0)} сум\n"
+                f"перенесена: {md_safe(_oldp or '—')} → *{md_safe(_newp)}*\n"
+                "_Сумма и дата не изменились — изменился только месяц, к которому она относится._",
+                parse_mode="Markdown")
+            await refresh_webapp_keyboard(update, context, db, user, "🔄 Готово 👇")
+
         # ─── Cihaz kararı (owner): onayla · çıkar · geri al ───
         elif action == "device_decide":
             db = get_db()
