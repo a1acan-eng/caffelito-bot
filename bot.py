@@ -5838,12 +5838,49 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ─── Kasa / Сменный отчёт (vardiya kapanış raporu) ───
         elif action == "cash_report":
             from html import escape as esc_html
-            # ── ÇİFT KAPATMA ENGELİ (#5): bu şube, benim vardiyam başladıktan SONRA
-            #    başka biri tarafından zaten kapatıldıysa → duplicate kasa raporu YARATMA.
-            #    (Saat yine de shift_end ile kapanır; sadece kapatma tekrarı engellenir.) ──
+            # ── ÇİFT KAPATMA ENGELİ ─────────────────────────────────────────
+            # BU KORUMA UZUN SÜRE ÖLÜYDÜ. Eskiden referans olarak `get_active_shift`
+            # kullanılıyordu; oysa Nero kapanışta ÖNCE `shift_end` yolluyor, yani
+            # buraya gelindiğinde kişinin açık vardiyası ARTIK YOK → sorgu None
+            # dönüyor ve blok komple atlanıyordu. Koruma hiç çalışmıyordu.
+            #
+            # Neden önemli: ikinci bir kasa raporu «Осталось» zincirine yanlış bir
+            # halka ekler. Bir sonraki vardiyanın «Было»su o yanlış halkadan
+            # doldurulur ve hata günler boyu sürüklenir — hem de sessizce.
+            #
+            # Referans artık: açık vardiya YOKSA AZ ÖNCE KAPANAN vardiya.
             _my_act_cr = get_active_shift(db, user.id)
-            _cr_bid_chk = acting_branch_id(db, user.id)
+            if not _my_act_cr:
+                _my_act_cr = db.execute(
+                    "SELECT * FROM shifts WHERE user_id=? AND start_time IS NOT NULL "
+                    "AND end_time IS NOT NULL ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
+            # Şube de o vardiyadan gelir. `acting_branch_id` kapanıştan sonra açık
+            # vardiyadan çözemez, oturum/ev şubesine düşer — rapor yazımında aynı
+            # hatayı daha önce düzeltmiştik, kontrol de aynı önceliği kullanmalı.
+            _cr_bid_chk = None
+            try:
+                _pb_chk = int(data.get("branch_id") or data.get("branch") or 0)
+                if _pb_chk and get_branch(db, _pb_chk):
+                    _cr_bid_chk = _pb_chk
+            except Exception:
+                _cr_bid_chk = None
+            if not _cr_bid_chk and _my_act_cr and _my_act_cr["branch_id"]:
+                _cr_bid_chk = int(_my_act_cr["branch_id"])
+            if not _cr_bid_chk:
+                _cr_bid_chk = acting_branch_id(db, user.id)
+            # PENCEREYİ SINIRLA: referans vardiya çok eskiyse (ör. kişi günlerdir
+            # çalışmadı ama owner onun adına kapatıyor) «vardiya başlangıcından
+            # sonra» ölçütü günleri kapsar ve alakasız bir raporla HAKSIZ engel
+            # doğar. Açık vardiya ya da son 24 saatte kapanmış vardiya dışında
+            # kontrol uygulanmaz — koruma dar ve kesin kalsın.
+            if _my_act_cr and _my_act_cr["end_time"]:
+                try:
+                    if (now - datetime.fromisoformat(_my_act_cr["end_time"])) > timedelta(hours=24):
+                        _my_act_cr = None
+                except Exception:
+                    pass
             if _my_act_cr and _my_act_cr["start_time"]:
+                # (a) BAŞKASI bu şubeyi benim vardiyam başladıktan sonra kapattı mı?
                 _prev_cr = db.execute(
                     "SELECT user_name, created_at FROM cashreports WHERE COALESCE(branch_id,1)=? "
                     "AND created_at > ? AND user_id != ? ORDER BY id DESC LIMIT 1",
@@ -5853,9 +5890,28 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         _pt = datetime.fromisoformat(_prev_cr["created_at"]).strftime("%H:%M")
                     except Exception:
                         _pt = "?"
+                    logger.info(f"cift kapatma engellendi (baskasi) uid={user.id} sube={_cr_bid_chk}")
                     await update.message.reply_text(
                         f"⚠️ Смена уже закрыта: *{_prev_cr['user_name'] or '?'}* в {_pt}.\n"
                         "Повторное закрытие не требуется — ваши часы будут учтены.",
+                        parse_mode="Markdown")
+                    return
+                # (b) BEN bu vardiya için zaten rapor gönderdim mi? (çift dokunuş,
+                #     ağ tekrarı, uygulamayı kapatıp yeniden onaylama). İstemcideki
+                #     kilit sayfa yenilenince kaybolur — asıl koruma burada olmalı.
+                _mine_cr = db.execute(
+                    "SELECT created_at FROM cashreports WHERE COALESCE(branch_id,1)=? "
+                    "AND created_at > ? AND user_id = ? ORDER BY id DESC LIMIT 1",
+                    (int(_cr_bid_chk or 1), _my_act_cr["start_time"], user.id)).fetchone()
+                if _mine_cr:
+                    try:
+                        _mt = datetime.fromisoformat(_mine_cr["created_at"]).strftime("%H:%M")
+                    except Exception:
+                        _mt = "?"
+                    logger.info(f"cift kapatma engellendi (ayni kisi) uid={user.id} sube={_cr_bid_chk}")
+                    await update.message.reply_text(
+                        f"✅ Касса за эту смену уже сдана в {_mt}.\n"
+                        "Второй отчёт не нужен. Если в нём ошибка — попросите владельца исправить.",
                         parse_mode="Markdown")
                     return
             cups = data.get("cups", [])  # [{n,b,r,o,s}]
