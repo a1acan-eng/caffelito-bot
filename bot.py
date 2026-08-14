@@ -6929,7 +6929,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _ok:
                 await update.message.reply_text("⚠️ " + _why)
                 return
-            if code == "off":
+            # HAFTALIK İZİN LİMİTİ yalnızca KENDİNE izin koyan kişiye uygulanır.
+            # Limiti owner belirliyor; onu kendi kararında da bağlamak yanlıştı:
+            # biri hastalandığında ya da acil bir durumda owner üçüncü izni
+            # veremiyordu. Owner sınırın üstünde de atayabilir — sorumluluk onda.
+            if code == "off" and get_role(db, user.id) != "owner":
                 _ok2, _why2 = grid_off_allowed(db, wk, target_id, day)
                 if not _ok2:
                     await update.message.reply_text("⚠️ " + _why2)
@@ -6938,6 +6942,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (wk, day, target_id, code, user.id, user.first_name, now.isoformat()))
+            # TUTARLILIK: bu gün için AÇIK bir vardiya varsa ve owner doğrudan
+            # birini atadıysa o ilan kapanır. Yoksa vardiya dolu olduğu hâlde
+            # «открытая смена» olarak asılı kalır ve özet yanlış alarm verir.
+            if code and code != "off":
+                try:
+                    db.execute(
+                        "UPDATE open_shifts SET status='done', decided_by=?, decided_by_name=?, decided_at=? "
+                        "WHERE week_key=? AND day=? AND code=? AND status IN ('open','claimed')",
+                        (user.id, shown, now.isoformat(), wk, day, code))
+                except Exception as e:
+                    logger.warning(f"open_shift auto-close: {e}")
             db.commit()
             _nm = display_name_for(db, target_id, fallback="?")
             log_action(db, "shift_grid_set", user.id, user.first_name, target_id, _nm,
