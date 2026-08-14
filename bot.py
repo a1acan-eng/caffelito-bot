@@ -7099,6 +7099,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     except Exception:
                         pass
                 _parts.append("личные лимиты обновлены")
+            # «Kendi izin gününü koyabilir mi» — kişi bazlı yetki.
+            _ps = data.get("person_self")
+            if isinstance(_ps, dict):
+                for _uid, _sv in _ps.items():
+                    try:
+                        db.execute("UPDATE users SET off_self=? WHERE user_id=?",
+                                   (0 if str(_sv) in ("0", "False", "false") else 1, int(_uid)))
+                    except Exception:
+                        pass
+                _parts.append("права на выходной обновлены")
             db.commit()
             log_action(db, "shift_rules_save", user.id, user.first_name, None, None,
                        {"weekly_off_limit": data.get("weekly_off_limit"),
