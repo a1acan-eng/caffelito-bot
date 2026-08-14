@@ -4660,6 +4660,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
                            (f"cur_branch_{user.id}", str(bid)))
                 db.commit()
+                # Açık vardiyanın şubesi değişti → o vardiya artık başka şubenin
+                # raporlarına ve «Было» zincirine sayılır. İz bırakmalı.
+                if act is not None:
+                    log_action(db, "move_shift_branch", user.id, user.first_name, user.id, shown,
+                               {"shift_id": act["id"],
+                                "branch": (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else str(bid)})
 
         elif action == "cancel_scheduled":
             # Bekleyen zamanlı siparişi iptal et (kendi siparişin ya da owner)
@@ -4673,6 +4679,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if row and (row["user_id"] == user.id or get_role(db, user.id) == "owner"):
                     db.execute("UPDATE scheduled_orders SET canceled=1 WHERE id=? AND COALESCE(sent,0)=0", (sid,))
                     db.commit()
+                    log_action(db, "cancel_scheduled", user.id, user.first_name,
+                               row["user_id"], display_name_for(db, row["user_id"], fallback="?"),
+                               {"order_id": sid})
 
         elif action == "pay_settings":
             # Owner: çalışma saatleri / ödeme kuralı
@@ -4693,6 +4702,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for k, v in (("pay_open", op), ("pay_close", cl), ("pay_max", mx), ("pay_unpaid", un), ("pay_rate", rate)):
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
             db.commit()
+            # Bu ayar ÖDENEN SAATİ etkiler → izi kalmalı.
+            log_action(db, "pay_settings", user.id, user.first_name, None, None,
+                       {"rate": rate, "open": op, "close": cl, "max_shift": mx})
             await update.message.reply_text(
                 f"✅ *Часы работы обновлены*\n"
                 f"Ставка: {fmt_sum(rate)} сум/час\n"
@@ -4749,6 +4761,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
+            # Saat ücreti burada belirlenir → günlükte tutar da görünsün.
+            log_action(db, "salcat_save", user.id, user.first_name, None, nm,
+                       {"name": nm, "rate": rate, "amount": rate, "bonus_system": bsys,
+                        "does_kasa": dk, "active": act})
             await update.message.reply_text(msg)
 
         elif action == "product_save":
@@ -4785,6 +4801,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             datetime.now(TZ).isoformat()))
                 _pmsg = f"✅ Товар «{nm}» добавлен."
             db.commit()
+            # Ürün bonusu maaşa girer → fiyat ve bonus değişikliğinin izi kalmalı.
+            log_action(db, "product_save", user.id, user.first_name, None, nm,
+                       {"name": nm, "price": price, "bonus_type": btype, "bonus": bval, "active": pact})
             await update.message.reply_text(_pmsg)
 
         elif action == "product_delete":
@@ -4794,8 +4813,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             _pd = data.get("id")
             if _pd:
+                _pnm_del = db.execute("SELECT name FROM product_catalog WHERE id=?", (int(_pd),)).fetchone()
                 db.execute("DELETE FROM product_catalog WHERE id=?", (int(_pd),))
                 db.commit()
+                log_action(db, "product_delete", user.id, user.first_name, None, None,
+                           {"id": int(_pd), "name": (_pnm_del["name"] if _pnm_del else "")})
             await update.message.reply_text("🗑 Товар удалён.")
 
         elif action == "overtime_settings":
@@ -4845,6 +4867,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     except Exception:
                         pass
                 db.commit()
+                # Caffelito tarifesi = bardak bonusunun para karşılığı.
+                log_action(db, "caffelito_bonus_save", user.id, user.first_name, None, None,
+                           {"count": len(vals)})
 
         elif action == "salcat_delete":
             # Owner: kategori sil (bağlı baristalar → NULL = global ставка)
@@ -4854,10 +4879,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             cid = data.get("id")
             if cid:
+                # Ad, SİLMEDEN ÖNCE alınmalı — sonra okunamaz.
+                _scr = db.execute("SELECT name FROM salary_categories WHERE id=?", (int(cid),)).fetchone()
+                _scnm_del = (_scr["name"] if _scr else "") or ""
                 db.execute("UPDATE users SET salary_cat_id=NULL WHERE salary_cat_id=?", (int(cid),))
                 db.execute("UPDATE salary_categories SET next_cat_id=NULL WHERE next_cat_id=?", (int(cid),))
                 db.execute("DELETE FROM salary_categories WHERE id=?", (int(cid),))
                 db.commit()
+                log_action(db, "salcat_delete", user.id, user.first_name, None, _scnm_del,
+                           {"id": int(cid), "name": _scnm_del})
             await update.message.reply_text("🗑 Категория удалена.")
 
         elif action == "salcat_assign":
@@ -4875,6 +4905,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     cid_val = None
                 db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
                 db.commit()
+                # Kategori = saat ücreti + bonus sistemi + kasa yetkisi. Kimin
+                # hangi kategoriye alındığı para etkisi olan bir karardır.
+                _sca = db.execute("SELECT name FROM salary_categories WHERE id=?", (cid_val,)).fetchone() if cid_val else None
+                log_action(db, "salcat_assign", user.id, user.first_name, int(tgt),
+                           display_name_for(db, int(tgt), fallback="?"),
+                           {"cat_id": cid_val, "cat": (_sca["name"] if _sca else "без категории")})
                 # Kişinin AÇIK vardiyası varsa rol/ставка snapshot'ı anında güncel
                 # kategoriye göre tazelenir (tarihsel vardiyalara dokunulmaz).
                 refresh_open_shift_snapshot(db, int(tgt))
@@ -4984,6 +5020,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("UPDATE branches SET open_hour=?, close_hour=?, unpaid_win=? WHERE id=?",
                        (oh, ch, uw, bid))
             db.commit()
+            # «Saatlerim eksik» şikâyetlerinin kaynağı bu ayardır — kim ne zaman
+            # değiştirdi görünmeli.
+            log_action(db, "branch_hours", user.id, user.first_name, None,
+                       (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else "",
+                       {"branch_id": bid, "open": oh, "close": ch, "unpaid": uw})
 
         elif action == "branch_trainee":
             # Owner: bu şubede «Ассистент/стажёр» pozisyonunu aç/kapat (şube-bazlı işgücü ayarı)
@@ -6006,6 +6047,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
                  json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg, _cr_branch))
             db.commit()
+            # DENETİM İZİ. Raporun DÜZELTİLMESİ günlüğe yazılıyordu ama İLK
+            # GÖNDERİLMESİ yazılmıyordu — yani paranın kaydedildiği an,
+            # «kim ne yaptı» sayfasında hiç görünmüyordu. Kayıt cashreports'ta
+            # zaten var; buradaki satır onu ZAMAN ÇİZGİSİNE koyar.
+            try:
+                _cr_id = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                                    (user.id,)).fetchone()
+                log_action(db, "cash_report", user.id, user.first_name, user.id, shown,
+                           {"report_id": (_cr_id["id"] if _cr_id else 0),
+                            "branch": (get_branch(db, _cr_branch) or {}).get("name", "") if _cr_branch else "",
+                            "cups": cups_total, "kassa": kassa, "daily_pay": daily_pay,
+                            "expenses": exp_total})
+            except Exception as e:
+                logger.warning(f"cash_report log: {e}")
             # Kapatma yapıldı → bu şubenin transfer override'ını temizle (oturum bitti).
             try:
                 db.execute("DELETE FROM meta WHERE k=?", (f"closing_owner_{int(_cr_branch or 1)}",))
