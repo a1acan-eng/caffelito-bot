@@ -6917,6 +6917,33 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if target_id != user.id and get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Изменять чужой график может только владелец.")
                 return
+            # 'none' = HÜCREYİ BOŞALT. İzin alındıktan sonra onu geri almanın yolu
+            # yoktu: plan yalnızca «vardiya» ya da «выходной» tutabiliyordu, üçüncü
+            # bir durum (henüz atanmadı) yazılamıyordu. Artık izin iptal edilince
+            # gün boşa döner ve owner istediği vardiyayı atar.
+            if code == "none":
+                wk0 = grid_week_key(data.get("week"))
+                try:
+                    day0 = int(data.get("day"))
+                except Exception:
+                    day0 = 0
+                db.execute("DELETE FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                           (wk0, day0, target_id))
+                db.commit()
+                _nm0 = display_name_for(db, target_id, fallback="?")
+                log_action(db, "shift_grid_set", user.id, user.first_name, target_id, _nm0,
+                           {"week_key": wk0, "day": day0, "code": "none"})
+                _dl0 = grid_day_label(day0)
+                await update.message.reply_text(
+                    f"🗓 {md_safe(_nm0)} · {_dl0} — день освобождён (смена не назначена).",
+                    parse_mode="Markdown")
+                if target_id != user.id:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl0} — смена не назначена.")
+                    except Exception:
+                        pass
+                return
             wk = grid_week_key(data.get("week"))
             try:
                 day = int(data.get("day"))
