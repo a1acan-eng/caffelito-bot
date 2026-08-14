@@ -3,7 +3,7 @@ CAFFELITO TELEGRAM BOT ☕
 Заказ, Задачи, Уборка и ОКК контроль
 """
 
-import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64
+import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64, tempfile
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl
 from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
@@ -1980,6 +1980,16 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── Yedekleme durumu — SADECE owner ──
+    # «Son yedek ne zaman alındı» sorusunun cevabı ekranda dursun; sessizce
+    # çalışmayı bırakan bir yedekleme, hiç olmayan yedeklemeden beterdir.
+    backup_info = {}
+    if role == "owner":
+        try:
+            _lb = db.execute("SELECT val FROM meta WHERE k='last_backup_at'").fetchone()
+            backup_info = {"at": (_lb["val"] if _lb else "") or "", "hour": BACKUP_HOUR}
+        except Exception:
+            backup_info = {}
     # ── Kayıtlı cihazlar (Устройства) — SADECE owner ──
     # Onay bekleyenler en üstte; sonra en son görülen.
     devices_out = []
@@ -2142,6 +2152,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
+        f"backup={quote(json.dumps(backup_info, ensure_ascii=False))}",
         f"my_branch_closed_today={branch_closed_today}",
         f"closing_override_uid={closing_override}",
         f"my_last_closing_at={quote(last_closing_at)}",
@@ -6132,6 +6143,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Отчёт обновлён 👇")
 
+        # ─── Yedeği ŞİMDİ gönder (owner) ───
+        # Otomatiği beklemeden kopya almak için. Önemli bir değişiklikten önce
+        # (toplu silme, ay kapanışı, riskli bir düzeltme) elle çekilir.
+        elif action == "backup_now":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            await update.message.reply_text("🗄 Готовлю резервную копию…")
+            try:
+                _n = await send_backup(context.bot, "по запросу")
+            except Exception as e:
+                logger.error(f"backup_now: {e}")
+                await update.message.reply_text(f"❌ Не удалось создать копию: {e}")
+                return
+            if not _n:
+                await update.message.reply_text("⚠️ Копия не отправлена — проверьте логи.")
+            log_action(db, "backup_now", user.id, user.first_name, None, None, {"sent": _n})
+
         # ─── Ödemeyi başka bir maaş ayına taşı (owner) ───
         # Ödeme YAPILDIĞI ay ile AİT OLDUĞU ay farklı olabilir: temmuz maaşı
         # 1 Ağustos'ta ödenir. Nero eskiden ayı hiç göndermediği için bot
@@ -7208,6 +7238,122 @@ async def sync_user_ui(bot, db, user_id: int):
         logger.warning(f"sync_user_ui failed for {user_id}: {e}")
 
 
+# ─── YEDEKLEME ──────────────────────────────────────────────────────────────
+# Tüm işletme verisi TEK bir sqlite dosyasında duruyor: vardiyalar, ödemeler,
+# cezalar, kasa raporları. O dosya giderse geri dönüş yok. Bu yüzden bot her
+# gün veritabanının tutarlı bir kopyasını owner'a Telegram'dan DOSYA olarak
+# gönderir — kopya owner'ın telefonunda, sunucudan bağımsız durur.
+BACKUP_HOUR = int(os.getenv("BACKUP_HOUR", "5") or 5)   # 03:00 kapanışından sonra
+TG_DOC_LIMIT = 45 * 1024 * 1024                          # Telegram sınırı 50MB, pay bırak
+
+
+def _db_counts(db):
+    """Yedeğin BOŞ olmadığını gözle doğrulamak için özet."""
+    out = {}
+    for t in ("users", "shifts", "payments", "cashreports", "fines", "tips"):
+        try:
+            out[t] = db.execute(f"SELECT COUNT(*) AS c FROM {t}").fetchone()["c"] or 0
+        except Exception:
+            out[t] = 0
+    return out
+
+
+def make_backup_file():
+    """TUTARLI kopya üret ve yolunu döndür.
+
+    Dosyayı kopyalamak YETMEZ: tam o anda bir yazma sürüyorsa yarım/bozuk bir
+    kopya çıkar ve bunu ancak geri yüklerken anlarsın. sqlite'ın kendi online
+    backup API'si açık bağlantıyla tutarlı bir anlık görüntü alır.
+    """
+    stamp = datetime.now(TZ).strftime("%Y-%m-%d-%H%M")
+    path = os.path.join(tempfile.gettempdir(), f"caffelito-{stamp}.db")
+    src = sqlite3.connect(DB_PATH)
+    try:
+        dst = sqlite3.connect(path)
+        try:
+            src.backup(dst)          # ← tutarlı anlık görüntü
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return path
+
+
+async def send_backup(bot, reason="ежедневная"):
+    """Yedeği TÜM owner'lara DM ile gönderir. Gönderilen kişi sayısını döndürür.
+    Gruba ASLA gönderilmez — içinde herkesin maaşı var."""
+    db = get_db()
+    owners = db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall()
+    if not owners:
+        logger.warning("yedek: owner yok, gonderilmedi")
+        return 0
+    path = make_backup_file()
+    try:
+        size = os.path.getsize(path)
+        if size > TG_DOC_LIMIT:
+            for o in owners:
+                try:
+                    await bot.send_message(
+                        o["user_id"],
+                        f"⚠️ Резервная копия слишком большая ({size // 1024 // 1024} МБ) "
+                        "— Telegram не примет файл. Нужен другой способ хранения.")
+                except Exception:
+                    pass
+            logger.error(f"yedek cok buyuk: {size} bayt")
+            return 0
+        c = _db_counts(db)
+        cap = (f"🗄 *Резервная копия* · {reason}\n"
+               f"{datetime.now(TZ).strftime('%d.%m.%Y %H:%M')} · {max(1, size // 1024)} КБ\n\n"
+               f"Сотрудников: {c['users']} · Смен: {c['shifts']}\n"
+               f"Выплат: {c['payments']} · Касс: {c['cashreports']}\n\n"
+               "_Сохраните этот файл. По нему восстанавливается вся база._")
+        sent = 0
+        for o in owners:
+            try:
+                # Her alıcı için dosyayı YENİDEN aç — tüketilmiş dosya nesnesi
+                # ikinci gönderimde boş gider.
+                with open(path, "rb") as fh:
+                    await bot.send_document(
+                        chat_id=o["user_id"], document=fh,
+                        filename=os.path.basename(path),
+                        caption=cap, parse_mode="Markdown")
+                sent += 1
+            except Exception as e:
+                logger.warning(f"yedek DM {o['user_id']}: {e}")
+        if sent:
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('last_backup_at',?)",
+                       (datetime.now(TZ).isoformat(),))
+            db.commit()
+        logger.info(f"yedek gonderildi: {sent} owner, {size} bayt")
+        return sent
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
+async def backup_loop(app):
+    """Her gün BACKUP_HOUR'da bir kez yedek gönderir (meta ile takip: gün içinde tekrar yok)."""
+    await asyncio.sleep(40)
+    while True:
+        try:
+            now = datetime.now(TZ)
+            if now.hour == BACKUP_HOUR:
+                db = get_db()
+                today = now.strftime("%Y-%m-%d")
+                row = db.execute("SELECT val FROM meta WHERE k='last_backup_day'").fetchone()
+                if not row or row["val"] != today:
+                    n = await send_backup(app.bot, "ежедневная")
+                    if n:
+                        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('last_backup_day',?)",
+                                   (today,))
+                        db.commit()
+        except Exception as e:
+            logger.warning(f"backup_loop: {e}")
+        await asyncio.sleep(1800)   # yarım saatte bir kontrol
+
+
 async def payment_reminder_loop(app):
     """Her gün kontrol: Railway ödemesinden (PAY_DAY=14) PAY_REMIND_BEFORE=3 gün önce
     (ayın 11'i) owner'lara DM hatırlatma. Ayda bir gönderilir (meta ile takip)."""
@@ -7299,6 +7445,7 @@ async def setup_commands(app):
     # Ödeme hatırlatma arka plan görevi
     asyncio.create_task(payment_reminder_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
+    asyncio.create_task(backup_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════
