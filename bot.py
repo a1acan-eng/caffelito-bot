@@ -377,28 +377,40 @@ def get_db():
     # sabitti. Tohumlamazsak var olan bütün plan «böyle bir şablon yok» sayılır
     # ve tek bir hücre bile düzenlenemez. Şubeye ADIYLA bağlanır; şube yoksa
     # o şablon atlanır (uydurma şube yaratılmaz).
+    # TOHUM KODA GÖRE, TEK SEFERLİK DEĞİL. Önceden `meta` bayrağı bir kez
+    # yazılıyordu: o an şube yoksa (ya da adı tutmadıysa) o şablon BİR DAHA
+    # ASLA oluşmuyordu — «Magic şablonları çıkmıyor» tam olarak buydu. Artık
+    # her açılışta EKSİK kod var mı diye bakılır; owner sildiyse geri gelmesin
+    # diye silinenler `meta`da işaretlenir.
     try:
-        _seeded = db.execute("SELECT 1 FROM meta WHERE k='seed_shift_tpl'").fetchone()
-        if not _seeded:
-            _bynm = {}
-            for _b in db.execute("SELECT id, name FROM branches").fetchall():
-                _bynm[(_b["name"] or "").strip().lower()] = _b["id"]
-            _seed = [("c5d", "c5", "07:00", "17:00", 1), ("c5n", "c5", "17:00", "03:00", 2),
-                     ("mgd", "magic", "07:00", "15:30", 3), ("mgn", "magic", "15:30", "00:00", 4),
-                     ("mgf", "magic", "07:00", "00:00", 5)]
-            _n = 0
-            for _c, _bn, _s, _e, _so in _seed:
-                _bid = _bynm.get(_bn)
-                if not _bid:
-                    continue
-                db.execute(
-                    "INSERT OR IGNORE INTO shift_templates (code, branch_id, start_t, end_t, active, sort_order, updated_at) "
-                    "VALUES (?,?,?,?,1,?,?)",
-                    (_c, _bid, _s, _e, _so, datetime.now(TZ).isoformat()))
-                _n += 1
-            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('seed_shift_tpl',?)",
-                       (datetime.now(TZ).isoformat(),))
-            logger.info(f"vardiya sablonu tohumlandi: {_n}")
+        _bynm = {}
+        for _b in db.execute("SELECT id, name FROM branches").fetchall():
+            _bynm[(_b["name"] or "").strip().lower()] = _b["id"]
+        _seed = [("c5d", "c5", "07:00", "17:00", 1), ("c5n", "c5", "17:00", "03:00", 2),
+                 ("mgd", "magic", "07:00", "15:30", 3), ("mgn", "magic", "15:30", "00:00", 4),
+                 ("mgf", "magic", "07:00", "00:00", 5)]
+        _have = {r["code"] for r in db.execute("SELECT code FROM shift_templates").fetchall()}
+        _killed = set()
+        try:
+            _kr = db.execute("SELECT val FROM meta WHERE k='seed_tpl_removed'").fetchone()
+            if _kr and _kr["val"]:
+                _killed = set(json.loads(_kr["val"]))
+        except Exception:
+            _killed = set()
+        _n = 0
+        for _c, _bn, _s, _e, _so in _seed:
+            if _c in _have or _c in _killed:
+                continue
+            _bid = _bynm.get(_bn)
+            if not _bid:
+                continue                     # şube henüz yok → sonraki açılışta dener
+            db.execute(
+                "INSERT OR IGNORE INTO shift_templates (code, branch_id, start_t, end_t, active, sort_order, updated_at) "
+                "VALUES (?,?,?,?,1,?,?)",
+                (_c, _bid, _s, _e, _so, datetime.now(TZ).isoformat()))
+            _n += 1
+        if _n:
+            logger.info(f"vardiya sablonu tohumlandi (eksik olanlar): {_n}")
     except Exception as _e:
         logger.warning(f"sablon tohumu: {_e}")
     # ─── Sipariş kategorileri (özel katalog başlıkları) — Nero owner düzenler ───
@@ -7105,6 +7117,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     parse_mode="Markdown")
                 return
             db.execute("DELETE FROM shift_templates WHERE code=?", (_tc,))
+            # Tohum listesindeki bir kodu owner sildiyse bir daha geri gelmesin.
+            try:
+                _kr2 = db.execute("SELECT val FROM meta WHERE k='seed_tpl_removed'").fetchone()
+                _ks = set(json.loads(_kr2["val"])) if (_kr2 and _kr2["val"]) else set()
+                _ks.add(_tc)
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('seed_tpl_removed',?)",
+                           (json.dumps(sorted(_ks)),))
+            except Exception:
+                pass
             db.commit()
             log_action(db, "shift_tpl_delete", user.id, user.first_name, None, _tc, {"code": _tc})
             await update.message.reply_text(f"🗑 Шаблон «{md_safe(_tc)}» удалён.", parse_mode="Markdown")
