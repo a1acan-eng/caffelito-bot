@@ -340,6 +340,67 @@ def get_db():
         user_id INTEGER, week_key TEXT, day INTEGER, note TEXT,
         status TEXT DEFAULT 'pending',
         decided_by INTEGER, decided_by_name TEXT, decided_at TEXT, created_at TEXT)""")
+    # ─── Vardiya ŞABLONLARI (owner tanımlar) ───
+    # Eskiden şablonlar (c5d/c5n/mgd…) YALNIZCA uygulamanın içinde sabitti: owner
+    # yenisini ekleyemiyor, saatini değiştiremiyordu ve uygulama yenilenince plan
+    # kodları anlamını kaybediyordu. Artık kalıcı.
+    db.execute("""CREATE TABLE IF NOT EXISTS shift_templates (
+        code TEXT PRIMARY KEY,
+        branch_id INTEGER, start_t TEXT, end_t TEXT,
+        active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+        updated_by INTEGER, updated_at TEXT)""")
+    # ─── AÇIK VARDİYALAR (kimse atanmamış) ───
+    # İzin onaylanınca ya da owner elle açınca oluşur. Barista talip olur
+    # (claimed), owner onaylar (done) → plana yazılır. Hiçbir devir owner
+    # onayı olmadan kesinleşmez.
+    db.execute("""CREATE TABLE IF NOT EXISTS open_shifts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_key TEXT, day INTEGER, code TEXT, branch_id INTEGER,
+        from_uid INTEGER, from_name TEXT,
+        status TEXT DEFAULT 'open',
+        claim_uid INTEGER, claim_name TEXT, claim_at TEXT,
+        decided_by INTEGER, decided_by_name TEXT, decided_at TEXT,
+        reason TEXT, created_at TEXT)""")
+    # Şube başına GÜNLÜK MAKSİMUM ÇALIŞAN — plana bu sayıdan fazlası atanamaz.
+    try:
+        db.execute("ALTER TABLE branches ADD COLUMN max_staff INTEGER DEFAULT 2")
+    except sqlite3.OperationalError:
+        pass
+    # Kişiye özel haftalık izin kotası (NULL = genel ayar) ve kendi izin koyma hakkı.
+    for _uc, _ut in (("off_limit", "INTEGER"), ("off_self", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE users ADD COLUMN {_uc} {_ut}")
+        except sqlite3.OperationalError:
+            pass
+    # ŞABLON GÖÇÜ — ZORUNLU. Mevcut plandaki hücreler «c5d/c5n/mgd/mgn/mgf»
+    # kodlarını kullanıyor; bu kodlar bugüne kadar yalnızca uygulamanın içinde
+    # sabitti. Tohumlamazsak var olan bütün plan «böyle bir şablon yok» sayılır
+    # ve tek bir hücre bile düzenlenemez. Şubeye ADIYLA bağlanır; şube yoksa
+    # o şablon atlanır (uydurma şube yaratılmaz).
+    try:
+        _seeded = db.execute("SELECT 1 FROM meta WHERE k='seed_shift_tpl'").fetchone()
+        if not _seeded:
+            _bynm = {}
+            for _b in db.execute("SELECT id, name FROM branches").fetchall():
+                _bynm[(_b["name"] or "").strip().lower()] = _b["id"]
+            _seed = [("c5d", "c5", "07:00", "17:00", 1), ("c5n", "c5", "17:00", "03:00", 2),
+                     ("mgd", "magic", "07:00", "15:30", 3), ("mgn", "magic", "15:30", "00:00", 4),
+                     ("mgf", "magic", "07:00", "00:00", 5)]
+            _n = 0
+            for _c, _bn, _s, _e, _so in _seed:
+                _bid = _bynm.get(_bn)
+                if not _bid:
+                    continue
+                db.execute(
+                    "INSERT OR IGNORE INTO shift_templates (code, branch_id, start_t, end_t, active, sort_order, updated_at) "
+                    "VALUES (?,?,?,?,1,?,?)",
+                    (_c, _bid, _s, _e, _so, datetime.now(TZ).isoformat()))
+                _n += 1
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('seed_shift_tpl',?)",
+                       (datetime.now(TZ).isoformat(),))
+            logger.info(f"vardiya sablonu tohumlandi: {_n}")
+    except Exception as _e:
+        logger.warning(f"sablon tohumu: {_e}")
     # ─── Sipariş kategorileri (özel katalog başlıkları) — Nero owner düzenler ───
     db.execute("""CREATE TABLE IF NOT EXISTS order_categories (
         id TEXT PRIMARY KEY, name TEXT,
@@ -1141,6 +1202,134 @@ def grid_week_key(week_offset):
     today = datetime.now(TZ).replace(tzinfo=None).date()
     monday = today - timedelta(days=today.weekday()) + timedelta(days=off * 7)
     return monday.isoformat()
+
+
+# ─── VARDİYA PLANI KURAL MOTORU ─────────────────────────────────────────────
+# Tek kaynak: hem eylemler hem testler buradan geçer. Kurallar iki yerde ayrı
+# yazılırsa er ya da geç ayrışır ve plan sessizce tutarsız hâle gelir.
+
+def grid_templates(db):
+    """{code: {branch_id, start, end, label}} — aktif vardiya şablonları."""
+    out = {}
+    try:
+        for r in db.execute("SELECT * FROM shift_templates WHERE COALESCE(active,1)=1 "
+                            "ORDER BY sort_order, code").fetchall():
+            out[r["code"]] = {"branch_id": r["branch_id"], "start": r["start_t"] or "",
+                              "end": r["end_t"] or ""}
+    except Exception:
+        pass
+    return out
+
+
+def _mins(hhmm):
+    try:
+        h, m = str(hhmm).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+
+def grid_overlap(a_start, a_end, b_start, b_end):
+    """İki vardiya saati ÇAKIŞIYOR mu. Gece yarısını geçen vardiya (17:00→03:00)
+    ertesi güne taşar; bitiş başlangıçtan küçükse +24 saat sayılır."""
+    a1, a2 = _mins(a_start), _mins(a_end)
+    b1, b2 = _mins(b_start), _mins(b_end)
+    if None in (a1, a2, b1, b2):
+        return False
+    if a2 <= a1:
+        a2 += 1440
+    if b2 <= b1:
+        b2 += 1440
+    return a1 < b2 and b1 < a2
+
+
+def grid_check(db, week_key, day, user_id, code, tpls=None):
+    """Bir hücreye `code` atanabilir mi? (ok: bool, why: str) döner.
+
+    Sırayla:
+      · 'off' her zaman serbest (izin koymak kapasiteyi zorlamaz)
+      · şablon tanımlı mı
+      · ÇAKIŞMA: kişi aynı gün başka bir şubede çakışan saatte mi
+      · KAPASİTE: şubenin o günkü çalışan sayısı sınırı aştı mı
+    """
+    code = (code or "").strip()
+    if not code:
+        return False, "Не указана смена."
+    if code == "off":
+        return True, ""
+    tpls = tpls if tpls is not None else grid_templates(db)
+    t = tpls.get(code)
+    if not t:
+        return False, "Такой смены нет в шаблонах."
+    try:
+        rows = db.execute(
+            "SELECT user_id, code FROM shift_grid WHERE week_key=? AND day=? AND user_id!=?",
+            (week_key, int(day), int(user_id))).fetchall()
+        own = db.execute(
+            "SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+            (week_key, int(day), int(user_id))).fetchall()
+    except Exception as e:
+        logger.warning(f"grid_check: {e}")
+        return True, ""            # şüphede ENGELLEME — plan kilitlenmesin
+    # ÇAKIŞMA — aynı kişi, aynı gün, çakışan saat (kendi ikinci vardiyası)
+    for r in own:
+        ot = tpls.get(r["code"])
+        if ot and r["code"] != code and grid_overlap(t["start"], t["end"], ot["start"], ot["end"]):
+            return False, "Сотрудник уже назначен на другую смену в это время."
+    # KAPASİTE — bu şubede o gün kaç kişi var
+    bid = t["branch_id"]
+    if bid:
+        cnt = 0
+        for r in rows:
+            rt = tpls.get(r["code"])
+            if rt and rt["branch_id"] == bid:
+                cnt += 1
+        try:
+            br = db.execute("SELECT name, COALESCE(max_staff,2) AS mx FROM branches WHERE id=?",
+                            (int(bid),)).fetchone()
+        except Exception:
+            br = None
+        mx = int(br["mx"]) if br else 2
+        if mx > 0 and cnt >= mx:
+            return False, "Максимум сотрудников на филиале достигнут."
+    return True, ""
+
+
+def grid_off_limit(db, user_id):
+    """Kişinin haftalık izin hakkı: kişiye özel değer varsa o, yoksa genel ayar."""
+    try:
+        r = db.execute("SELECT off_limit FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if r and r["off_limit"] is not None:
+            return max(0, int(r["off_limit"]))
+    except Exception:
+        pass
+    try:
+        m = db.execute("SELECT val FROM meta WHERE k='weekly_off_limit'").fetchone()
+        if m and m["val"]:
+            return max(0, int(m["val"]))
+    except Exception:
+        pass
+    return 2
+
+
+def grid_off_used(db, week_key, user_id, exclude_day=None):
+    """O haftada kişinin KAÇ izni var (plandaki 'off' hücreleri)."""
+    try:
+        rows = db.execute(
+            "SELECT day FROM shift_grid WHERE week_key=? AND user_id=? AND code='off'",
+            (week_key, int(user_id))).fetchall()
+    except Exception:
+        return 0
+    return len([r for r in rows if exclude_day is None or int(r["day"]) != int(exclude_day)])
+
+
+def grid_off_allowed(db, week_key, user_id, day):
+    """Bu güne izin EKLENEBİLİR mi (haftalık limit)."""
+    lim = grid_off_limit(db, user_id)
+    used = grid_off_used(db, week_key, user_id, exclude_day=day)
+    if used >= lim:
+        return False, f"Вы достигли лимита выходных на этой неделе ({lim})."
+    return True, ""
 
 
 _GRID_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -2211,6 +2400,53 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _reqs = []
     parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
     parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
+    # ── Vardiya şablonları · plan kuralları · açık vardiyalar ──
+    # Üçü de eskiden YALNIZCA uygulamanın içinde sabitti (ya da hiç yoktu):
+    # owner değiştiremiyordu ve uygulama yenilenince kayboluyordu.
+    try:
+        _tpl_out = {}
+        for _t in db.execute("SELECT * FROM shift_templates ORDER BY sort_order, code").fetchall():
+            _tb = get_branch(db, _t["branch_id"]) if _t["branch_id"] else None
+            _tpl_out[_t["code"]] = {"b": (_tb["name"] if _tb else ""), "bid": _t["branch_id"],
+                                    "s": _t["start_t"] or "", "e": _t["end_t"] or "",
+                                    "act": int(_t["active"] or 0)}
+    except Exception:
+        _tpl_out = {}
+    try:
+        _caps = {str(_b["id"]): int(_b["max_staff"] if _b["max_staff"] is not None else 2)
+                 for _b in db.execute("SELECT id, max_staff FROM branches").fetchall()}
+    except Exception:
+        _caps = {}
+    try:
+        _plim = {}
+        for _u in db.execute("SELECT user_id, off_limit, off_self FROM users "
+                             "WHERE COALESCE(archived,0)=0").fetchall():
+            _plim[str(_u["user_id"])] = {"off": grid_off_limit(db, _u["user_id"]),
+                                         "self": 0 if _u["off_self"] == 0 else 1}
+    except Exception:
+        _plim = {}
+    _rules = {"weekly_off_limit": grid_off_limit(db, 0) if False else None, "caps": _caps, "people": _plim}
+    try:
+        _m = db.execute("SELECT val FROM meta WHERE k='weekly_off_limit'").fetchone()
+        _rules["weekly_off_limit"] = int(_m["val"]) if (_m and _m["val"]) else 2
+    except Exception:
+        _rules["weekly_off_limit"] = 2
+    try:
+        _open_out = []
+        for _o in db.execute(
+                "SELECT * FROM open_shifts WHERE week_key IN ({}) AND status IN ('open','claimed') "
+                "ORDER BY day".format(",".join("?" for _ in _wkmap)), tuple(_wkmap.keys())).fetchall():
+            _open_out.append({"id": _o["id"], "week": _wkmap.get(_o["week_key"], 0), "day": _o["day"],
+                              "code": _o["code"] or "", "bid": _o["branch_id"],
+                              "from": _o["from_uid"], "from_nm": _o["from_name"] or "",
+                              "st": _o["status"] or "open",
+                              "cl": _o["claim_uid"], "cl_nm": _o["claim_name"] or "",
+                              "why": _o["reason"] or ""})
+    except Exception:
+        _open_out = []
+    parts.append(f"shift_tpl={quote(json.dumps(_tpl_out, ensure_ascii=False))}")
+    parts.append(f"shift_rules={quote(json.dumps(_rules, ensure_ascii=False))}")
+    parts.append(f"open_shifts={quote(json.dumps(_open_out, ensure_ascii=False))}")
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
     def _repq(sql, params=(), n=120):
         try:
@@ -6686,6 +6922,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 day = int(data.get("day"))
             except Exception:
                 day = 0
+            # KURALLAR — kapasite ve çakışma. Eskiden hiçbir kontrol yoktu:
+            # aynı kişi aynı saatte iki şubeye, bir şubeye sınırsız kişi
+            # yazılabiliyordu ve plan sessizce imkânsız hâle geliyordu.
+            _ok, _why = grid_check(db, wk, day, target_id, code)
+            if not _ok:
+                await update.message.reply_text("⚠️ " + _why)
+                return
+            if code == "off":
+                _ok2, _why2 = grid_off_allowed(db, wk, target_id, day)
+                if not _ok2:
+                    await update.message.reply_text("⚠️ " + _why2)
+                    return
             db.execute(
                 "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                 "VALUES (?,?,?,?,?,?,?)",
@@ -6726,6 +6974,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 day = int(data.get("day"))
             except Exception:
                 day = 0
+            # DEVREDİLEN kişi bu vardiyayı gerçekten alabiliyor mu? Devreden
+            # kişi çıkacağı için kapasite hesabında onu SAYMA — yoksa dolu bir
+            # şubede devir hiç mümkün olmazdı.
+            db.execute("DELETE FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                       (wk, day, from_id))
+            _ok, _why = grid_check(db, wk, day, to_id, code)
+            if not _ok:
+                # Devreden kişiyi geri koy — kontrol için kaldırmıştık.
+                db.execute(
+                    "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (wk, day, from_id, code, user.id, user.first_name, now.isoformat()))
+                db.commit()
+                await update.message.reply_text("⚠️ " + _why)
+                return
             for _uid, _c in ((from_id, "off"), (to_id, code)):
                 db.execute(
                     "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
@@ -6743,6 +7006,252 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                (to_id, f"🔄 Вам передали смену {_dl} (смена «{code}»).")):
                 try:
                     await context.bot.send_message(chat_id=_uid, text=_txt)
+                except Exception:
+                    pass
+
+        # ─── Vardiya ŞABLONU kaydet/sil (owner) ───
+        elif action == "shift_tpl_save":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _tc = re.sub(r"[^a-z0-9_]", "", str(data.get("code") or "").strip().lower())[:16]
+            if not _tc:
+                await update.message.reply_text("❌ Укажите код смены.")
+                return
+            try:
+                _tb = int(data.get("branch_id") or 0)
+            except Exception:
+                _tb = 0
+            if not _tb or not get_branch(db, _tb):
+                await update.message.reply_text("❌ Укажите филиал.")
+                return
+            _ts = str(data.get("start") or "").strip()[:5]
+            _te = str(data.get("end") or "").strip()[:5]
+            if _mins(_ts) is None or _mins(_te) is None:
+                await update.message.reply_text("❌ Время в формате ЧЧ:ММ.")
+                return
+            _ta = 0 if str(data.get("active", 1)) in ("0", "False", "false") else 1
+            db.execute(
+                "INSERT OR REPLACE INTO shift_templates (code, branch_id, start_t, end_t, active, sort_order, updated_by, updated_at) "
+                "VALUES (?,?,?,?,?,COALESCE((SELECT sort_order FROM shift_templates WHERE code=?),0),?,?)",
+                (_tc, _tb, _ts, _te, _ta, _tc, user.id, now.isoformat()))
+            db.commit()
+            log_action(db, "shift_tpl_save", user.id, user.first_name, None, _tc,
+                       {"code": _tc, "branch_id": _tb, "start": _ts, "end": _te, "active": _ta})
+            await update.message.reply_text(
+                f"🗓 Шаблон «{md_safe(_tc)}» сохранён: {md_safe(_ts)}–{md_safe(_te)} · "
+                f"{md_safe((get_branch(db, _tb) or {})['name'])}", parse_mode="Markdown")
+
+        elif action == "shift_tpl_delete":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _tc = str(data.get("code") or "").strip()[:16]
+            _used = db.execute("SELECT COUNT(*) AS c FROM shift_grid WHERE code=?", (_tc,)).fetchone()
+            if _used and (_used["c"] or 0) > 0:
+                # Planda KULLANILIYORSA silme — pasife al. Silmek geçmiş haftaların
+                # hücrelerini anlamsız kodlara çevirirdi.
+                db.execute("UPDATE shift_templates SET active=0, updated_at=? WHERE code=?",
+                           (now.isoformat(), _tc))
+                db.commit()
+                log_action(db, "shift_tpl_delete", user.id, user.first_name, None, _tc,
+                           {"code": _tc, "mode": "deactivated", "used": _used["c"]})
+                await update.message.reply_text(
+                    f"🗓 Шаблон «{md_safe(_tc)}» отключён (используется в графике — записи сохранены).",
+                    parse_mode="Markdown")
+                return
+            db.execute("DELETE FROM shift_templates WHERE code=?", (_tc,))
+            db.commit()
+            log_action(db, "shift_tpl_delete", user.id, user.first_name, None, _tc, {"code": _tc})
+            await update.message.reply_text(f"🗑 Шаблон «{md_safe(_tc)}» удалён.", parse_mode="Markdown")
+
+        # ─── Plan KURALLARI (owner): haftalık izin limiti · şube kapasitesi ───
+        elif action == "shift_rules_save":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _parts = []
+            if data.get("weekly_off_limit") is not None:
+                try:
+                    _wl = max(0, min(7, int(data.get("weekly_off_limit"))))
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('weekly_off_limit',?)", (str(_wl),))
+                    _parts.append(f"выходных в неделю: {_wl}")
+                except Exception:
+                    pass
+            _bc = data.get("branch_caps")
+            if isinstance(_bc, dict):
+                for _bid, _mx in _bc.items():
+                    try:
+                        db.execute("UPDATE branches SET max_staff=? WHERE id=?",
+                                   (max(0, min(20, int(_mx))), int(_bid)))
+                    except Exception:
+                        pass
+                _parts.append("лимиты филиалов обновлены")
+            _po = data.get("person_off")
+            if isinstance(_po, dict):
+                for _uid, _lim in _po.items():
+                    try:
+                        _v = None if _lim in (None, "", "auto") else max(0, min(7, int(_lim)))
+                        db.execute("UPDATE users SET off_limit=? WHERE user_id=?", (_v, int(_uid)))
+                    except Exception:
+                        pass
+                _parts.append("личные лимиты обновлены")
+            db.commit()
+            log_action(db, "shift_rules_save", user.id, user.first_name, None, None,
+                       {"weekly_off_limit": data.get("weekly_off_limit"),
+                        "branch_caps": _bc if isinstance(_bc, dict) else None})
+            await update.message.reply_text(
+                "✅ Правила графика обновлены" + (":\n· " + "\n· ".join(_parts) if _parts else "."))
+
+        # ─── İZİN TALEBİ (barista → owner) ───
+        # BU EYLEM HİÇ YOKTU. Talep yalnızca istemcinin hafızasında duruyor,
+        # hiçbir yere kaydedilmiyordu: owner uygulamayı yeniden açtığında talep
+        # yok oluyordu. Yani izin akışı gerçekte hiç çalışmıyordu.
+        elif action == "dayoff_request":
+            db = get_db()
+            try:
+                day = int(data.get("day"))
+            except Exception:
+                day = 0
+            wk = grid_week_key(data.get("week"))
+            note = (data.get("note") or "").strip()[:200]
+            # HAFTALIK LİMİT — talep aşamasında kontrol edilir, onayda tekrar.
+            _ok, _why = grid_off_allowed(db, wk, user.id, day)
+            if not _ok:
+                await update.message.reply_text("⚠️ " + _why)
+                return
+            _dup = db.execute(
+                "SELECT id FROM dayoff_requests WHERE user_id=? AND week_key=? AND day=? AND status='pending'",
+                (user.id, wk, day)).fetchone()
+            if _dup:
+                await update.message.reply_text("⏳ Заявка на этот день уже отправлена.")
+                return
+            _cur = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                              (wk, day, user.id)).fetchone()
+            _curcode = (_cur["code"] if _cur else "") or ""
+            db.execute(
+                "INSERT INTO dayoff_requests (user_id, week_key, day, note, status, created_at) "
+                "VALUES (?,?,?,?,'pending',?)",
+                (user.id, wk, day, note, now.isoformat()))
+            db.commit()
+            log_action(db, "dayoff_request", user.id, user.first_name, user.id, shown,
+                       {"week_key": wk, "day": day, "note": note, "code": _curcode})
+            _dl = grid_day_label(day)
+            # VARDİYA SİLİNMEZ — onaya kadar planda aynen kalır.
+            await update.message.reply_text(
+                f"📨 Заявка на выходной отправлена: {_dl}.\n"
+                "Смена останется в графике, пока владелец не одобрит.")
+            for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                try:
+                    await context.bot.send_message(
+                        _o["user_id"],
+                        f"🔔 *Новый запрос на выходной*\n{md_safe(shown)} · {_dl}"
+                        + (f"\nПричина: {md_safe(note)}" if note else "")
+                        + "\n\nУправление → График смен",
+                        parse_mode="Markdown")
+                except Exception:
+                    pass
+
+        # ─── AÇIK VARDİYAYA TALİP OLMA (barista) ───
+        elif action == "open_shift_claim":
+            db = get_db()
+            try:
+                osid = int(data.get("id") or 0)
+            except Exception:
+                osid = 0
+            row = db.execute("SELECT * FROM open_shifts WHERE id=?", (osid,)).fetchone() if osid else None
+            if not row or (row["status"] or "") != "open":
+                await update.message.reply_text("❌ Смена уже занята или отменена.")
+                return
+            # Talip olan kişi bu vardiyayı gerçekten alabiliyor mu?
+            _ok, _why = grid_check(db, row["week_key"], row["day"], user.id, row["code"])
+            if not _ok:
+                await update.message.reply_text("⚠️ " + _why)
+                return
+            db.execute("UPDATE open_shifts SET status='claimed', claim_uid=?, claim_name=?, claim_at=? WHERE id=?",
+                       (user.id, shown, now.isoformat(), osid))
+            db.commit()
+            log_action(db, "open_shift_claim", user.id, user.first_name, user.id, shown,
+                       {"open_id": osid, "day": row["day"], "code": row["code"]})
+            _dl = grid_day_label(row["day"])
+            # KESİNLEŞMEZ — owner onayına gider.
+            await update.message.reply_text(
+                f"📨 Заявка отправлена: {_dl} · смена «{row['code']}».\n"
+                "Смена станет вашей после подтверждения владельца.")
+            for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                try:
+                    await context.bot.send_message(
+                        _o["user_id"],
+                        f"🔔 *Запрос на замену*\n{md_safe(shown)} хочет взять смену "
+                        f"{_dl} «{md_safe(row['code'])}»"
+                        + (f" (от {md_safe(row['from_name'] or '?')})" if row["from_name"] else "")
+                        + "\n\nУправление → График смен",
+                        parse_mode="Markdown")
+                except Exception:
+                    pass
+
+        # ─── AÇIK VARDİYA KARARI (owner) ───
+        elif action == "open_shift_decide":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                osid = int(data.get("id") or 0)
+            except Exception:
+                osid = 0
+            dec = "ok" if (data.get("decision") == "ok") else "no"
+            row = db.execute("SELECT * FROM open_shifts WHERE id=?", (osid,)).fetchone() if osid else None
+            if not row:
+                await update.message.reply_text("❌ Смена не найдена.")
+                return
+            _dl = grid_day_label(row["day"])
+            if dec == "no":
+                # Reddedildi → vardiya YİNE AÇIK kalır, başkası talip olabilir.
+                db.execute("UPDATE open_shifts SET status='open', claim_uid=NULL, claim_name=NULL, "
+                           "decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                           (user.id, shown, now.isoformat(), osid))
+                db.commit()
+                log_action(db, "open_shift_decide", user.id, user.first_name,
+                           row["claim_uid"], row["claim_name"] or "", {"open_id": osid, "decision": "no"})
+                if row["claim_uid"]:
+                    try:
+                        await context.bot.send_message(
+                            row["claim_uid"], f"❌ Заявка на смену {_dl} отклонена.")
+                    except Exception:
+                        pass
+                await update.message.reply_text("❌ Заявка отклонена. Смена снова открыта.")
+                return
+            if not row["claim_uid"]:
+                await update.message.reply_text("❌ На эту смену никто не претендует.")
+                return
+            _ok, _why = grid_check(db, row["week_key"], row["day"], row["claim_uid"], row["code"])
+            if not _ok:
+                await update.message.reply_text("⚠️ " + _why)
+                return
+            db.execute(
+                "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (row["week_key"], row["day"], row["claim_uid"], row["code"], user.id, shown, now.isoformat()))
+            db.execute("UPDATE open_shifts SET status='done', decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                       (user.id, shown, now.isoformat(), osid))
+            db.commit()
+            log_action(db, "open_shift_decide", user.id, user.first_name,
+                       row["claim_uid"], row["claim_name"] or "",
+                       {"open_id": osid, "decision": "ok", "day": row["day"], "code": row["code"],
+                        "from": row["from_uid"], "from_name": row["from_name"] or ""})
+            await update.message.reply_text(
+                f"✅ Смена {_dl} «{md_safe(row['code'])}» закреплена за *{md_safe(row['claim_name'] or '?')}*",
+                parse_mode="Markdown")
+            for _uid, _txt in ((row["claim_uid"], f"✅ Ваша смена на {_dl} подтверждена."),
+                               (row["from_uid"], f"🔄 Вашу смену {_dl} принял {row['claim_name'] or '?'}.")):
+                if not _uid:
+                    continue
+                try:
+                    await context.bot.send_message(_uid, _txt)
                 except Exception:
                     pass
 
@@ -6783,10 +7292,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (req_id, target_id, wk, day, "", decision, user.id, user.first_name, now.isoformat(), now.isoformat()))
             if decision == "ok" and target_id:
+                # Onaydan ÖNCEKİ vardiya kodunu al: boşalan vardiya AÇIK VARDİYA
+                # olarak ilan edilsin, kimse görmeden kaybolmasın.
+                _was = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                                  (wk, day, target_id)).fetchone()
+                _wascode = (_was["code"] if _was else "") or ""
                 db.execute(
                     "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                     "VALUES (?,?,?,?,?,?,?)",
                     (wk, day, target_id, "off", user.id, user.first_name, now.isoformat()))
+                if _wascode and _wascode != "off":
+                    _tpl = grid_templates(db).get(_wascode) or {}
+                    _dupo = db.execute(
+                        "SELECT id FROM open_shifts WHERE week_key=? AND day=? AND code=? "
+                        "AND status IN ('open','claimed')", (wk, day, _wascode)).fetchone()
+                    if not _dupo:
+                        db.execute(
+                            "INSERT INTO open_shifts (week_key, day, code, branch_id, from_uid, from_name, "
+                            "status, reason, created_at) VALUES (?,?,?,?,?,?,'open',?,?)",
+                            (wk, day, _wascode, _tpl.get("branch_id"), target_id,
+                             display_name_for(db, target_id, fallback="?"),
+                             "выходной согласован", now.isoformat()))
             db.commit()
             _nm = display_name_for(db, target_id, fallback="?") if target_id else "?"
             log_action(db, "dayoff_decide", user.id, user.first_name, target_id or None, _nm,
