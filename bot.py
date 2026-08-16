@@ -6223,18 +6223,45 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # bonusu ASLA aşamaz. İstemci yanlış tarife kullanırsa (ör. kategorisi
             # Caffelito olan kişi için «Наша» fiyatları) kasadan fazla para
             # alınıyor, hesabına azı yazılıyordu → kasa açık veriyordu.
-            # shift_end cash_report'tan ÖNCE geldiği için son kapanan vardiyanın
-            # bonusu burada hazırdır.
+            #
+            # ⚠️ REFERANS VARDİYA — 2026-08-16'da bu satır PARA KAYBETTİRDİ.
+            # Eskiden referans «id'ce son kapanan vardiya» idi ve yorum «shift_end
+            # cash_report'tan ÖNCE gelir» diye VARSAYIYORDU. Oysa istemci ikisini
+            # ayrı isteklerle, birbirini beklemeden yolluyordu: rapor önce
+            # işlenince kapanmakta olan vardiya henüz açıktı ve sorgu GÜNLER
+            # ÖNCEKİ vardiyayı buldu (Хусейин 16.08: kazanç 120.200, referans
+            # 12.08'in 77.600'ü → kasadan 77.600 çıktı, 42.600 hiçbir kayda
+            # girmedi; bonus ağustostan beri maaşa da dahil değil).
+            # Artık referans, kapanış ANINA en yakın kapanmış vardiya (±6 saat).
+            # Bulunamazsa KIRPMA YAPILMAZ — alakasız bir vardiyaya kırpmaktansa
+            # istemcinin değerini geçmek yeğdir (istemci sırası düzeltildi,
+            # bu katman yalnızca ikinci savunma).
             if daily_pay > 0:
                 try:
-                    _lsh = db.execute(
-                        "SELECT COALESCE(bonus,0) AS b FROM shifts WHERE user_id=? AND end_time IS NOT NULL "
-                        "ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
-                    _earned = int(_lsh["b"] or 0) if _lsh else 0
-                    if _earned >= 0 and daily_pay > _earned:
+                    _ref, _refd = None, None
+                    for _r in db.execute(
+                            "SELECT COALESCE(bonus,0) AS b, end_time FROM shifts "
+                            "WHERE user_id=? AND end_time IS NOT NULL ORDER BY id DESC LIMIT 8",
+                            (user.id,)).fetchall():
+                        try:
+                            _et = datetime.fromisoformat(_r["end_time"])
+                        except Exception:
+                            continue
+                        if _et.tzinfo is None:
+                            _et = _et.replace(tzinfo=TZ)
+                        _dd = abs((now - _et).total_seconds())
+                        if _dd <= 6 * 3600 and (_refd is None or _dd < _refd):
+                            _ref, _refd = _r, _dd
+                    if _ref is None:
                         logger.warning(
-                            f"daily_pay kirpildi uid={user.id}: istemci={daily_pay} vardiya_bonusu={_earned}")
-                        daily_pay = _earned
+                            f"daily_pay kirpilmadi uid={user.id}: kapanisa yakin vardiya yok "
+                            f"(istemci={daily_pay}) — shift_end gecikmis olabilir")
+                    else:
+                        _earned = int(_ref["b"] or 0)
+                        if daily_pay > _earned:
+                            logger.warning(
+                                f"daily_pay kirpildi uid={user.id}: istemci={daily_pay} vardiya_bonusu={_earned}")
+                            daily_pay = _earned
                 except Exception as e:
                     logger.warning(f"daily_pay dogrulama basarisiz: {e}")
             cashless = clk + pay + kar + term
