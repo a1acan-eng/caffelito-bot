@@ -2430,6 +2430,24 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _reqs = []
     parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
     parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
+    # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
+    # Plan verisi (`shift_grid`, `shift_tpl`) zaten herkese gidiyordu ama isim
+    # listesi (`baristas`) YALNIZCA owner'a gidiyor ve içinde maaş/bakiye var.
+    # Bu yüzden barista, ortak çalışma tablosunda kimin ne zaman çalıştığını
+    # göremiyordu. Buradaki liste maaş taşımaz: id · ad · şube.
+    try:
+        _roster = [
+            {"id": _r["user_id"],
+             "n": (_r["display_name"] or _r["name"] or ("ID " + str(_r["user_id"]))),
+             "bid": int(_r["branch_id"] or 1)}
+            for _r in db.execute(
+                "SELECT user_id, name, display_name, COALESCE(branch_id,1) AS branch_id "
+                "FROM users WHERE COALESCE(approved,0)=1 AND COALESCE(archived,0)=0 "
+                "ORDER BY COALESCE(display_name,name)").fetchall()]
+    except Exception as e:
+        logger.warning(f"roster: {e}")
+        _roster = []
+    parts.append(f"roster={quote(json.dumps(_roster, ensure_ascii=False))}")
     # ── Vardiya şablonları · plan kuralları · açık vardiyalar ──
     # Üçü de eskiden YALNIZCA uygulamanın içinde sabitti (ya da hiç yoktu):
     # owner değiştiremiyordu ve uygulama yenilenince kayboluyordu.
