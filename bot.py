@@ -6713,6 +6713,66 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"✅ Запрос отправлен\n\nСумма: {fmt_sum(amount)} сум\nЖдите решения шефа.")
 
         # ─── Owner: borç onayla/reddet (webapp üzerinden) ───
+        # ─── Owner: avansı DOĞRUDAN ver (talep beklemeden) ───
+        # Avans yalnızca çalışanın talebi onaylanarak verilebiliyordu. Owner da
+        # burada çalışıyor: kendine avans alınca kaydedecek yolu yoktu, başkasına
+        # elden verdiğinde de sistem görmüyordu (2026-08-17'de bildirildi).
+        # Talep mekanizması KALDIRILMADI — çalışanın «Запросить аванс» düğmesi
+        # duruyor; owner tarafında talep artık ARKA PLANDA oluşuyor: aynı `loans`
+        # satırı 'approved' olarak yazılır ve maaştan düşen `payments` kaydı
+        # `_decide_loan`'daki ile BİREBİR aynı biçimde (kind='loan') açılır.
+        elif action == "loan_grant":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец может выдать аванс.")
+                return
+            try:
+                target_id = int(data.get("target") or 0) or user.id
+            except Exception:
+                target_id = user.id
+            amount = int(_norm_amt(data.get("amount", 0)))
+            reason = (data.get("reason") or "").strip()
+            if amount <= 0 or amount > 5_000_000:
+                await update.message.reply_text("❌ Сумма некорректна.")
+                return
+            if not reason:
+                await update.message.reply_text("❌ Укажите причину.")
+                return
+            trow = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
+            if not trow:
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            now = datetime.now(TZ).isoformat()
+            cur = db.execute(
+                "INSERT INTO loans (barista_id, amount, reason, status, created_at, "
+                "decided_by, decided_at, decision_note) VALUES (?,?,?,'approved',?,?,?,?)",
+                (target_id, amount, reason, now, user.id, now, "выдан владельцем"))
+            loan_id = cur.lastrowid
+            db.execute(
+                "INSERT INTO payments (user_id, period, amount, kind, note, paid_by, paid_by_name, paid_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (target_id, current_period(), amount, "loan",
+                 f"Аванс: {reason}", user.id, user.first_name, now))
+            db.commit()
+            _gnm = display_name_for(db, target_id, fallback=trow["name"] or "?")
+            log_action(db, "loan_grant", user.id, user.first_name, target_id, _gnm,
+                       {"loan_id": loan_id, "amount": amount, "reason": reason})
+            # Kendine değilse kişiye haber ver.
+            if target_id != user.id:
+                try:
+                    await context.bot.send_message(
+                        target_id,
+                        f"💸 *Выдан аванс*\n\nСумма: *{fmt_sum(amount)}* сум\n"
+                        f"Основание: {md_safe(reason)}\n"
+                        "Будет вычтен из ближайшей зарплаты.",
+                        parse_mode="Markdown")
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(amount)} сум\n"
+                f"📝 {md_safe(reason)}\n_Вычтется из ближайшей зарплаты._",
+                parse_mode="Markdown")
+
         elif action == "loan_decide":
             db = get_db()
             if get_role(db, user.id) != "owner":
