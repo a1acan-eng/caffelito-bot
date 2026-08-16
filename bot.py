@@ -6469,6 +6469,123 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # kim, hangi alan eski→yeni} olarak eklenir + audit log'a yazılır.
         # Zincir etkisi: bu şubenin EN SON raporunun «осталось»u düzeltilirse
         # sonraki vardiyanın «Было» ön-dolumu (kasa_last) otomatik düzelir.
+        # ─── Owner: raporu OLMAYAN kapanmış vardiyaya kasa raporu GİR ───
+        # `force_end_shift` bardak/kasa sormaz («kapatmayı unuttu» durumu için).
+        # Sonuç: vardiyanın `drinks`i boş kalıyor → çalışan bardak bonusunu
+        # KAYBEDİYOR, kasa raporu hiç oluşmuyor ve «Исправить отчёт» yalnızca var
+        # olan raporu düzenlediği için düzeltmenin hiçbir yolu yoktu
+        # (2026-08-17: Абдулатиф'in 16.08 vardiyası — 0 bardak, sadece saatlik).
+        # Bu eylem kapanışın yazacağı İKİ kaydı da sonradan yazar: kasa raporu +
+        # vardiyanın bardakları/bonusu. Bonus, vardiyanın KENDİ snapshot'ından
+        # (cat_id) çözülür — bugünün kategorisi değil.
+        elif action == "cash_report_add":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                sid = int(data.get("shift_id") or 0)
+            except Exception:
+                sid = 0
+            sh = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone() if sid else None
+            if not sh:
+                await update.message.reply_text("❌ Смена не найдена.")
+                return
+            if not sh["end_time"]:
+                await update.message.reply_text("❌ Смена ещё открыта — закройте её сначала.")
+                return
+            _exists = db.execute(
+                "SELECT id FROM cashreports WHERE user_id=? AND start_time=? LIMIT 1",
+                (sh["user_id"], sh["start_time"])).fetchone()
+            if _exists:
+                await update.message.reply_text("ℹ️ По этой смене отчёт уже есть — исправьте его.")
+                return
+            cups = data.get("cups", []) or []
+            new_bylo, new_rest, new_ost, new_sold = {}, {}, {}, {}
+            for _c in cups:
+                if not isinstance(_c, dict):
+                    continue
+                _n = str(_c.get("n", "") or "")
+                if not _n:
+                    continue
+                _b = max(0, int(_c.get("b", 0) or 0))
+                _r = int(_c.get("r", 0) or 0)
+                _o = max(0, int(_c.get("o", 0) or 0))
+                new_bylo[_n] = _b; new_rest[_n] = _r; new_ost[_n] = _o
+                new_sold[_n] = max(0, _b + _r - _o)
+            cups_total = sum(new_sold.values())
+            itg = _norm_amt(data.get("itogo", 0)); clk = _norm_amt(data.get("click", 0))
+            pay = _norm_amt(data.get("payme", 0)); kar = _norm_amt(data.get("karta", 0))
+            term = _norm_amt(data.get("terminal", 0)); vsh = _norm_amt(data.get("vyshlo", 0))
+            sdachi = _norm_amt(data.get("na_sdachi", 0))
+            exps = [{"n": str(_e.get("n", "") or "").strip(), "a": _norm_amt(_e.get("a", 0))}
+                    for _e in (data.get("expenses") or []) if isinstance(_e, dict)]
+            exps = [_e for _e in exps if _e["n"] or _e["a"]]
+            exp_total = sum(int(_e.get("a", 0) or 0) for _e in exps)
+            note = (data.get("note") or "").strip()
+            cashless = clk + pay + kar + term
+            schitano = itg - cashless
+            # ── Vardiyanın bardakları + bonusu: kapanışın yaptığı hesabın aynısı.
+            # `drinks` anahtarları içecek id'si (ml500…), kasa raporundaki `n` ise
+            # boy ADI. Eşleme İSTEMCİDE var (`c.id` ↔ `c.kn`) ve `shift_end` de
+            # zaten `drinks`i oradan alıyor — aynı sözleşme burada da kullanılıyor,
+            # eşleme bota KOPYALANMIYOR (iki yerde tutulursa biri bayatlar).
+            drinks = {k: int(v or 0) for k, v in (data.get("drinks") or {}).items() if int(v or 0) > 0}
+            # Bonus sistemi vardiyanın SNAPSHOT kategorisinden (yoksa güncel bilgi).
+            _bsys, _kpi = "own", 0
+            try:
+                _cid = sh["cat_id"] if "cat_id" in sh.keys() else None
+            except Exception:
+                _cid = None
+            if _cid:
+                _cr = db.execute("SELECT bonus_system, use_kpi FROM salary_categories WHERE id=?",
+                                 (_cid,)).fetchone()
+                if _cr:
+                    _bsys = _cr["bonus_system"] or "own"
+                    _kpi = int(_cr["use_kpi"] or 0)
+            else:
+                _pi2 = barista_pay_info(db, sh["user_id"], branch_id=sh["branch_id"])
+                _bsys = _pi2["bonus_system"]; _kpi = int(_pi2["use_kpi"] or 0)
+            _prices = get_caffelito_bonus(db) if _bsys == "caffelito" else get_prices(db)
+            drinks_bonus = 0 if _kpi else calc_bonus(drinks, _prices)
+            dessert_bonus = int(sh["dessert_bonus"] or 0)
+            new_bonus = drinks_bonus + dessert_bonus
+            new_total = int(sh["hourly_pay"] or 0) + new_bonus
+            daily_pay = max(0, int(_norm_amt(data.get("daily_pay", 0))))
+            if daily_pay > new_bonus:
+                daily_pay = new_bonus
+            kassa = vsh - sdachi - daily_pay
+            _cr_bid = sh["branch_id"] if sh["branch_id"] else 1
+            try:
+                _end_dt = datetime.fromisoformat(sh["end_time"])
+            except Exception:
+                _end_dt = now
+            db.execute(
+                "INSERT INTO cashreports (user_id,user_name,date,period,created_at,bylo,restock,ostalos,sold,"
+                "cups_total,itogo,click,payme,karta,terminal,cashless,schitano,vyshlo,na_sdachi,kassa,"
+                "expenses,expenses_total,note,daily_pay,hours,start_time,end_time,coffee_kg,branch_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sh["user_id"], display_name_for(db, sh["user_id"], fallback="?"),
+                 _end_dt.strftime("%Y-%m-%d"), sh["period"], now.isoformat(),
+                 json.dumps(new_bylo, ensure_ascii=False), json.dumps(new_rest, ensure_ascii=False),
+                 json.dumps(new_ost, ensure_ascii=False), json.dumps(new_sold, ensure_ascii=False),
+                 cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
+                 json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay,
+                 sh["hours"], sh["start_time"], sh["end_time"], 0, _cr_bid))
+            db.execute("UPDATE shifts SET drinks=?, bonus=?, total=? WHERE id=?",
+                       (json.dumps(drinks, ensure_ascii=False), new_bonus, new_total, sid))
+            db.commit()
+            _anm = display_name_for(db, sh["user_id"], fallback="?")
+            log_action(db, "cash_report_add", user.id, user.first_name, sh["user_id"], _anm,
+                       {"shift_id": sid, "cups": cups_total, "bonus": new_bonus,
+                        "daily_pay": daily_pay, "kassa": kassa})
+            await update.message.reply_text(
+                f"🧾 Отчёт внесён — *{md_safe(_anm)}*\n"
+                f"🥤 Продано: {cups_total} шт · 💰 бонус: {fmt_sum(new_bonus)} сум\n"
+                f"💵 Дневной бонус: {fmt_sum(daily_pay)} · КАССА: {fmt_sum(kassa)}\n"
+                "_Смена пересчитана: часы не менялись._",
+                parse_mode="Markdown")
+
         elif action == "cash_report_edit":
             db = get_db()
             if get_role(db, user.id) != "owner":
