@@ -6475,6 +6475,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 new_exps = old_exps
             new_note = data.get("note")
             new_note = old_note if new_note is None else str(new_note).strip()
+            # «Дневной бонус» (kasadan çıkan bardak parası) — TEK düzenlenebilir PARA
+            # alanı. Başta bilerek dışarıdaydı: stok düzeltmesi parayı sessizce
+            # oynatmasın diye. Ama 2026-08-16'da kaydın kendisi yanlış yazıldı
+            # (sırasız istek → klemp dört gün önceki vardiyaya kırptı: kasadan
+            # 120.200 çıktı, rapora 77.600 yazıldı) ve düzeltmenin HİÇBİR yolu yoktu.
+            # Sessizce değil, AÇIKÇA düzenlenebilir olmalı: ayrı alan, eski→yeni
+            # denetim kaydı ve `kassa` aynı formülle yeniden hesaplanır.
+            old_dp = int(rep["daily_pay"] or 0)
+            _dp_in = data.get("daily_pay")
+            # `_norm_amt` rakam dışını (eksi işareti dahil) siler → «-5000» 5000
+            # olurdu. Kasadan negatif para çıkamaz: eksi gelirse 0 sayılır.
+            _dp_neg = str(_dp_in).strip().startswith("-") if _dp_in is not None else False
+            new_dp = old_dp if _dp_in is None else (0 if _dp_neg else max(0, int(_norm_amt(_dp_in))))
+            old_kassa = int(rep["kassa"] or 0)
+            # Oluşturmadaki formülün AYNISI: kassa = вышло − на сдачу − дневной бонус
+            new_kassa = int(rep["vyshlo"] or 0) - int(rep["na_sdachi"] or 0) - new_dp
             cups_total = sum(int(v or 0) for v in new_sold.values())
             exp_total = sum(int(_e.get("a", 0) or 0) for _e in new_exps)
 
@@ -6497,6 +6513,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _cr_cmp("sold", old_sold, new_sold)
             _cr_cmp("expenses", old_exps, new_exps)
             _cr_cmp("note", old_note, new_note)
+            if new_dp != old_dp:
+                ch["daily_pay"] = [old_dp, new_dp]
+                ch["kassa"] = [old_kassa, new_kassa]
             if not ch:
                 await update.message.reply_text("ℹ️ Изменений нет.")
                 return
@@ -6504,18 +6523,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             hist.append({"at": now.isoformat(), "by": user.id, "by_name": shown, "ch": ch})
             db.execute(
                 "UPDATE cashreports SET bylo=?,restock=?,ostalos=?,sold=?,cups_total=?,"
-                "expenses=?,expenses_total=?,note=?,edits=?,edited_at=?,edited_by=?,edited_by_name=? "
+                "expenses=?,expenses_total=?,note=?,daily_pay=?,kassa=?,"
+                "edits=?,edited_at=?,edited_by=?,edited_by_name=? "
                 "WHERE id=?",
                 (json.dumps(new_bylo, ensure_ascii=False), json.dumps(new_rest, ensure_ascii=False),
                  json.dumps(new_ost, ensure_ascii=False), json.dumps(new_sold, ensure_ascii=False),
                  cups_total, json.dumps(new_exps, ensure_ascii=False), exp_total, new_note,
+                 new_dp, new_kassa,
                  json.dumps(hist, ensure_ascii=False), now.isoformat(), user.id, shown, rid))
             db.commit()
             log_action(db, "cash_report_edit", user.id, user.first_name,
                        rep["user_id"], rep["user_name"] or "",
                        {"report_id": rid, "changes": ch})
             _lbl = {"bylo": "было", "restock": "завоз", "ostalos": "осталось",
-                    "sold": "продано", "expenses": "расходы", "note": "заметка"}
+                    "sold": "продано", "expenses": "расходы", "note": "заметка",
+                    "daily_pay": "дневной бонус", "kassa": "касса"}
             _what = " · ".join(_lbl.get(k, k) for k in ch)
             try:
                 _rd = datetime.fromisoformat(rep["created_at"]).strftime("%d.%m %H:%M")
