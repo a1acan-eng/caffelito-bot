@@ -1102,6 +1102,23 @@ FINE_PRESETS = {
 }
 
 
+def get_fine_presets(db):
+    """Ceza presetleri: TUTARLAR owner tarafindan degistirilebilir.
+    Etiketler kodda sabit (ekranin dili), tutarlar `meta.fine_presets`te JSON.
+    Kayit yoksa/bozuksa asagidaki varsayilanlar dondurulur."""
+    out = [{"id": k, "l": v["label"], "amt": v["amount"]} for k, v in FINE_PRESETS.items()]
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='fine_presets'").fetchone()
+        if r and r["val"]:
+            saved = json.loads(r["val"]) or {}
+            for it in out:
+                if it["id"] in saved:
+                    it["amt"] = max(0, int(saved[it["id"]]))
+    except Exception as e:
+        logger.warning(f"get_fine_presets: {e}")
+    return out
+
+
 def _drop_shift_daily_pay(db, shift_id):
     """Bir vardiya silinirken, o kapanışta KASADAN ödenen günlük bardak bonusunu
     da geri alır (payments'tan siler). Böylece «kazanç gitti ama ödendi kaydı
@@ -2373,6 +2390,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"my_bonus_sys={_my_pi['bonus_system']}",
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
+        f"fine_presets={quote(json.dumps(get_fine_presets(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"products={quote(json.dumps(get_product_catalog(db) if role == 'owner' else get_product_catalog(db, only_active=True), ensure_ascii=False))}",
         f"my_product_ok={_my_pi['product_ok']}",
@@ -4581,6 +4599,39 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
                     logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
+
+        # ─── Owner: ceza preseti TUTARINI değiştir ───
+        # Tutarlar koda gömülüydü (30.000, 1.000.000 …) ve değiştirmek için deploy
+        # gerekiyordu. Etiketler kodda kalıyor (ekranın dili), tutarlar meta'da.
+        elif action == "fine_preset_save":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            pid = (data.get("id") or "").strip()
+            if pid not in FINE_PRESETS:
+                await update.message.reply_text("❌ Неизвестный штраф.")
+                return
+            amount = max(0, int(_norm_amt(data.get("amount", 0))))
+            try:
+                r = db.execute("SELECT val FROM meta WHERE k='fine_presets'").fetchone()
+                cur = json.loads(r["val"]) if (r and r["val"]) else {}
+                if not isinstance(cur, dict):
+                    cur = {}
+            except Exception:
+                cur = {}
+            old = int(cur.get(pid, FINE_PRESETS[pid]["amount"]))
+            if old == amount:
+                return
+            cur[pid] = amount
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('fine_presets', ?)",
+                       (json.dumps(cur, ensure_ascii=False),))
+            db.commit()
+            log_action(db, "fine_preset_save", user.id, user.first_name, None, None,
+                       {"preset": pid, "old": old, "new": amount})
+            await update.message.reply_text(
+                f"✏️ {FINE_PRESETS[pid]['label']}: {fmt_sum(old)} → *{fmt_sum(amount)}* сум",
+                parse_mode="Markdown")
 
         elif action == "fine":
             # Tek veya çoklu (denetim — split) ceza
