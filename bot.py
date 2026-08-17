@@ -6597,10 +6597,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "cash_report_add", user.id, user.first_name, sh["user_id"], _anm,
                        {"shift_id": sid, "cups": cups_total, "bonus": new_bonus,
                         "daily_pay": daily_pay, "kassa": kassa})
+            # «КАССА: X» bu onaydan KALDIRILDI (2026-08-17, owner isteği). O sayı
+            # `вышло − на сдачу − дневной бонус` yani vardiyadan TESLİM EDİLEN nakit,
+            # ama tek başına bir satırda görününce «bu kişi bu parayı aldı» diye
+            # okunuyordu (owner Nero'da aynı soruyu sordu: «Сухроб 496.000 mu aldı?»).
+            # Değer hesaplanmaya, cashreports.kassa'ya ve denetim günlüğüne
+            # yazılmaya DEVAM EDİYOR — yalnızca bu mesajda gösterilmiyor.
+            # Gruba giden «СМЕННЫЙ ОТЧЁТ» mesajında zaten hiç yoktu.
             await update.message.reply_text(
                 f"🧾 Отчёт внесён — *{md_safe(_anm)}*\n"
                 f"🥤 Продано: {cups_total} шт · 💰 бонус: {fmt_sum(new_bonus)} сум\n"
-                f"💵 Дневной бонус: {fmt_sum(daily_pay)} · КАССА: {fmt_sum(kassa)}\n"
+                f"💵 Дневной бонус: {fmt_sum(daily_pay)}\n"
                 "_Смена пересчитана: часы не менялись._",
                 parse_mode="Markdown")
 
