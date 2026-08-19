@@ -532,6 +532,34 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN slot_role TEXT DEFAULT 'barista'")
     except sqlite3.OperationalError:
         pass
+    # KATEGORI BAZLI FAZLA MESAI. Owner: «stajyer 5 saat, 26.000'lik 10-12,
+    # 22.000'lik 8 saat calisir — her kategoriye ayri ayarlamaliyim».
+    # `ot_on`: bu kategori icin fazla mesai sayilsin mi (1=evet).
+    # `ot_hours`: VARDIYA basina norm · `ot_month`: AYLIK norm · type/value = ek odeme.
+    # Kategorisi OLMAYAN kisi icin genel (meta) ayar yedek olarak kalir.
+    for _oc, _ot_ in (("ot_on", "INTEGER DEFAULT 0"), ("ot_hours", "INTEGER DEFAULT 0"),
+                      ("ot_month", "INTEGER DEFAULT 0"), ("ot_type", "TEXT DEFAULT 'fixed'"),
+                      ("ot_value", "INTEGER DEFAULT 0")):
+        try:
+            db.execute(f"ALTER TABLE salary_categories ADD COLUMN {_oc} {_ot_}")
+        except sqlite3.OperationalError:
+            pass
+    # TEK SEFERLIK GECIS: kolonlar yeni eklendigi icin hepsi 0 gelir. Boyle
+    # birakirsak deploy aninda TUM kategorilerde fazla mesai SESSIZCE durur.
+    # Mevcut genel ayar her kategoriye kopyalanir -> gun sifir davranisi AYNI,
+    # owner sonra tek tek ayarlar.
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='catot_seeded'").fetchone():
+            _g = get_overtime_cfg(db)
+            db.execute("UPDATE salary_categories SET ot_on=?, ot_hours=?, ot_month=?, ot_type=?, ot_value=?",
+                       (int(_g.get("on", 1) or 0), int(_g.get("hours") or 0), int(_g.get("month") or 0),
+                        _g.get("type") or "fixed", int(_g.get("value") or 0)))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('catot_seeded', ?)",
+                       (datetime.now(TZ).isoformat(),))
+            db.commit()
+    except Exception as e:
+        logger.warning(f"catot migration: {e}")
+
     # Vardiya SNAPSHOT kolonları: başlangıçta rol+kategori+ставка dondurulur —
     # kategori/ücret sonradan değişse TARİHSEL vardiyalar asla etkilenmez.
     for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
@@ -725,6 +753,9 @@ def get_salary_categories(db, only_active=False):
     q = ("SELECT id,name,hourly_rate,min_months,next_cat_id,description,use_kpi,"
          "COALESCE(bonus_system,'own') AS bonus_system,COALESCE(product_bonus,0) AS product_bonus,"
          "COALESCE(does_kasa,1) AS does_kasa,COALESCE(slot_role,'barista') AS slot_role,"
+         "COALESCE(ot_on,0) AS ot_on,COALESCE(ot_hours,0) AS ot_hours,"
+         "COALESCE(ot_month,0) AS ot_month,COALESCE(ot_type,'fixed') AS ot_type,"
+         "COALESCE(ot_value,0) AS ot_value,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -853,11 +884,15 @@ def barista_pay_info(db, user_id, branch_id=None):
     şubede farklı kategoriyle çalışabilir. Yoksa global kategori (geriye tam uyumlu)."""
     info = {"rate": int(get_pay_cfg(db).get("rate", HOURLY_RATE)),
             "use_kpi": 0, "bonus_system": "own", "product_ok": 0, "does_kasa": 1,
-            "slot_role": "barista", "cat_id": None, "cat_name": None}
+            "slot_role": "barista", "cat_id": None, "cat_name": None,
+            # Kategori bazli fazla mesai. `ot_on=0` -> kategorinin kendi ayari YOK,
+            # cagiran taraf genel (meta) ayara duser.
+            "ot_on": 0, "ot_hours": 0, "ot_month": 0, "ot_type": "fixed", "ot_value": 0}
     try:
         _cols = ("id AS cid, name AS cname, hourly_rate AS rate, use_kpi AS kpi, "
                  "COALESCE(bonus_system,'own') AS bsys, COALESCE(product_bonus,0) AS pb, "
-                 "COALESCE(does_kasa,1) AS dk, COALESCE(slot_role,'barista') AS sr, active")
+                 "COALESCE(does_kasa,1) AS dk, COALESCE(slot_role,'barista') AS sr, "
+                 "COALESCE(ot_on,0) AS oton, COALESCE(ot_hours,0) AS oth, COALESCE(ot_month,0) AS otm, COALESCE(ot_type,'fixed') AS ott, COALESCE(ot_value,0) AS otv, active")
         r = None
         if branch_id:
             _ov = db.execute(
@@ -871,6 +906,7 @@ def barista_pay_info(db, user_id, branch_id=None):
                 "SELECT c.id AS cid, c.name AS cname, c.hourly_rate AS rate, c.use_kpi AS kpi, "
                 "COALESCE(c.bonus_system,'own') AS bsys, COALESCE(c.product_bonus,0) AS pb, "
                 "COALESCE(c.does_kasa,1) AS dk, COALESCE(c.slot_role,'barista') AS sr, "
+                "COALESCE(c.ot_on,0) AS oton, COALESCE(c.ot_hours,0) AS oth, COALESCE(c.ot_month,0) AS otm, COALESCE(c.ot_type,'fixed') AS ott, COALESCE(c.ot_value,0) AS otv, "
                 "c.active AS active "
                 "FROM users u JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
                 (user_id,)).fetchone()
@@ -883,6 +919,11 @@ def barista_pay_info(db, user_id, branch_id=None):
             info["slot_role"] = r["sr"] or "barista"
             info["cat_id"] = r["cid"]
             info["cat_name"] = r["cname"]
+            info["ot_on"] = int(r["oton"] or 0)
+            info["ot_hours"] = int(r["oth"] or 0)
+            info["ot_month"] = int(r["otm"] or 0)
+            info["ot_type"] = r["ott"] or "fixed"
+            info["ot_value"] = int(r["otv"] or 0)
     except Exception:
         pass
     return info
@@ -1685,6 +1726,26 @@ def get_prices(db):
 
 
 # ─── Fazla mesai (сверхурочные) yapılandırması ───
+def effective_ot_cfg(db, pay_info):
+    """Kisinin ETKIN fazla mesai ayari.
+
+    Owner «her kategori icin ayri» istedi: stajyer 5 saat, 26.000'lik 10-12,
+    22.000'lik 8 saat. Kategori kendi ayarini tasiyorsa (`ot_on=1`) O gecerlidir;
+    kategorisi olmayan (ya da ayari kapali) kisi icin GENEL (meta) ayara dusulur.
+    Boylece eski kurulumlar ve kategorisiz kisiler eskisi gibi calisir.
+    """
+    try:
+        if pay_info and int(pay_info.get("ot_on", 0) or 0):
+            return {"on": 1,
+                    "hours": int(pay_info.get("ot_hours") or 0),
+                    "month": int(pay_info.get("ot_month") or 0),
+                    "type": pay_info.get("ot_type") or "fixed",
+                    "value": int(pay_info.get("ot_value") or 0)}
+    except Exception:
+        pass
+    return get_overtime_cfg(db)
+
+
 def get_overtime_cfg(db):
     """{hours, month, type, value, on}.
 
@@ -1811,7 +1872,8 @@ def calc_summary(db, user_id, period=None):
     # (uydurma sabit yok): hourly / hours. Saat yoksa carpan 0'dir.
     ot_month_h, ot_month_bonus = 0.0, 0
     try:
-        _otc_m = get_overtime_cfg(db)
+        # Aylik norm da KATEGORIDEN gelir (kisinin guncel kategorisi).
+        _otc_m = effective_ot_cfg(db, barista_pay_info(db, user_id))
         _mnorm = float(_otc_m.get("month") or 0)
         if _otc_m.get("on", 1) and _mnorm > 0 and hours > _mnorm:
             ot_month_h = round(max(0.0, (hours - _mnorm) - float(ot_hours or 0)), 2)
@@ -2060,7 +2122,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Ayar sonradan değişse/kapansa bu vardiyanın saklanan değeri korunur.
     ot_shift, ot_h = 0, 0.0
     try:
-        _otc = get_overtime_cfg(db)
+        _otc = effective_ot_cfg(db, _pi)      # kategori ayari varsa O, yoksa genel
         _thr = float(_otc.get("hours") or 0)
         if _otc.get("on", 1) and _thr > 0 and hours > _thr:
             ot_h = round(hours - _thr, 2)  # bu vardiyanın norm-üstü saati
@@ -5113,6 +5175,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pb = 1 if int(data.get("product_bonus", 0) or 0) else 0
             dk = 0 if int(data.get("does_kasa", 1) or 0) == 0 else 1  # varsayılan 1 (kasa sayar)
             sr = "assistant" if (data.get("slot_role") == "assistant") else "barista"
+            # KATEGORI BAZLI FAZLA MESAI (owner: her kategoriye ayri norm).
+            oton = 1 if int(data.get("ot_on", 0) or 0) else 0
+            try:
+                oth = max(0, min(24, int(data.get("ot_hours") or 0)))
+            except Exception:
+                oth = 0
+            try:
+                otm = max(0, min(744, int(data.get("ot_month") or 0)))
+            except Exception:
+                otm = 0
+            ott = "percent" if (data.get("ot_type") == "percent") else "fixed"
+            try:
+                otv = max(0, int(data.get("ot_value") or 0))
+            except Exception:
+                otv = 0
             cid = data.get("id")
             if cid:
                 # SADECE GONDERILEN ALANLAR yazilir. Eskiden UPDATE her sutunu
@@ -5130,7 +5207,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                          ("bonus_system", "bonus_system", bsys),
                                          ("product_bonus", "product_bonus", pb),
                                          ("does_kasa", "does_kasa", dk),
-                                         ("slot_role", "slot_role", sr)):
+                                         ("slot_role", "slot_role", sr),
+                                         ("ot_on", "ot_on", oton),
+                                         ("ot_hours", "ot_hours", oth),
+                                         ("ot_month", "ot_month", otm),
+                                         ("ot_type", "ot_type", ott),
+                                         ("ot_value", "ot_value", otv)):
                     if _key in data:
                         _sets.append(_col + "=?")
                         _vals.append(_val)
@@ -5141,9 +5223,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
                 db.execute(
                     "INSERT INTO salary_categories (name, hourly_rate, min_months, next_cat_id, "
-                    "description, use_kpi, active, bonus_system, product_bonus, does_kasa, slot_role, sort_order, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, sr, (_mo["s"] if _mo else 0),
+                    "description, use_kpi, active, bonus_system, product_bonus, does_kasa, slot_role, "
+                    "ot_on, ot_hours, ot_month, ot_type, ot_value, sort_order, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, sr,
+                     oton, oth, otm, ott, otv, (_mo["s"] if _mo else 0),
                      datetime.now(TZ).isoformat()))
                 msg = f"✅ Категория «{nm}» создана."
             db.commit()
