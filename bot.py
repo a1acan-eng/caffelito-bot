@@ -5070,10 +5070,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             sr = "assistant" if (data.get("slot_role") == "assistant") else "barista"
             cid = data.get("id")
             if cid:
-                db.execute(
-                    "UPDATE salary_categories SET name=?, hourly_rate=?, min_months=?, "
-                    "next_cat_id=?, description=?, use_kpi=?, active=?, bonus_system=?, product_bonus=?, does_kasa=?, slot_role=? WHERE id=?",
-                    (nm, rate, mn, nxt, desc, kpi, act, bsys, pb, dk, sr, int(cid)))
+                # SADECE GONDERILEN ALANLAR yazilir. Eskiden UPDATE her sutunu
+                # kosulsuz yaziyordu: istemci `min_months`/`next_cat_id`/
+                # `description`/`active` gondermedigi icin (Nero bunlari
+                # payload'dan aliyor ama esleme sirasinda dusuruyor) HER kayitta
+                # TERFI ZINCIRI (X ay sonra -> su kategori) ve aciklama SESSIZCE
+                # siliniyordu. Kategori rozetlerine dokunmak bile bunu tetikliyordu.
+                _sets, _vals = ["name=?", "hourly_rate=?"], [nm, rate]
+                for _key, _col, _val in (("min_months", "min_months", mn),
+                                         ("next_cat_id", "next_cat_id", nxt),
+                                         ("description", "description", desc),
+                                         ("use_kpi", "use_kpi", kpi),
+                                         ("active", "active", act),
+                                         ("bonus_system", "bonus_system", bsys),
+                                         ("product_bonus", "product_bonus", pb),
+                                         ("does_kasa", "does_kasa", dk),
+                                         ("slot_role", "slot_role", sr)):
+                    if _key in data:
+                        _sets.append(_col + "=?")
+                        _vals.append(_val)
+                _vals.append(int(cid))
+                db.execute("UPDATE salary_categories SET " + ", ".join(_sets) + " WHERE id=?", _vals)
                 msg = f"✅ Категория «{nm}» обновлена."
             else:
                 _mo = db.execute("SELECT COALESCE(MAX(sort_order),-1)+1 AS s FROM salary_categories").fetchone()
