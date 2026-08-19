@@ -2542,7 +2542,12 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         except Exception as e:
             logger.warning(f"pays bonus filtresi: {e}")
             _pa = _pa[:60]
-        _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, f.period AS per, COALESCE(u.display_name,u.name) AS nm "
+        # `type` (preset kodu) ve `added_by` EKLENDI: Nero, owner'in kendi kestigi
+        # cezalari Caffelito denetim cezalarindan ayirabilsin diye (maas kartinin
+        # arkasindaki «собрано штрафов»). Hicbir hesap degismiyor — yalnizca alan.
+        _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, f.period AS per, "
+                    "f.type AS ftype, f.added_by AS by_id, f.user_id AS uid, "
+                    "COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
         _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
                     "FROM loans l LEFT JOIN users u ON u.user_id=l.barista_id ORDER BY l.id DESC", (), 60)
@@ -2563,7 +2568,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
-        "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _fi],
+        "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "",
+                   "at": r["created_at"], "per": r["per"] or "", "ftype": r["ftype"] or "",
+                   "by": r["by_id"] or 0, "uid": r["uid"] or 0} for r in _fi],
         "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
