@@ -1686,16 +1686,25 @@ def get_prices(db):
 
 # ─── Fazla mesai (сверхурочные) yapılandırması ───
 def get_overtime_cfg(db):
-    """{hours, type, value}: aylık norm saat (0=kapalı), tip ('fixed'|'percent'),
-    değer (fixed=ek сум/saat, percent=% artış). Norm üstü saatlere uygulanır."""
+    """{hours, month, type, value, on}.
+
+    `hours`  = VARDIYA BASINA norm (0=kapali). Bir vardiya bu saati asarsa fark
+               kapanista dondurulup `shifts.overtime`a yazilir.
+    `month`  = AYLIK norm (0=kapali). Ay toplami bu saati asarsa fark ay sonunda
+               `calc_summary`de hesaplanir. Vardiya basina ZATEN odenmis
+               fazla mesai saatleri DUSULUR — ayni saat iki kez odenmez.
+    `type`/`value` = ek odeme (fixed=ek сум/saat, percent=ставка uzerine %).
+
+    NOT: eski docstring `hours` icin «aylik norm» diyordu ama kod onu HER
+    VARDIYADA (`hours > thr`) uyguluyordu; etiket yanlisti, davranis degil."""
     # `on`: AÇIK/KAPALI anahtarı. Eskiden yoktu — «Считать переработку» düğmesi
     # `enabled` gönderiyordu ama bot onu HİÇ okumuyordu, düğme her tazelemede
     # eski hâline dönüyordu. Kapalıyken yapılandırılan saat/tutar KORUNUR,
     # yalnızca hesaplama devre dışı kalır. Eski kurulumlarda anahtar yoksa
     # davranış değişmesin diye varsayılan AÇIK (hesap zaten hours>0 ile kapalı).
-    cfg = {"hours": 0, "type": "fixed", "value": 0, "on": 1}
+    cfg = {"hours": 0, "month": 0, "type": "fixed", "value": 0, "on": 1}
     try:
-        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('ot_hours','ot_type','ot_value','ot_on')").fetchall():
+        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('ot_hours','ot_month','ot_type','ot_value','ot_on')").fetchall():
             k = r["k"][3:]
             if k == "type":
                 cfg["type"] = r["val"] if r["val"] in ("fixed", "percent") else "fixed"
@@ -1793,7 +1802,30 @@ def calc_summary(db, user_id, period=None):
     # götürüyordu ama kasa raporu gelmeyen bir kapanışta ödeme kaydı hiç
     # oluşmuyor ve bonus kişinin alacağı olarak kalıyordu (gerçek fark).
     # `bonus` bilgi olarak yine döndürülür (vardiya detayı, kasa raporu).
-    gross = hourly + tips_total + ot_bonus + prod_bonus
+    # ── AYLIK FAZLA MESAI ──────────────────────────────────────────────────
+    # Vardiya basina fazla mesai kapanista donduruluyor (`shifts.overtime`).
+    # Aylik norm AYRI bir esik: ayin TOPLAM saati normu asarsa fark odenir.
+    # ⚠️ Vardiya basina ZATEN odenmis saatler (`ot_hours`) DUSULUR — yoksa 10
+    # saatlik vardiyalarla 240 saati asan biri ayni saatler icin IKI KEZ alir.
+    # Ucret, o donemde gercekten uygulanan ortalama saat ucretinden turetilir
+    # (uydurma sabit yok): hourly / hours. Saat yoksa carpan 0'dir.
+    ot_month_h, ot_month_bonus = 0.0, 0
+    try:
+        _otc_m = get_overtime_cfg(db)
+        _mnorm = float(_otc_m.get("month") or 0)
+        if _otc_m.get("on", 1) and _mnorm > 0 and hours > _mnorm:
+            ot_month_h = round(max(0.0, (hours - _mnorm) - float(ot_hours or 0)), 2)
+            if ot_month_h > 0:
+                _val_m = int(_otc_m.get("value") or 0)
+                if _otc_m.get("type") == "percent":
+                    _avg_rate = (hourly / hours) if hours else 0
+                    ot_month_bonus = int(ot_month_h * _avg_rate * (_val_m / 100.0))
+                else:
+                    ot_month_bonus = int(ot_month_h * _val_m)
+    except Exception:
+        ot_month_h, ot_month_bonus = 0.0, 0
+
+    gross = hourly + tips_total + ot_bonus + ot_month_bonus + prod_bonus
     net = gross - fine_total - paid_total + adj_total
 
     return {
@@ -1803,6 +1835,8 @@ def calc_summary(db, user_id, period=None):
         "hourly": hourly,
         "overtime_hours": ot_hours,
         "overtime": ot_bonus,
+        "ot_month_hours": ot_month_h,
+        "ot_month": ot_month_bonus,
         "product_bonus": prod_bonus,
         "product_revenue": prod_revenue,
         "fines": fine_total,
@@ -5182,6 +5216,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 oh = max(0, int(data.get("hours") or 0))
             except Exception:
                 oh = 0
+            # AYLIK norm: gonderilmezse mevcut deger KORUNUR (vardiya normunu
+            # duzenleyen ekran aylik normu sifirlamasin).
+            if "month" in data:
+                try:
+                    om = max(0, int(data.get("month") or 0))
+                except Exception:
+                    om = 0
+            else:
+                om = int(get_overtime_cfg(db).get("month") or 0)
             ot = "percent" if (data.get("type") == "percent") else "fixed"
             try:
                 ov = max(0, int(data.get("value") or 0))
@@ -5191,16 +5234,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # (yalnızca saat/tutar düzenleyen ekranlar anahtarı sıfırlamasın).
             _oon = data.get("enabled")
             _oon = get_overtime_cfg(db).get("on", 1) if _oon is None else (1 if str(_oon) not in ("0", "", "False", "false") else 0)
-            for k, v in (("ot_hours", oh), ("ot_type", ot), ("ot_value", ov), ("ot_on", _oon)):
+            for k, v in (("ot_hours", oh), ("ot_month", om), ("ot_type", ot), ("ot_value", ov), ("ot_on", _oon)):
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
             db.commit()
             log_action(db, "overtime_settings", user.id, user.first_name, None, None,
-                       {"hours": oh, "type": ot, "value": ov, "on": _oon})
+                       {"hours": oh, "month": om, "type": ot, "value": ov, "on": _oon})
             if not _oon:
                 await update.message.reply_text("⏸ Переработка выключена — не начисляется.")
-            elif oh > 0:
+            elif oh > 0 or om > 0:
                 _d = f"+{fmt_sum(ov)}%/ч" if ot == "percent" else f"+{fmt_sum(ov)} сум/ч"
-                await update.message.reply_text(f"✅ Переработка: свыше {oh} ч за смену → {_d}")
+                _parts = []
+                if oh > 0:
+                    _parts.append(f"свыше {oh} ч за смену")
+                if om > 0:
+                    _parts.append(f"свыше {om} ч за месяц")
+                await update.message.reply_text("✅ Переработка: " + " и ".join(_parts) + f" → {_d}")
             else:
                 await update.message.reply_text("✅ Переработка отключена.")
 
