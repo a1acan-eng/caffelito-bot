@@ -4537,7 +4537,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
                 except Exception as e:
                     logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
-                # Сменный отчёт — 'закрыл смену'dan SONRA gönderilir (cash_report buffer'ladı)
+                # Сменный отчёт artik `cash_report` tarafindan DOGRUDAN gonderiliyor.
+                # Buradaki pop yalnizca GECIS icin: bu deploy'dan once tamponda
+                # kalmis bir rapor varsa bir kez teslim edilsin diye duruyor.
                 try:
                     rep_t = context.bot_data.get("pending_report", {}).pop(user.id, None)
                     if rep_t:
@@ -6460,10 +6462,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         t += f"<b>💵 Дневной бонус: {fmt_sum(daily_pay)} сум</b>"
                     if note:
                         t += f"\n📝 {esc_html(note)}"
-                    # HEMEN gönderme — önce 'закрыл смену', SONRA bu отчёт gelsin diye buffer'la (shift_end gönderir)
-                    context.bot_data.setdefault("pending_report", {})[user.id] = t
+                    # 🔴 TAMPON KALDIRILDI. Eskiden rapor `pending_report`e konuyor,
+                    # `shift_end` onu gruba yolluyordu — «cash_report ONCE calisti»
+                    # varsayimiyla. Nero ise ONCE `shift_end` yolluyor: tampon bosken
+                    # bosaltiliyor, rapor HIC GITMIYOR, ve dolan tampon SONRAKI
+                    # kapanista BIR ONCEKI vardiyanin raporunu gonderiyordu.
+                    # (Ayni sira varsayimi daha once 4 kez obur uctan yamanmisti.)
+                    # Artik dogrudan buradan gidiyor: istemci cash_report'u shift_end'e
+                    # zincirledigi icin grupta sira zaten «закрыл смену» → отчёт olur.
+                    await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
                 except Exception as e:
-                    logger.error(f"KASA report buffer failed: {e}")
+                    logger.exception(f"KASA report send failed: {e}")
                 # ─── Stok uyarısı (kalan bardak) — gruba, herkese ───
                 try:
                     from html import escape as esc_html2
@@ -6496,8 +6505,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if coffee_urg:
                             ic = "🔴" if coffee_urg == 3 else ("⚠️" if coffee_urg == 2 else "📦")
                             st += f"  {ic} ☕ Кофе в зёрнах: осталось <b>{coffee_kg:g}</b> кг\n"
-                        # HEMEN gönderme — 'закрыл смену' mesajından SONRA, en sonda gelsin (buffer'la)
-                        context.bot_data.setdefault("pending_stock", {})[user.id] = (st, now)
+                        # Tampon kaldirildi (yukaridaki ayni sebep) — stok uyarisi
+                        # raporun hemen ardindan, en sonda gider.
+                        await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
