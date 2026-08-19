@@ -4525,13 +4525,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     from html import escape as esc_html
                     # Grup mesajı: SAATLIK GIZLI (ay sonu hesabı). Sadece satış sayıları + satış bonusu.
                     sales_bonus = drinks_bonus + dessert_bonus
+                    # STAJYER / ASSISTENT: kasayi o kapatmiyor, bardak da saymiyor — onun
+                    # adina satis rakami yazmak yaniltici olur (rakam ya 0 ya da yanindaki
+                    # baristanin isi). Owner istegi: sadece acildi/kapandi gorunsun.
+                    _closer = barista_pay_info(db, user.id)
+                    _is_asst = (int(_closer.get("does_kasa", 1) or 0) == 0
+                                or (_closer.get("slot_role") or "barista") == "assistant")
                     gtext = (f"🔴 <b>{esc_html(shown)}</b> закрыл(а) смену\n"
                              f"━━━━━━━━━━━━━━━━━━━━\n"
-                             f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
-                             f"🥤 Напитки: <b>{cups}</b> шт")
-                    if sweets:
-                        gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"
-                    gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
+                             f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})")
+                    if _is_asst:
+                        gtext += f"\n👤 Ассистент / стажёр"
+                    else:
+                        gtext += f"\n🥤 Напитки: <b>{cups}</b> шт"
+                        if sweets:
+                            gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"
+                        gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
                     if note:
                         gtext += f"\n📝 {esc_html(note)}"
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
@@ -6360,7 +6369,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as e:
                     logger.warning(f"daily_pay dogrulama basarisiz: {e}")
             cashless = clk + pay + kar + term
-            schitano = itg - cashless
+            # POS cirosu («Итого (Poster)») artik istemcide SORULMUYOR — ekip
+            # doldurmuyordu. itg=0 iken `itg - cashless` NEGATIF bir «sayilan
+            # nakit» uretiyordu (-304.000 gibi); boyle bir buyukluk yok.
+            schitano = (itg - cashless) if itg else 0
             exp_total = sum(int(e.get("a", 0) or 0) for e in exps)
             kassa = vsh - sdachi - daily_pay
             cups_total = sum(int(c.get("s", 0) or 0) for c in cups)
@@ -6576,7 +6588,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             exp_total = sum(int(_e.get("a", 0) or 0) for _e in exps)
             note = (data.get("note") or "").strip()
             cashless = clk + pay + kar + term
-            schitano = itg - cashless
+            # POS cirosu («Итого (Poster)») artik istemcide SORULMUYOR — ekip
+            # doldurmuyordu. itg=0 iken `itg - cashless` NEGATIF bir «sayilan
+            # nakit» uretiyordu (-304.000 gibi); boyle bir buyukluk yok.
+            schitano = (itg - cashless) if itg else 0
             # ── Vardiyanın bardakları + bonusu: kapanışın yaptığı hesabın aynısı.
             # `drinks` anahtarları içecek id'si (ml500…), kasa raporundaki `n` ise
             # boy ADI. Eşleme İSTEMCİDE var (`c.id` ↔ `c.kn`) ve `shift_end` de
