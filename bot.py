@@ -163,6 +163,54 @@ def get_db():
         user_id INTEGER, amount INTEGER, note TEXT, period TEXT,
         branch_id INTEGER, added_by INTEGER, added_by_name TEXT,
         created_at TEXT)""")
+    # ═══ CPS — CAFFELITO PERFORMANCE SYSTEM ═══════════════════════════════
+    # Ic performans sistemi. Franchise proverkasi ile KARISTIRILMAZ: proverka
+    # subeyi franchise standardina gore olcer, CPS bizim ic standardimiza gore
+    # calisani olcer. Franchise ceza TUTARLARI (1/2/4 mln) CPS PUANI DEGILDIR.
+    #
+    # Katalog: her ihlalin puani ONCEDEN tanimli — owner elle «-5» yazmaz.
+    # Simdilik yalniz FIFO -2 dogrulandi; gerisini owner ekranda ekler.
+    db.execute("""CREATE TABLE IF NOT EXISTS cps_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT, title TEXT, category TEXT,
+        points INTEGER DEFAULT 0, active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0, created_at TEXT)""")
+    # Olaylar: HER degisiklik bir satir. Puan farki `delta` (ihlal negatif,
+    # takim odulu pozitif). Skor bu satirlarin toplamindan TURETILIR — hicbir
+    # yerde «guncel skor» diye ayri bir sayi saklanmaz, boylece skor ile gecmis
+    # asla ayrisamaz.
+    db.execute("""CREATE TABLE IF NOT EXISTS cps_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, period TEXT, kind TEXT,
+        catalog_id INTEGER, title TEXT, category TEXT,
+        delta INTEGER DEFAULT 0, note TEXT, photo TEXT,
+        added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
+    # Kisi × ay «%100 prim tutari». Owner her ay kisinin hesabina girer;
+    # motor CPS sonucuna gore yuzdeyi uygular. SUBE HAVUZU DEGIL — kisi bazli.
+    db.execute("""CREATE TABLE IF NOT EXISTS cps_bonus (
+        user_id INTEGER, period TEXT, amount INTEGER DEFAULT 0,
+        set_by INTEGER, set_by_name TEXT, set_at TEXT,
+        PRIMARY KEY (user_id, period))""")
+    # Franchise proverka sonuclari — CPS'ten AYRI kayit. Sayisi ve hedefi
+    # degisebilir, o yuzden ikisi de ayarda.
+    db.execute("""CREATE TABLE IF NOT EXISTS cps_inspections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT, branch_id INTEGER, idx INTEGER,
+        score INTEGER DEFAULT 0, note TEXT,
+        added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
+    # Tek seferlik: dogrulanmis TEK katalog kalemi. Owner silerse geri gelmez.
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='cps_seeded'").fetchone():
+            db.execute("INSERT INTO cps_catalog (code,title,category,points,active,sort_order,created_at) "
+                       "VALUES (?,?,?,?,1,0,?)",
+                       ("fifo", "Нарушение FIFO", "Работа с продуктом", -2,
+                        datetime.now(TZ).isoformat()))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cps_seeded', ?)",
+                       (datetime.now(TZ).isoformat(),))
+            db.commit()
+    except Exception as e:
+        logger.warning(f"cps seed: {e}")
+
     # ─── Click/Payme ödeme akışı (gruptan yakalanan bildirimler) ───
     db.execute("""CREATE TABLE IF NOT EXISTS pay_feed (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1448,6 +1496,139 @@ def fmt_hm(h):
     if mm == 0:
         return f"{hh}ч"
     return f"{hh}ч {mm}м"
+
+
+# ═══ CPS ENGINE ═══════════════════════════════════════════════════════════
+# Tum CPS is kurallari BURADA. UI'da hicbir esik/formul yok (spec §25).
+# Degerlerin hepsi ayarlanabilir (spec §26) — «2 proverka», «160», «80» gibi
+# sayilar yarin degisebilir, koda gomulmez.
+
+CPS_DEFAULTS = {
+    "start": 100,        # ay basi puan
+    "min": 0,            # taban
+    "deduct_from": 80,   # maas kesintisinin BASLADIGI puan
+    "bonus_points": 20,  # %100 prime denk puan  (20 puan = %100 -> 1 puan = %5)
+    "fr_count": 2,       # aydaki proverka sayisi
+    "fr_target": 160,    # takim odulu icin gereken TOPLAM
+    "fr_restore": 100,   # odul saglanirsa puan buraya cekilir
+}
+
+
+def cps_cfg(db):
+    """CPS ayarlari (meta uzerinden ezilebilir)."""
+    cfg = dict(CPS_DEFAULTS)
+    try:
+        for r in db.execute("SELECT k,val FROM meta WHERE k LIKE 'cps_%'").fetchall():
+            k = r["k"][4:]
+            if k in cfg:
+                try:
+                    cfg[k] = int(float(r["val"]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cfg
+
+
+def cps_score(db, user_id, period, cfg=None):
+    """Kisinin o donemdeki CPS puani.
+
+    Puan SAKLANMAZ — `cps_events.delta` toplamindan turetilir. Boylece skor ile
+    gecmis asla ayrisamaz: gecmiste ne yaziyorsa skor odur.
+    """
+    cfg = cfg or cps_cfg(db)
+    try:
+        r = db.execute("SELECT COALESCE(SUM(delta),0) AS d FROM cps_events "
+                       "WHERE user_id=? AND period=?", (user_id, period)).fetchone()
+        d = int(r["d"] or 0)
+    except Exception:
+        d = 0
+    return max(int(cfg["min"]), min(int(cfg["start"]), int(cfg["start"]) + d))
+
+
+def cps_bonus_pct(score, cfg):
+    """Prim yuzdesi.
+
+    Spec: 20 puan = %100 prim, 1 puan = %5. Prim «butcesi» kesintinin basladigi
+    esigin USTUNDEKI puanlardir: 100 -> 20 puan -> %100 · 95 -> 15 -> %75 ·
+    80 -> 0 -> %0. Bu yuzden maas kesintisi tam 80'de basliyor: prim orada biter.
+    """
+    bp = int(cfg["bonus_points"]) or 20
+    left = max(0, min(bp, int(score) - int(cfg["deduct_from"])))
+    return int(round(left * (100.0 / bp)))
+
+
+def cps_salary_pct(score, cfg):
+    """Maas kesintisi yuzdesi = 100 - CPS, ama YALNIZCA esikte ve altinda.
+
+    Spec: «CPS 85 -> %0», «CPS 80 -> %20». Yani 81 ve ustu 0, 80 ve altinda
+    100-CPS. 81 -> 80 gecisi bir ESIK: bir puan %20 maas demek. Bilerek boyle
+    (owner kurali); yumusatilmadi.
+    """
+    s = int(score)
+    return (100 - s) if s <= int(cfg["deduct_from"]) else 0
+
+
+def cps_bonus_amount(db, user_id, period):
+    """Kisinin o ay icin owner tarafindan girilen «%100 prim tutari»."""
+    try:
+        r = db.execute("SELECT amount FROM cps_bonus WHERE user_id=? AND period=?",
+                       (user_id, period)).fetchone()
+        return int(r["amount"] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def cps_person(db, user_id, period, cfg=None):
+    """Bir kisinin CPS ozeti: puan, prim %, prim tutari, maas kesintisi %."""
+    cfg = cfg or cps_cfg(db)
+    sc = cps_score(db, user_id, period, cfg)
+    bpct = cps_bonus_pct(sc, cfg)
+    base = cps_bonus_amount(db, user_id, period)
+    return {
+        "score": sc,
+        "lost": int(cfg["start"]) - sc,
+        "bonus_pct": bpct,
+        "bonus_base": base,
+        "bonus_amount": int(round(base * bpct / 100.0)),
+        "salary_pct": cps_salary_pct(sc, cfg),
+        "status": cps_status(sc),
+    }
+
+
+def cps_status(score):
+    """Gorsel durum etiketi (spec §23). Maas formulunu ETKILEMEZ."""
+    s = int(score)
+    if s >= 90:
+        return "excellent"
+    if s >= 80:
+        return "good"
+    if s >= 70:
+        return "warning"
+    if s >= 60:
+        return "critical"
+    return "review"
+
+
+def cps_fr_total(db, period, branch_id=None):
+    """Donemdeki proverka sonuclarinin TOPLAMI (+ kac tanesi girilmis)."""
+    try:
+        if branch_id:
+            r = db.execute("SELECT COALESCE(SUM(score),0) AS s, COUNT(*) AS n FROM cps_inspections "
+                           "WHERE period=? AND branch_id=?", (period, int(branch_id))).fetchone()
+        else:
+            r = db.execute("SELECT COALESCE(SUM(score),0) AS s, COUNT(*) AS n FROM cps_inspections "
+                           "WHERE period=?", (period,)).fetchone()
+        return int(r["s"] or 0), int(r["n"] or 0)
+    except Exception:
+        return 0, 0
+
+
+def cps_fr_reached(db, period, branch_id=None, cfg=None):
+    """Takim odulu sarti saglandi mi (toplam >= hedef)."""
+    cfg = cfg or cps_cfg(db)
+    total, _n = cps_fr_total(db, period, branch_id)
+    return total >= int(cfg["fr_target"]), total
 
 
 def current_period():
