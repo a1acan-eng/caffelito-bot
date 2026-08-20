@@ -5383,21 +5383,61 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             tgt = data.get("target")
             cid = data.get("cat_id")
             if tgt:
+                # HEDEF VAR MI? Eskiden kontrol YOKTU: olmayan bir user_id gelirse
+                # UPDATE sifir satir gunceller, hicbir hata cikmaz ve gunluge yine
+                # «Категория назначена» yazilirdi — owner atamayi yapmis sanip
+                # kisinin eski ucretle kalmasina bakiyordu (bildirilen sikayet).
+                _tu = db.execute("SELECT user_id FROM users WHERE user_id=?", (int(tgt),)).fetchone()
+                if not _tu:
+                    await update.message.reply_text(
+                        f"❌ Пользователь не найден (ID {int(tgt)}).")
+                    return
                 cid_val = int(cid) if (cid not in (None, "", 0, "0")) else None
                 if cid_val is not None and not db.execute(
                         "SELECT 1 FROM salary_categories WHERE id=?", (cid_val,)).fetchone():
                     cid_val = None
-                db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
+                _cur = db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
                 db.commit()
+                if (_cur.rowcount or 0) < 1:
+                    logger.warning(f"salcat_assign: 0 satir guncellendi uid={tgt} cat={cid_val}")
                 # Kategori = saat ücreti + bonus sistemi + kasa yetkisi. Kimin
                 # hangi kategoriye alındığı para etkisi olan bir karardır.
                 _sca = db.execute("SELECT name FROM salary_categories WHERE id=?", (cid_val,)).fetchone() if cid_val else None
+                # Adi olmayan kisi icin «?» yerine KIMLIK yaz: gunlukte «?» hem
+                # adsiz kisiyi hem BULUNAMAYAN hedefi gosteriyordu, ikisi ayirt
+                # edilemiyordu (owner tam bu yuzden kimin degistigini goremedi).
                 log_action(db, "salcat_assign", user.id, user.first_name, int(tgt),
-                           display_name_for(db, int(tgt), fallback="?"),
+                           display_name_for(db, int(tgt), fallback=f"ID {int(tgt)}"),
                            {"cat_id": cid_val, "cat": (_sca["name"] if _sca else "без категории")})
                 # Kişinin AÇIK vardiyası varsa rol/ставка snapshot'ı anında güncel
                 # kategoriye göre tazelenir (tarihsel vardiyalara dokunulmaz).
                 refresh_open_shift_snapshot(db, int(tgt))
+                # 🔴 SUBE GECERSIZ KILMASI UYARISI. `barista_pay_info` ONCE
+                # `branch_staff`a bakar: kisinin o subede ayri kategorisi varsa
+                # GLOBAL atama yok sayilir — ucret, bonus sistemi ve SLOT (barista
+                # / assistant) hep override'dan gelir. Owner «stajyer yaptim ama
+                # hala 26.000 ve hala barista» derken tam bunu yasiyor olabilir.
+                # Sessiz kalmak yerine, atamanin hemen ardindan SOYLUYORUZ.
+                try:
+                    _ovr = db.execute(
+                        "SELECT bs.branch_id AS bid, COALESCE(b.name,'?') AS bname, "
+                        "COALESCE(c.name,'?') AS cname, COALESCE(c.hourly_rate,0) AS crate "
+                        "FROM branch_staff bs "
+                        "LEFT JOIN branches b ON b.id = bs.branch_id "
+                        "LEFT JOIN salary_categories c ON c.id = bs.salary_cat_id "
+                        "WHERE bs.user_id=? AND bs.salary_cat_id IS NOT NULL",
+                        (int(tgt),)).fetchall()
+                    if _ovr:
+                        _who = display_name_for(db, int(tgt), fallback=f"ID {int(tgt)}")
+                        _lines = "\n".join(
+                            f"  • {r['bname']}: {r['cname']} ({fmt_sum(r['crate'])}/ч)" for r in _ovr)
+                        await update.message.reply_text(
+                            "⚠️ " + _who + " — в этих филиалах стоит ОТДЕЛЬНАЯ категория, "
+                            "она ПЕРЕКРЫВАЕТ общую:\n" + _lines +
+                            "\nСнимите её: карточка сотрудника → Настройки → "
+                            "«Категория по филиалам» → «Как основная».")
+                except Exception as e:
+                    logger.warning(f"salcat_assign override uyarisi: {e}")
 
         elif action == "create_branch":
             db = get_db()
