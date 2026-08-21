@@ -183,14 +183,27 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, period TEXT, kind TEXT,
         catalog_id INTEGER, title TEXT, category TEXT,
-        delta INTEGER DEFAULT 0, note TEXT, photo TEXT,
+        delta INTEGER DEFAULT 0, amount INTEGER DEFAULT 0, note TEXT, photo TEXT,
         added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
+    # Eski kurulumlarda kolon yoksa ekle (odul satirlari icin PARA alani).
+    try:
+        db.execute("ALTER TABLE cps_events ADD COLUMN amount INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     # Kisi × ay «%100 prim tutari». Owner her ay kisinin hesabina girer;
     # motor CPS sonucuna gore yuzdeyi uygular. SUBE HAVUZU DEGIL — kisi bazli.
     db.execute("""CREATE TABLE IF NOT EXISTS cps_bonus (
         user_id INTEGER, period TEXT, amount INTEGER DEFAULT 0,
         set_by INTEGER, set_by_name TEXT, set_at TEXT,
         PRIMARY KEY (user_id, period))""")
+    # Aylik havuz dagitiminin ONAY kaydi. Bir donem icin BIR KEZ yazilir;
+    # tekrar onaylamak reddedilir (cift odeme olmasin).
+    db.execute("""CREATE TABLE IF NOT EXISTS cps_payouts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT, branch_id INTEGER, user_id INTEGER,
+        score INTEGER DEFAULT 0, own_bonus INTEGER DEFAULT 0,
+        pool_amount INTEGER DEFAULT 0, total INTEGER DEFAULT 0, is_winner INTEGER DEFAULT 0,
+        confirmed_by INTEGER, confirmed_by_name TEXT, confirmed_at TEXT)""")
     # Franchise proverka sonuclari — CPS'ten AYRI kayit. Sayisi ve hedefi
     # degisebilir, o yuzden ikisi de ayarda.
     db.execute("""CREATE TABLE IF NOT EXISTS cps_inspections (
@@ -1621,6 +1634,78 @@ def cps_status(score):
     return "review"
 
 
+def cps_eligible(db, period):
+    """Aylik CPS dongusune giren kisiler.
+
+    OLCUT: o ay icin owner tarafindan «%100 prim tutari» GIRILMIS olmak
+    (`cps_bonus.amount > 0`). Uydurma bir kural degil — owner tutari girerek
+    kisiyi zaten dongueye dahil etmis oluyor; girmediyse o ay prim hesabi yok.
+    Arsivlenmis kisiler her hâlükârda disarida.
+    """
+    try:
+        rows = db.execute(
+            "SELECT b.user_id AS uid FROM cps_bonus b "
+            "LEFT JOIN users u ON u.user_id = b.user_id "
+            "WHERE b.period=? AND COALESCE(b.amount,0) > 0 "
+            "AND COALESCE(u.archived,0)=0", (period,)).fetchall()
+        return [int(r["uid"]) for r in rows]
+    except Exception:
+        return []
+
+
+def cps_month_summary(db, period, cfg=None):
+    """Ay sonu CPS tablosu + AYLIK PRIM HAVUZU.
+
+    Havuz = uygun kisilerin KAYBETTIGI prim tutarlarinin toplami.
+    Kazanan = ay sonu CPS'i EN YUKSEK olan kisi; havuzu kendi primine EK olarak
+    alir. Havuz normal yuzde hesabina KATILMAZ — ayri bir aylik odul.
+
+    Beraberlikte kazanan SECILMEZ: `tie=True` doner ve dagitimi owner belirler
+    (spec §6 — otomatik tie-breaker uydurma).
+    """
+    cfg = cfg or cps_cfg(db)
+    rows = []
+    for uid in cps_eligible(db, period):
+        pr = cps_person(db, uid, period, cfg)
+        base = int(pr["bonus_base"] or 0)
+        earned = int(pr["bonus_amount"] or 0)
+        rows.append({
+            "uid": uid,
+            "name": display_name_for(db, uid, fallback=f"ID {uid}"),
+            "score": pr["score"],
+            "bonus_pct": pr["bonus_pct"],
+            "base": base,
+            "earned": earned,
+            "lost": max(0, base - earned),
+            "salary_pct": pr["salary_pct"],
+        })
+    rows.sort(key=lambda r: (-r["score"], r["name"]))
+    pool = sum(r["lost"] for r in rows)
+    top = rows[0]["score"] if rows else 0
+    winners = [r for r in rows if rows and r["score"] == top]
+    tie = len(winners) > 1
+    for r in rows:
+        r["is_winner"] = (not tie) and bool(winners) and r["uid"] == winners[0]["uid"]
+        r["total"] = r["earned"] + (pool if r["is_winner"] else 0)
+    return {
+        "period": period,
+        "rows": rows,
+        "pool": pool,
+        "tie": tie,
+        "winners": [w["uid"] for w in winners],
+        "confirmed": cps_pool_confirmed(db, period),
+    }
+
+
+def cps_pool_confirmed(db, period):
+    """Bu donem daha once onaylandi mi (cift dagitim korumasi)."""
+    try:
+        r = db.execute("SELECT 1 FROM cps_payouts WHERE period=? LIMIT 1", (period,)).fetchone()
+        return bool(r)
+    except Exception:
+        return False
+
+
 def cps_fr_total(db, period, branch_id=None):
     """Donemdeki proverka sonuclarinin TOPLAMI (+ kac tanesi girilmis)."""
     try:
@@ -2944,6 +3029,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
                 "cat": b["salary_cat_id"],
+                # CPS: bu kisinin SECILI AYDAKI «%100 prim tutari» ve o anki puani.
+                # Tutar girilmemisse 0 — havuz hesabina da girmez (cps_eligible).
+                "cpsb": cps_bonus_amount(db, b["user_id"], _selp),
+                "cpss": cps_score(db, b["user_id"], _selp),
                 "recent": _recent,
                 "pays": _pay_list,
                 "adjs": _adj_list,
@@ -2998,6 +3087,67 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "SELECT user_name, created_at FROM std_acks WHERE date=? ORDER BY id DESC", (today_str,)).fetchall()
         std_acks_today = [{"name": r["user_name"], "at": r["created_at"]} for r in std_rows]
         parts.append(f"std_acks={quote(json.dumps(std_acks_today, ensure_ascii=False))}")
+    # ── CPS ─────────────────────────────────────────────────────────────
+    # HERKES kendi kartını görür (puan, prim %, tutar, maaş kesintisi).
+    # OWNER ayrıca ay tablosunu + AYLIK PRİM HAVUZUNU görür ve onaylar.
+    # Havuz puana KATILMAZ; ayrı bir aylık ödüldür (bkz. cps_month_summary).
+    try:
+        _ccfg = cps_cfg(db)
+        _cme = cps_person(db, user_id, _selp, _ccfg)
+        _cev = db.execute(
+            "SELECT id, kind, title, category, COALESCE(delta,0) AS delta, "
+            "COALESCE(amount,0) AS amount, note, added_by_name, created_at "
+            "FROM cps_events WHERE user_id=? AND period=? ORDER BY id DESC LIMIT 60",
+            (user_id, _selp)).fetchall()
+        _cps = {
+            "period": _selp,
+            "cfg": _ccfg,
+            "me": _cme,
+            "events": [{"id": r["id"], "kind": r["kind"] or "", "title": r["title"] or "",
+                        "cat": r["category"] or "", "delta": r["delta"], "amount": r["amount"],
+                        "note": r["note"] or "", "by": r["added_by_name"] or "",
+                        "at": r["created_at"]} for r in _cev],
+        }
+        if role == "owner":
+            _sm = cps_month_summary(db, _selp, _ccfg)
+            _cps["month"] = {
+                "pool": _sm["pool"], "tie": _sm["tie"], "winners": _sm["winners"],
+                "confirmed": _sm["confirmed"],
+                "rows": [{"uid": r["uid"], "n": r["name"], "score": r["score"],
+                          "pct": r["bonus_pct"], "base": r["base"], "earned": r["earned"],
+                          "lost": r["lost"], "spct": r["salary_pct"],
+                          "win": 1 if r["is_winner"] else 0, "total": r["total"]}
+                         for r in _sm["rows"]],
+            }
+            # KATALOG: kapali maddeler de gonderilir — owner yonetim ekraninda
+            # onlari gorup geri acabilsin. Yeni kayitta yalnizca `a=1` secilir.
+            _cat = db.execute(
+                "SELECT id, title, category, points, COALESCE(active,1) AS active "
+                "FROM cps_catalog ORDER BY COALESCE(active,1) DESC, id").fetchall()
+            _cps["catalog"] = [{"id": r["id"], "t": r["title"] or "", "cat": r["category"] or "",
+                                "pts": r["points"] or 0, "a": int(r["active"] or 0)} for r in _cat]
+            # FRANCHISE PROVERKA — sube sube. `reached` takim odulu sartini,
+            # `restored` bu ay zaten uygulanip uygulanmadigini soyler.
+            _insp = []
+            for _b in db.execute("SELECT id, name FROM branches WHERE COALESCE(active,1)=1 "
+                                 "ORDER BY COALESCE(sort_order,0), id").fetchall():
+                _bid = int(_b["id"])
+                _rs = db.execute(
+                    "SELECT id, idx, score, note, added_by_name, created_at FROM cps_inspections "
+                    "WHERE period=? AND branch_id=? ORDER BY idx", (_selp, _bid)).fetchall()
+                _rch, _tt = cps_fr_reached(db, _selp, _bid, _ccfg)
+                _restored = bool(db.execute(
+                    "SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
+                    (_selp, f"branch:{_bid}")).fetchone())
+                _insp.append({"bid": _bid, "n": _b["name"] or "", "total": _tt,
+                              "reached": 1 if _rch else 0, "restored": 1 if _restored else 0,
+                              "rows": [{"id": r["id"], "idx": r["idx"], "score": r["score"],
+                                        "note": r["note"] or "", "by": r["added_by_name"] or "",
+                                        "at": r["created_at"]} for r in _rs]})
+            _cps["insp"] = _insp
+        parts.append(f"cps={quote(json.dumps(_cps, ensure_ascii=False))}")
+    except Exception as _e:
+        logger.warning(f"cps payload failed: {_e}")
     return "&".join(parts)
 
 
@@ -5680,6 +5830,409 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             "«Категория по филиалам» → «Как основная».")
                 except Exception as e:
                     logger.warning(f"salcat_assign override uyarisi: {e}")
+
+        elif action == "cps_cat_save":
+            # KATALOG: ihlal ekle/duzenle. PUAN DEGERI OWNER'INDIR — burada
+            # hicbir varsayilan yok. Katalog disinda puan yazilamaz (spec §3:
+            # «Владелец не вписывает число рукой»), bu yuzden butun degerler
+            # tek yerde durur ve gecmis kaydi hangi maddeden geldigini tasir.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            title = str(data.get("title") or "").strip()
+            if not title:
+                await update.message.reply_text("\u274c \u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u043d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u044f.")
+                return
+            cat = str(data.get("category") or "").strip()
+            try:
+                # Ihlal puani NEGATIF tutulur (skor delta'larla toplanir).
+                # Owner «2» de yazsa «-2» de yazsa sonuc ayni: -2.
+                pts = -abs(int(float(data.get("points") or 0)))
+            except (TypeError, ValueError):
+                pts = 0
+            if pts == 0:
+                await update.message.reply_text("\u274c \u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0446\u0435\u043d\u0443 \u0432 \u0431\u0430\u043b\u043b\u0430\u0445.")
+                return
+            try:
+                cid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                cid = 0
+            now_s = datetime.now(TZ).isoformat()
+            if cid:
+                if not db.execute("SELECT 1 FROM cps_catalog WHERE id=?", (cid,)).fetchone():
+                    await update.message.reply_text("\u274c \u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                    return
+                db.execute("UPDATE cps_catalog SET title=?, category=?, points=? WHERE id=?",
+                           (title, cat, pts, cid))
+            else:
+                db.execute("INSERT INTO cps_catalog (code,title,category,points,active,sort_order,created_at) "
+                           "VALUES (?,?,?,?,1,0,?)", ("", title, cat, pts, now_s))
+                cid = db.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+            db.commit()
+            log_action(db, "cps_cat_save", user.id, user.first_name, None, None,
+                       {"id": cid, "title": title, "category": cat, "points": pts})
+            await update.message.reply_text(f"\u2705 {title} \u00b7 {pts} CPS")
+
+        elif action == "cps_cat_active":
+            # Katalog maddesi SILINMEZ, kapatilir: gecmisteki kayitlar hangi
+            # maddeden geldigini gostermeye devam etsin. Kapali madde yeni
+            # kayitta secilemez.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                cid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                cid = 0
+            row = db.execute("SELECT title, COALESCE(active,1) AS a FROM cps_catalog WHERE id=?",
+                             (cid,)).fetchone() if cid else None
+            if not row:
+                await update.message.reply_text("\u274c \u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            act = 1 if int(data.get("active") or 0) else 0
+            db.execute("UPDATE cps_catalog SET active=? WHERE id=?", (act, cid))
+            db.commit()
+            log_action(db, "cps_cat_active", user.id, user.first_name, None, None,
+                       {"id": cid, "title": row["title"], "active": act})
+            await update.message.reply_text(
+                ("\u2705 " if act else "\u26aa\ufe0f ") + str(row["title"]) +
+                (" \u2014 \u0432\u043a\u043b\u044e\u0447\u0451\u043d" if act else " \u2014 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d"))
+
+        elif action == "cps_event_add":
+            # BIR CALISANA IHLAL YAZ. Puan KATALOGDAN gelir, elle girilmez.
+            # Tutar girilmemis olsa bile yazilir: para dongusune girmeyen kisi
+            # de puan ve gecmis tasir (owner'in dogruladigi kural).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                tgt = int(data.get("user_id") or 0)
+                cid = int(data.get("catalog_id") or 0)
+            except (TypeError, ValueError):
+                tgt, cid = 0, 0
+            if not tgt or not db.execute("SELECT 1 FROM users WHERE user_id=?", (tgt,)).fetchone():
+                await update.message.reply_text("\u274c \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            cat_row = db.execute(
+                "SELECT title, category, points, COALESCE(active,1) AS a FROM cps_catalog WHERE id=?",
+                (cid,)).fetchone() if cid else None
+            if not cat_row:
+                await update.message.reply_text("\u274c \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u0438\u0437 \u043a\u0430\u0442\u0430\u043b\u043e\u0433\u0430.")
+                return
+            if not int(cat_row["a"] or 0):
+                await update.message.reply_text("\u274c \u042d\u0442\u043e\u0442 \u043f\u0443\u043d\u043a\u0442 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            note = str(data.get("note") or "").strip()
+            dl = -abs(int(cat_row["points"] or 0))
+            now_s = datetime.now(TZ).isoformat()
+            db.execute(
+                "INSERT INTO cps_events (user_id,period,kind,catalog_id,title,category,delta,amount,"
+                "note,added_by,added_by_name,created_at) VALUES (?,?,?,?,?,?,?,0,?,?,?,?)",
+                (tgt, per, "violation", cid, cat_row["title"], cat_row["category"] or "",
+                 dl, note, user.id, user.first_name, now_s))
+            db.commit()
+            _cfg = cps_cfg(db)
+            _new = cps_score(db, tgt, per, _cfg)
+            _tn = display_name_for(db, tgt, fallback=f"ID {tgt}")
+            log_action(db, "cps_event_add", user.id, user.first_name, tgt, _tn,
+                       {"period": per, "title": cat_row["title"], "delta": dl, "score": _new})
+            # BILDIRIM: kisi ogrenmeden puani dusmesin (spec §11 — sessiz degisiklik yok).
+            try:
+                _m = (f"\u26a0\ufe0f CPS: {cat_row['title']} \u00b7 {dl} \u0431\u0430\u043b\u043b\u043e\u0432"
+                      + (f"\n{note}" if note else "")
+                      + f"\n\u0422\u0435\u043a\u0443\u0449\u0438\u0439 CPS: {_new}")
+                await context.bot.send_message(chat_id=int(tgt), text=_m)
+            except Exception:
+                pass
+            await update.message.reply_text(f"\u2705 {_tn}: {cat_row['title']} {dl} \u2192 CPS {_new}")
+
+        elif action == "cps_event_del":
+            # Yanlis yazilan kayit geri alinir. Silinen satirin TAM icerigi
+            # gunluge yazilir — iz kaybolmasin.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                eid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                eid = 0
+            ev = db.execute("SELECT * FROM cps_events WHERE id=?", (eid,)).fetchone() if eid else None
+            if not ev:
+                await update.message.reply_text("\u274c \u0417\u0430\u043f\u0438\u0441\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.")
+                return
+            if cps_pool_confirmed(db, ev["period"]):
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u041c\u0435\u0441\u044f\u0446 \u0443\u0436\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043d \u2014 \u0438\u0441\u0442\u043e\u0440\u0438\u044f \u043d\u0435 \u043c\u0435\u043d\u044f\u0435\u0442\u0441\u044f.")
+                return
+            db.execute("DELETE FROM cps_events WHERE id=?", (eid,))
+            db.commit()
+            _tn = display_name_for(db, ev["user_id"], fallback=f"ID {ev['user_id']}")
+            _new = cps_score(db, ev["user_id"], ev["period"])
+            log_action(db, "cps_event_del", user.id, user.first_name, ev["user_id"], _tn,
+                       {"id": eid, "period": ev["period"], "title": ev["title"],
+                        "delta": ev["delta"], "amount": ev["amount"], "score": _new})
+            try:
+                await context.bot.send_message(
+                    chat_id=int(ev["user_id"]),
+                    text=f"\u267b\ufe0f CPS: \u0437\u0430\u043f\u0438\u0441\u044c \u00ab{ev['title']}\u00bb \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430. \u0422\u0435\u043a\u0443\u0449\u0438\u0439 CPS: {_new}")
+            except Exception:
+                pass
+            await update.message.reply_text(f"\u267b\ufe0f \u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e \u00b7 {_tn}: CPS {_new}")
+
+        elif action == "cps_insp_add":
+            # FRANCHISE PROVERKA — CPS'ten AYRI kayit. Sonucu buraya girilir;
+            # para cezasi buraya GIRMEZ (o ayri bir arac, spec §9).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            try:
+                bid = int(data.get("branch_id") or 0)
+                sc = int(float(data.get("score") or 0))
+            except (TypeError, ValueError):
+                bid, sc = 0, 0
+            if not bid or not db.execute("SELECT 1 FROM branches WHERE id=?", (bid,)).fetchone():
+                await update.message.reply_text("\u274c \u0424\u0438\u043b\u0438\u0430\u043b \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            if sc <= 0:
+                await update.message.reply_text("\u274c \u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438.")
+                return
+            _prev = db.execute(
+                "SELECT COUNT(*) AS n FROM cps_inspections WHERE period=? AND branch_id=?",
+                (per, bid)).fetchone()["n"]
+            now_s = datetime.now(TZ).isoformat()
+            db.execute(
+                "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (per, bid, int(_prev) + 1, sc, str(data.get("note") or "").strip(),
+                 user.id, user.first_name, now_s))
+            db.commit()
+            _cfg = cps_cfg(db)
+            _reached, _tot = cps_fr_reached(db, per, bid, _cfg)
+            log_action(db, "cps_insp_add", user.id, user.first_name, None, None,
+                       {"period": per, "branch_id": bid, "score": sc,
+                        "total": _tot, "reached": 1 if _reached else 0})
+            _bn = (db.execute("SELECT name FROM branches WHERE id=?", (bid,)).fetchone() or {})["name"]
+            _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {sc}"
+                    f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_tot} / {int(_cfg['fr_target'])}")
+            if _reached:
+                # OTOMATIK UYGULANMAZ: sart saglandi denir, geri yuklemeyi
+                # owner ayrica onaylar (havuz onayiyla ayni felsefe).
+                _msg += "\n\U0001f3af \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430 \u2014 \u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c CPS."
+            await update.message.reply_text(_msg)
+
+        elif action == "cps_insp_del":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                iid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                iid = 0
+            _ir = db.execute("SELECT * FROM cps_inspections WHERE id=?", (iid,)).fetchone() if iid else None
+            if not _ir:
+                await update.message.reply_text("\u274c \u0417\u0430\u043f\u0438\u0441\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.")
+                return
+            db.execute("DELETE FROM cps_inspections WHERE id=?", (iid,))
+            db.commit()
+            log_action(db, "cps_insp_del", user.id, user.first_name, None, None,
+                       {"id": iid, "period": _ir["period"], "branch_id": _ir["branch_id"],
+                        "score": _ir["score"]})
+            await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430.")
+
+        elif action == "cps_fr_restore":
+            # TAKIM ODULU: sart saglandiysa subedeki calisanlarin CPS'i
+            # yapilandirilan degere CIKARILIR. Yalnizca YUKARI: zaten daha
+            # yuksek olan kimsenin puani DUSURULMEZ. Her kisi icin bir gecmis
+            # satiri yazilir (sessiz degisiklik yok) ve ayni ay+sube icin
+            # IKINCI kez uygulanmaz.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except (TypeError, ValueError):
+                bid = 0
+            if not bid:
+                await update.message.reply_text("\u274c \u0424\u0438\u043b\u0438\u0430\u043b \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d.")
+                return
+            _cfg = cps_cfg(db)
+            _reached, _tot = cps_fr_reached(db, per, bid, _cfg)
+            if not _reached:
+                await update.message.reply_text(
+                    f"\u274c \u0426\u0435\u043b\u044c \u043d\u0435 \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430: {_tot} / {int(_cfg['fr_target'])}")
+                return
+            if db.execute("SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
+                          (per, f"branch:{bid}")).fetchone():
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u0423\u0436\u0435 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446.")
+                return
+            _to = int(_cfg["fr_restore"])
+            _rows = db.execute(
+                "SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+                "AND COALESCE(branch_id,1)=?", (bid,)).fetchall()
+            now_s = datetime.now(TZ).isoformat()
+            _done = 0
+            for _r in _rows:
+                _uid = int(_r["user_id"])
+                _cur = cps_score(db, _uid, per, _cfg)
+                if _cur >= _to:
+                    continue
+                db.execute(
+                    "INSERT INTO cps_events (user_id,period,kind,title,category,delta,amount,note,"
+                    "added_by,added_by_name,created_at) VALUES (?,?,?,?,?,?,0,?,?,?,?)",
+                    (_uid, per, "restore",
+                     "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043f\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0435",
+                     "Franchise", _to - _cur, f"branch:{bid}", user.id, user.first_name, now_s))
+                _done += 1
+                try:
+                    await context.bot.send_message(
+                        chat_id=_uid,
+                        text=f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430 ({_tot}). \u0412\u0430\u0448 CPS \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d: {_cur} \u2192 {_to}")
+                except Exception:
+                    pass
+            db.commit()
+            log_action(db, "cps_fr_restore", user.id, user.first_name, None, None,
+                       {"period": per, "branch_id": bid, "total": _tot, "to": _to, "people": _done})
+            # Sube grubuna da bildir — takim odulu takimca gorulsun.
+            try:
+                _g = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (bid,)).fetchone()
+                if _g and _g["group_chat_id"]:
+                    await context.bot.send_message(
+                        chat_id=int(_g["group_chat_id"]),
+                        text=f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_tot} / {int(_cfg['fr_target'])}. CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {_to}.")
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"\U0001f3af \u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e: {_done}")
+
+        elif action == "cps_bonus_set":
+            # Owner: bir kisinin O AYKI «%100 prim tutari». Havuzun tek girdisi.
+            # TUTAR UYDURULMAZ — hicbir yerde varsayilan yok; owner yazar.
+            # Tutar girilmis olmak ayni zamanda o ayin CPS dongusune DAHIL olmak
+            # demektir (bkz. cps_eligible), bu yuzden 0 = «bu ay hesap yok».
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                tgt = int(data.get("user_id") or 0)
+            except (TypeError, ValueError):
+                tgt = 0
+            if not tgt:
+                await update.message.reply_text("\u274c \u041d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a.")
+                return
+            if not db.execute("SELECT 1 FROM users WHERE user_id=?", (tgt,)).fetchone():
+                await update.message.reply_text("\u274c \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            # Donem KAPANDIYSA taban degistirilemez: onaylanmis dagitim
+            # gecmise donuk bozulmasin.
+            if cps_pool_confirmed(db, per):
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u041c\u0435\u0441\u044f\u0446 \u0443\u0436\u0435 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043d \u2014 \u0441\u0443\u043c\u043c\u0430 \u043d\u0435 \u043c\u0435\u043d\u044f\u0435\u0442\u0441\u044f.")
+                return
+            try:
+                amt = max(0, int(float(data.get("amount") or 0)))
+            except (TypeError, ValueError):
+                amt = 0
+            now_s = datetime.now(TZ).isoformat()
+            db.execute(
+                "INSERT INTO cps_bonus (user_id,period,amount,set_by,set_by_name,set_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,period) DO UPDATE SET "
+                "amount=excluded.amount, set_by=excluded.set_by, "
+                "set_by_name=excluded.set_by_name, set_at=excluded.set_at",
+                (tgt, per, amt, user.id, user.first_name, now_s))
+            db.commit()
+            _tn = display_name_for(db, tgt, fallback=f"ID {tgt}")
+            log_action(db, "cps_bonus_set", user.id, user.first_name, tgt, _tn,
+                       {"period": per, "amount": amt})
+            await update.message.reply_text(
+                f"\u2705 {_tn} \u00b7 {per}: \u043f\u0440\u0435\u043c\u0438\u044f 100% = {fmt_sum(amt)} \u0441\u0443\u043c")
+
+        elif action == "cps_pool_confirm":
+            # Owner: aylik CPS prim havuzunun dagitimini ONAYLA.
+            # OTOMATIK DEGIL (spec §5): owner ozeti gorup onaylar.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            if cps_pool_confirmed(db, per):
+                await update.message.reply_text(
+                    "⚠️ Этот месяц уже подтверждён.")
+                return
+            summ = cps_month_summary(db, per)
+            if not summ["rows"]:
+                await update.message.reply_text(
+                    "❌ Нет сотрудников с настроенной суммой премии за этот месяц.")
+                return
+            # BERABERLIK: otomatik kazanan SECILMEZ. Owner acikca kime
+            # verilecegini bildirmeden dagitim yapilmaz (spec §6).
+            win = data.get("winner")
+            if summ["tie"] and not win:
+                _names = ", ".join(r["name"] for r in summ["rows"] if r["uid"] in summ["winners"])
+                await update.message.reply_text(
+                    "⚠️ Ничья по CPS: " + _names +
+                    ". Укажите, кому идёт пул.")
+                return
+            win_id = int(win) if win else (summ["winners"][0] if summ["winners"] else 0)
+            if summ["tie"] and win_id not in summ["winners"]:
+                await update.message.reply_text(
+                    "❌ Этот сотрудник не в числе лидеров.")
+                return
+            now_s = datetime.now(TZ).isoformat()
+            pool = int(summ["pool"] or 0)
+            for r in summ["rows"]:
+                is_w = 1 if r["uid"] == win_id else 0
+                total = int(r["earned"]) + (pool if is_w else 0)
+                db.execute(
+                    "INSERT INTO cps_payouts (period,branch_id,user_id,score,own_bonus,pool_amount,"
+                    "total,is_winner,confirmed_by,confirmed_by_name,confirmed_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (per, 0, r["uid"], r["score"], int(r["earned"]), (pool if is_w else 0),
+                     total, is_w, user.id, user.first_name, now_s))
+            # GECMISE yazilir: para satiri delta=0 ile puani ETKILEMEZ.
+            if pool > 0 and win_id:
+                db.execute(
+                    "INSERT INTO cps_events (user_id,period,kind,title,category,delta,amount,note,"
+                    "added_by,added_by_name,created_at) VALUES (?,?,?,?,?,0,?,?,?,?,?)",
+                    (win_id, per, "reward",
+                     "Месячная премия CPS",
+                     "CPS", pool,
+                     "Лучший результат месяца",
+                     user.id, user.first_name, now_s))
+            db.commit()
+            log_action(db, "cps_pool_confirm", user.id, user.first_name, win_id,
+                       display_name_for(db, win_id, fallback=f"ID {win_id}") if win_id else None,
+                       {"period": per, "pool": pool, "winner": win_id,
+                        "people": len(summ["rows"]), "amount": pool})
+            _wn = display_name_for(db, win_id, fallback=f"ID {win_id}") if win_id else "—"
+            # BILDIRIM: herkes kendi sonucunu ogrensin, kazanan havuzu da
+            # gorsun. Sessiz dagitim yok: kim ne aldi, o kisiye yazilir.
+            for _r in summ["rows"]:
+                try:
+                    _tx = (f"📅 CPS {per}"
+                           f"\nВаш балл: {_r['score']}"
+                           f"\nПремия: {fmt_sum(_r['earned'])} сум ({_r['bonus_pct']}%)")
+                    if _r["uid"] == win_id and pool > 0:
+                        _tx += (f"\n🏆 Лучший результат месяца"
+                                f"\nМесячный фонд: +{fmt_sum(pool)} сум"
+                                f"\nИтого: {fmt_sum(int(_r['earned']) + pool)} сум")
+                    await context.bot.send_message(chat_id=int(_r["uid"]), text=_tx)
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                f"✅ CPS {per}: пул {fmt_sum(pool)} сум → {_wn}")
 
         elif action == "create_branch":
             db = get_db()
