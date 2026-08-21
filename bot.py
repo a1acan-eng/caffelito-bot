@@ -4974,10 +4974,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "fine_settle", user.id, user.first_name, row["user_id"], _tn,
                        {"fine_id": fid, "amount": row["amount"], "reason": row["reason"],
                         "period": row["period"], "settled": want})
+            _fs_line = ("\u2705 \u0428\u0442\u0440\u0430\u0444 \u043f\u043e\u043b\u0443\u0447\u0435\u043d"
+                        if want else
+                        "\u267b\ufe0f \u041e\u0442\u043c\u0435\u0442\u043a\u0430 \u0441\u043d\u044f\u0442\u0430")
             await update.message.reply_text(
-                ("\u2705 " if want else "\u267b\ufe0f ") + _tn + " \u00b7 " + fmt_sum(row["amount"] or 0)
-                + (" \u2014 \u0432\u044b\u043f\u043b\u0430\u0447\u0435\u043d\u043e" if want
-                   else " \u2014 \u0441\u043d\u043e\u0432\u0430 \u043e\u0442\u043a\u0440\u044b\u0442"))
+                _fs_line + " \u00b7 " + _tn + " \u00b7 " + fmt_sum(row["amount"] or 0)
+                + "\n\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0443 \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0435 \u043d\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442\u0441\u044f.")
 
         elif action == "fine_preset_save":
             db = get_db()
