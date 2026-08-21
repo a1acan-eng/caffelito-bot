@@ -5977,6 +5977,86 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"id": cid, "title": title, "category": cat, "points": pts})
             await update.message.reply_text(f"\u2705 {title} \u00b7 {pts} CPS")
 
+        elif action == "cps_cat_bulk":
+            # Katalogu satir satir doldur. Ayristirma burada: istemci satir
+            # basina istek atsaydi yarim kalan bir katalog kalirdi.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            _raw = str(data.get("text") or "")
+            if not _raw.strip():
+                await update.message.reply_text("\u274c \u041f\u0443\u0441\u0442\u043e.")
+                return
+            _sep = None
+            # Ad -> id haritasi. SQLite LOWER() Kiril'i kucultmedigi icin
+            # eslestirme Python'da yapiliyor; bosluklar da normalize edilir.
+            _cat_index = {}
+            try:
+                for _cr in db.execute("SELECT id, title FROM cps_catalog").fetchall():
+                    _cat_index[" ".join(str(_cr["title"] or "").split()).lower()] = _cr["id"]
+            except Exception:
+                _cat_index = {}
+            _added, _upd, _bad = 0, 0, []
+            now_s = datetime.now(TZ).isoformat()
+            for _ln_no, _ln in enumerate(_raw.replace("\r", "").split("\n"), 1):
+                _s = _ln.strip()
+                if not _s or _s.startswith("#"):
+                    continue
+                # Ayraci satirin kendisinden bul — kullanici baska yerden
+                # yapistiriyor, tek bir isarete bagli kalmak kirilgan olur.
+                for _c in ("\u00b7", "|", ";", "\t", "\u2014", " - ", ","):
+                    if _c in _s:
+                        _sep = _c
+                        break
+                else:
+                    _bad.append(_ln_no)
+                    continue
+                _parts = [x.strip() for x in _s.split(_sep) if x.strip()]
+                if len(_parts) < 2:
+                    _bad.append(_ln_no)
+                    continue
+                # Puan HER ZAMAN son alan.
+                try:
+                    _pts = -abs(int(float(_parts[-1].replace("%", "").strip())))
+                except (TypeError, ValueError):
+                    _bad.append(_ln_no)
+                    continue
+                if _pts == 0:
+                    _bad.append(_ln_no)
+                    continue
+                _title = _parts[0]
+                _cat = _parts[1] if len(_parts) >= 3 else ""
+                if not _title:
+                    _bad.append(_ln_no)
+                    continue
+                # AYNI AD -> GUNCELLE. Liste ikinci kez yapistirilirsa katalog
+                # ikiye katlanmamali.
+                _key = " ".join(_title.split()).lower()
+                _ex = _cat_index.get(_key)
+                if _ex:
+                    db.execute("UPDATE cps_catalog SET category=?, points=?, active=1 WHERE id=?",
+                               (_cat, _pts, _ex))
+                    _upd += 1
+                else:
+                    db.execute(
+                        "INSERT INTO cps_catalog (code,title,category,points,active,sort_order,created_at) "
+                        "VALUES (?,?,?,?,1,0,?)", ("", _title, _cat, _pts, now_s))
+                    _cat_index[_key] = db.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+                    _added += 1
+            db.commit()
+            log_action(db, "cps_cat_bulk", user.id, user.first_name, None, None,
+                       {"added": _added, "updated": _upd, "bad": len(_bad)})
+            _msg = (f"\u2705 \u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e: {_added}"
+                    f" \u00b7 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e: {_upd}")
+            if _bad:
+                _shown = ", ".join(str(x) for x in _bad[:10])
+                _msg += (f"\n\u26a0\ufe0f \u041d\u0435 \u0440\u0430\u0437\u043e\u0431\u0440\u0430\u043d\u044b "
+                         f"\u0441\u0442\u0440\u043e\u043a\u0438: {_shown}")
+                if len(_bad) > 10:
+                    _msg += f" (+{len(_bad) - 10})"
+            await update.message.reply_text(_msg)
+
         elif action == "cps_cat_active":
             # Katalog maddesi SILINMEZ, kapatilir: gecmisteki kayitlar hangi
             # maddeden geldigini gostermeye devam etsin. Kapali madde yeni
