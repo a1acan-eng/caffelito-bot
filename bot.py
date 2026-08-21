@@ -1530,7 +1530,8 @@ def fmt_hm(h):
 CPS_DEFAULTS = {
     "start": 100,        # ay basi puan
     "min": 0,            # taban
-    "deduct_from": 80,   # maas kesintisinin BASLADIGI puan
+    "deduct_from": 80,   # maas kesintisinin BASLADIGI puan (burada %0)
+    "deduct_full": 0,    # kesintinin %100'e ULASTIGI puan (egim; yukseltmek sertlestirir)
     "bonus_points": 20,  # %100 prime denk puan  (20 puan = %100 -> 1 puan = %5)
     "fr_count": 2,       # aydaki proverka sayisi
     "fr_target": 160,    # takim odulu icin gereken TOPLAM
@@ -1583,14 +1584,33 @@ def cps_bonus_pct(score, cfg):
 
 
 def cps_salary_pct(score, cfg):
-    """Maas kesintisi yuzdesi = 100 - CPS, ama YALNIZCA esikte ve altinda.
+    """Maas kesintisi yuzdesi — esikten asagi DOGRUSAL.
 
-    Spec: «CPS 85 -> %0», «CPS 80 -> %20». Yani 81 ve ustu 0, 80 ve altinda
-    100-CPS. 81 -> 80 gecisi bir ESIK: bir puan %20 maas demek. Bilerek boyle
-    (owner kurali); yumusatilmadi.
+    Esikte (`deduct_from`) tam %0, `deduct_full` puaninda %100:
+        pct = (deduct_from - score) / (deduct_from - deduct_full) * 100
+
+    ESKIDEN «100 - CPS, yalniz esikte ve altinda» idi ve bir UCURUM
+    yaratiyordu: 81 -> %0 ama 80 -> %20, yani tek puan aylik maasin beste
+    biri. Owner kaldirilmasini istedi (2026-08-22).
+
+    Bicimin sectigi sey: sicramayi kaldirirken ucları spec'in soyledigi
+    yerde birakmak — esik ustu %0, sifir puan %100. Ortada kesintiler
+    eskisinden HAFIF: 60 CPS %40 yerine %25. Sertlestirmek icin
+    `deduct_full` yukseltilir (kural veri, kod degil).
+
+    Uygulanmis kesintiler bu degisiklikten ETKILENMEZ — onlar
+    `adjustments`ta sabit tutar.
     """
     s = int(score)
-    return (100 - s) if s <= int(cfg["deduct_from"]) else 0
+    top = int(cfg["deduct_from"])
+    if s > top:
+        return 0
+    bottom = int(cfg.get("deduct_full", 0))
+    span = top - bottom
+    if span <= 0:                      # bozuk ayar: esikte tek adimda tam kesinti
+        return 100
+    pct = (top - s) * 100.0 / span
+    return max(0, min(100, int(round(pct))))
 
 
 def cps_bonus_amount(db, user_id, period):
