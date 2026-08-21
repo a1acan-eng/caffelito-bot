@@ -4818,7 +4818,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # STAJYER / ASSISTENT: kasayi o kapatmiyor, bardak da saymiyor — onun
                     # adina satis rakami yazmak yaniltici olur (rakam ya 0 ya da yanindaki
                     # baristanin isi). Owner istegi: sadece acildi/kapandi gorunsun.
-                    _closer = barista_pay_info(db, user.id)
+                    _closer = barista_pay_info(
+                        db, user.id,
+                        branch_id=(sh["branch_id"] or acting_branch_id(db, user.id)))
                     _is_asst = (int(_closer.get("does_kasa", 1) or 0) == 0
                                 or (_closer.get("slot_role") or "barista") == "assistant")
                     gtext = (f"🔴 <b>{esc_html(shown)}</b> закрыл(а) смену\n"
@@ -6656,6 +6658,46 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # doldurulur ve hata günler boyu sürüklenir — hem de sessizce.
             #
             # Referans artık: açık vardiya YOKSA AZ ÖNCE KAPANAN vardiya.
+            def _cr_row_role(_r):
+                # Vardiya satirindan rolu GUVENLI oku. sqlite3.Row'da olmayan
+                # anahtar IndexError atar; bu guard bir PARA akisinin onunde
+                # duruyor ve burada patlamak kasa raporunu komple dusurur.
+                try:
+                    return (_r["shift_role"] or "barista") if _r is not None else "barista"
+                except (IndexError, KeyError, TypeError):
+                    return "barista"
+
+            # ── ASISTAN / STAJYER KASA RAPORU VERMEZ ────────────────────────
+            # Kapanis akisi `cash_report`u KOSULSUZ yolluyor. Asistanin ekraninda
+            # bardak ve kasa adimi yok, ama gonderilen rapor «было» on-dolumunu
+            # tasidigi icin gruba bardak dokumu olarak yaziliyordu (canli hata).
+            # Ustelik yazilan `cashreports` satiri sonraki vardiyanin «Было»sunu
+            # besliyor ve subeyi «bugun kapandi» yapiyor — bos bir rapor gercek
+            # baristanin kasa zincirini bozuyor.
+            #
+            # Kategori KAPANAN VARDIYANIN subesinden cozulur (sube override'i
+            # dahil), Nero ile ayni kaynak. Vardiya kendi `shift_role`unu de
+            # tasir: asistan yuvasinda acilan vardiya, kategori o sirada ne
+            # olursa olsun asistan sayilir — ekrandaki kuralin aynisi.
+            _cr_ref = _my_act_cr_pre = get_active_shift(db, user.id)
+            if not _cr_ref:
+                _cr_ref = db.execute(
+                    "SELECT * FROM shifts WHERE user_id=? AND end_time IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
+            _cr_bid = (_cr_ref["branch_id"] if _cr_ref and _cr_ref["branch_id"]
+                       else acting_branch_id(db, user.id))
+            _cr_pi = barista_pay_info(db, user.id, branch_id=_cr_bid)
+            _cr_asst = (int(_cr_pi.get("does_kasa", 1) or 0) == 0
+                        or (_cr_pi.get("slot_role") or "barista") == "assistant"
+                        or _cr_row_role(_cr_ref) == "assistant")
+            if _cr_asst and get_role(db, user.id) != "owner":
+                logger.info(f"cash_report atlandi (asistan): uid={user.id} bid={_cr_bid}")
+                await update.message.reply_text(
+                    "\u2705 \u0421\u043c\u0435\u043d\u0430 \u0437\u0430\u043a\u0440\u044b\u0442\u0430. "
+                    "\u041a\u0430\u0441\u0441\u0443 \u0441\u0434\u0430\u0451\u0442 \u0441\u0442\u0430\u0440\u0448\u0438\u0439 "
+                    "\u0431\u0430\u0440\u0438\u0441\u0442\u0430.")
+                return
+
             _my_act_cr = get_active_shift(db, user.id)
             if not _my_act_cr:
                 _my_act_cr = db.execute(
