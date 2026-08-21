@@ -213,13 +213,37 @@ def get_db():
         added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
     # Tek seferlik: dogrulanmis TEK katalog kalemi. Owner silerse geri gelmez.
     try:
-        if not db.execute("SELECT 1 FROM meta WHERE k='cps_seeded'").fetchone():
-            db.execute("INSERT INTO cps_catalog (code,title,category,points,active,sort_order,created_at) "
-                       "VALUES (?,?,?,?,1,0,?)",
-                       ("fifo", "Нарушение FIFO", "Работа с продуктом", -2,
-                        datetime.now(TZ).isoformat()))
-            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cps_seeded', ?)",
-                       (datetime.now(TZ).isoformat(),))
+        # BASLANGIC KATALOGU — 13 madde. Bu bir «kodda sabit liste» DEGIL:
+        # yalnizca ilk kurulumda bir kez yazilir, sonrasinda owner ekrandan
+        # ekler/degistirir/kapatir/siler. Ikinci kez calismaz (`cps_seed13`).
+        # Ayni ad zaten varsa DOKUNULMAZ — owner'in degistirdigi bir puani
+        # geri almaz.
+        if not db.execute("SELECT 1 FROM meta WHERE k='cps_seed13'").fetchone():
+            _seed = [
+                ("\u041e\u043f\u043e\u0437\u0434\u0430\u043d\u0438\u0435", "\u0414\u0438\u0441\u0446\u0438\u043f\u043b\u0438\u043d\u0430", -1),
+                ("\u041d\u0435 \u0432\u044b\u0448\u0435\u043b \u043d\u0430 \u0441\u043c\u0435\u043d\u0443", "\u0414\u0438\u0441\u0446\u0438\u043f\u043b\u0438\u043d\u0430", -5),
+                ("\u041d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 FIFO", "\u0420\u0430\u0431\u043e\u0442\u0430 \u0441 \u043f\u0440\u043e\u0434\u0443\u043a\u0442\u043e\u043c", -2),
+                ("\u041f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043d\u044b\u0439 \u043f\u0440\u043e\u0434\u0443\u043a\u0442", "\u0420\u0430\u0431\u043e\u0442\u0430 \u0441 \u043f\u0440\u043e\u0434\u0443\u043a\u0442\u043e\u043c", -5),
+                ("\u041d\u0435\u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e\u0435 \u0445\u0440\u0430\u043d\u0435\u043d\u0438\u0435", "\u0420\u0430\u0431\u043e\u0442\u0430 \u0441 \u043f\u0440\u043e\u0434\u0443\u043a\u0442\u043e\u043c", -3),
+                ("\u041f\u043b\u043e\u0445\u043e\u0439 \u043d\u0430\u043f\u0438\u0442\u043e\u043a", "\u041a\u0430\u0447\u0435\u0441\u0442\u0432\u043e", -2),
+                ("\u0413\u0440\u044f\u0437\u043d\u0430\u044f \u0441\u0442\u0430\u043d\u0446\u0438\u044f", "\u0427\u0438\u0441\u0442\u043e\u0442\u0430", -2),
+                ("\u0413\u0440\u044f\u0437\u043d\u044b\u0439 \u0437\u0430\u043b", "\u0427\u0438\u0441\u0442\u043e\u0442\u0430", -2),
+                ("\u041d\u0435 \u0441\u0434\u0435\u043b\u0430\u043b \u043e\u0442\u043a\u0440\u044b\u0442\u0438\u0435", "\u041e\u0442\u043a\u0440\u044b\u0442\u0438\u0435", -3),
+                ("\u041d\u0435 \u0441\u0434\u0435\u043b\u0430\u043b \u0437\u0430\u043a\u0440\u044b\u0442\u0438\u0435", "\u0417\u0430\u043a\u0440\u044b\u0442\u0438\u0435", -3),
+                ("\u041a\u0430\u0441\u0441\u0430 \u043d\u0435 \u0441\u0434\u0430\u043d\u0430", "\u0417\u0430\u043a\u0440\u044b\u0442\u0438\u0435", -5),
+                ("\u0411\u0435\u0441\u043f\u043e\u0440\u044f\u0434\u043e\u043a \u043d\u0430 \u0440\u0430\u0431\u043e\u0447\u0435\u043c \u043c\u0435\u0441\u0442\u0435", "\u0421\u0442\u0430\u043d\u0434\u0430\u0440\u0442\u044b \u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e \u043c\u0435\u0441\u0442\u0430", -1),
+                ("\u041d\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u043b \u043f\u0440\u043e\u0446\u0435\u0434\u0443\u0440\u0443", "\u041d\u0435\u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u043f\u0440\u043e\u0446\u0435\u0434\u0443\u0440", -3),
+            ]
+            _now = datetime.now(TZ).isoformat()
+            _have = set()
+            for _r in db.execute("SELECT title FROM cps_catalog").fetchall():
+                _have.add(" ".join(str(_r["title"] or "").split()).lower())
+            for _ttl, _ct, _pt in _seed:
+                if " ".join(_ttl.split()).lower() in _have:
+                    continue
+                db.execute("INSERT INTO cps_catalog (code,title,category,points,active,sort_order,created_at) "
+                           "VALUES (?,?,?,?,1,0,?)", ("", _ttl, _ct, _pt, _now))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cps_seed13', ?)", (_now,))
             db.commit()
     except Exception as e:
         logger.warning(f"cps seed: {e}")
@@ -1728,6 +1752,7 @@ def cps_pool_confirmed(db, period):
 
 # Gecmis ekraninda kac ay gezilebilir. Veri boyutu karari; buyutulurse
 # payload da buyur (kisi basina ayda ~onlarca olay).
+CPS_MAX_PENALTY = 5   # bir ihlal en fazla -5 CPS (owner karari)
 CPS_HIST_MONTHS = 6
 CPS_ADJ_DEDUCT = "cps_deduct"
 CPS_ADJ_BONUS = "cps_bonus"
@@ -3223,8 +3248,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _cat = db.execute(
                 "SELECT id, title, category, points, COALESCE(active,1) AS active "
                 "FROM cps_catalog ORDER BY COALESCE(active,1) DESC, id").fetchall()
+            # `used`: bu madde gecmiste gecti mi. Ekran buna gore «sil» ile
+            # «kapat» arasinda karar verir ve owner'a dogru uyariyi gosterir.
+            try:
+                _used_ids = set(int(x["cid"]) for x in db.execute(
+                    "SELECT DISTINCT catalog_id AS cid FROM cps_events "
+                    "WHERE catalog_id IS NOT NULL").fetchall())
+            except Exception:
+                _used_ids = set()
             _cps["catalog"] = [{"id": r["id"], "t": r["title"] or "", "cat": r["category"] or "",
-                                "pts": r["points"] or 0, "a": int(r["active"] or 0)} for r in _cat]
+                                "pts": r["points"] or 0, "a": int(r["active"] or 0),
+                                "used": 1 if r["id"] in _used_ids else 0} for r in _cat]
+            _cps["maxpen"] = CPS_MAX_PENALTY
             # FRANCHISE PROVERKA — sube sube. `reached` takim odulu sartini,
             # `restored` bu ay zaten uygulanip uygulanmadigini soyler.
             _insp = []
@@ -5957,6 +5992,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if pts == 0:
                 await update.message.reply_text("\u274c \u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0446\u0435\u043d\u0443 \u0432 \u0431\u0430\u043b\u043b\u0430\u0445.")
                 return
+            # SINIR: bir ihlal -5'ten agir olamaz. Sessizce kirpmak owner'in
+            # yanlis yazdigini gormemesi demek — reddedip soyluyoruz.
+            if pts < -CPS_MAX_PENALTY:
+                await update.message.reply_text(
+                    f"\u274c \u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c \u2212{CPS_MAX_PENALTY} CPS \u0437\u0430 \u043e\u0434\u043d\u043e \u043d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435.")
+                return
             try:
                 cid = int(data.get("id") or 0)
             except (TypeError, ValueError):
@@ -6022,7 +6063,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except (TypeError, ValueError):
                     _bad.append(_ln_no)
                     continue
-                if _pts == 0:
+                if _pts == 0 or _pts < -CPS_MAX_PENALTY:
                     _bad.append(_ln_no)
                     continue
                 _title = _parts[0]
@@ -6082,6 +6123,39 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 ("\u2705 " if act else "\u26aa\ufe0f ") + str(row["title"]) +
                 (" \u2014 \u0432\u043a\u043b\u044e\u0447\u0451\u043d" if act else " \u2014 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d"))
+
+        elif action == "cps_cat_delete":
+            # KULLANILMAMIS madde gercekten silinir; KULLANILMIS madde yalniz
+            # kapatilir. Gecmis zaten donuk (`cps_events` kendi title/delta'sini
+            # tasiyor) ama kaydin geldigi maddeyi de kaybetmeyelim.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                cid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                cid = 0
+            row = db.execute("SELECT title FROM cps_catalog WHERE id=?", (cid,)).fetchone() if cid else None
+            if not row:
+                await update.message.reply_text("\u274c \u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            _used = db.execute("SELECT 1 FROM cps_events WHERE catalog_id=? LIMIT 1", (cid,)).fetchone()
+            if _used:
+                db.execute("UPDATE cps_catalog SET active=0 WHERE id=?", (cid,))
+                db.commit()
+                log_action(db, "cps_cat_off_used", user.id, user.first_name, None, None,
+                           {"id": cid, "title": row["title"]})
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u042d\u0442\u043e \u043d\u0430\u0440\u0443\u0448\u0435\u043d\u0438\u0435 \u0443\u0436\u0435 \u0435\u0441\u0442\u044c \u0432 \u0438\u0441\u0442\u043e\u0440\u0438\u0438 \u2014 "
+                    "\u043e\u043d\u043e \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e, \u0430 \u043d\u0435 \u0443\u0434\u0430\u043b\u0435\u043d\u043e. \u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c.")
+                return
+            db.execute("DELETE FROM cps_catalog WHERE id=?", (cid,))
+            db.commit()
+            log_action(db, "cps_cat_delete", user.id, user.first_name, None, None,
+                       {"id": cid, "title": row["title"]})
+            await update.message.reply_text(
+                "\U0001f5d1\ufe0f \u0423\u0434\u0430\u043b\u0435\u043d\u043e: " + str(row["title"]))
 
         elif action == "cps_event_add":
             # BIR CALISANA IHLAL YAZ. Puan KATALOGDAN gelir, elle girilmez.
