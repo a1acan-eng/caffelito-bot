@@ -1758,6 +1758,33 @@ CPS_ADJ_DEDUCT = "cps_deduct"
 CPS_ADJ_BONUS = "cps_bonus"
 
 
+def closer_is_assistant(db, user_id, branch_id=None, shift_row=None):
+    """Bu kisi kasa VERMEYEN biri mi (asistan/stajyer).
+
+    Ekrandaki kuralin AYNISI, uc kaynak: kategori `does_kasa`, kategori
+    `slot_role`, vardiyanin kendi `shift_role`u. Biri bile «asistan» diyorsa
+    asistan.
+
+    Neden sunucuda da gerekli: asistanin kasa raporu «bu sube kapandi»
+    anlamina gelmez. Eski satirlar (duzeltme oncesi) yuzunden gercek kapanis
+    engelleniyordu — canlida bir kez oldu.
+    """
+    try:
+        _pi = barista_pay_info(db, user_id, branch_id=branch_id)
+        if int(_pi.get("does_kasa", 1) or 0) == 0:
+            return True
+        if (_pi.get("slot_role") or "barista") == "assistant":
+            return True
+    except Exception:
+        pass
+    try:
+        if shift_row is not None and (shift_row["shift_role"] or "barista") == "assistant":
+            return True
+    except (IndexError, KeyError, TypeError):
+        pass
+    return False
+
+
 def cps_adj_find(db, user_id, period, kind):
     """Bu kisi+ay icin CPS para kaydi (kesinti/prim) zaten yazilmis mi.
 
@@ -7631,10 +7658,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     pass
             if _my_act_cr and _my_act_cr["start_time"]:
                 # (a) BAŞKASI bu şubeyi benim vardiyam başladıktan sonra kapattı mı?
-                _prev_cr = db.execute(
-                    "SELECT user_name, created_at FROM cashreports WHERE COALESCE(branch_id,1)=? "
-                    "AND created_at > ? AND user_id != ? ORDER BY id DESC LIMIT 1",
-                    (int(_cr_bid_chk or 1), _my_act_cr["start_time"], user.id)).fetchone()
+                # ASISTAN SATIRLARI ATLANIR: asistan kasa vermez, o yuzden
+                # onun raporu «bu sube kapandi» anlamina gelmez. Duzeltme
+                # oncesi olusmus boyle bir satir, owner'in gercek kasasini
+                # engelledi (canlida bir kez oldu, 2026-08-22).
+                _prev_cr = None
+                for _pc in db.execute(
+                        "SELECT user_id, user_name, created_at FROM cashreports "
+                        "WHERE COALESCE(branch_id,1)=? AND created_at > ? AND user_id != ? "
+                        "ORDER BY id DESC LIMIT 10",
+                        (int(_cr_bid_chk or 1), _my_act_cr["start_time"], user.id)).fetchall():
+                    if closer_is_assistant(db, _pc["user_id"], branch_id=_cr_bid_chk):
+                        logger.info(f"cift kapatma: asistan raporu atlandi uid={_pc['user_id']}")
+                        continue
+                    _prev_cr = _pc
+                    break
                 if _prev_cr:
                     try:
                         _pt = datetime.fromisoformat(_prev_cr["created_at"]).strftime("%H:%M")
