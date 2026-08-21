@@ -608,6 +608,17 @@ def get_db():
     except Exception as e:
         logger.warning(f"catot migration: {e}")
 
+    # Ceza TAHSILATI: owner kestigi cezanin kendisine ODENDIGINI isaretler.
+    # Tutar ve ceza kaydi DEGISMEZ — bu sadece «elime gecti» damgasi, bu yuzden
+    # ayri bir tablo degil, ayni satirda uc alan. Varsayilan 0 = henuz odenmedi,
+    # yani mevcut butun cezalar «acik» olarak kalir (dogru baslangic durumu).
+    for _fc, _fd in (("settled", "INTEGER DEFAULT 0"), ("settled_at", "TEXT"),
+                     ("settled_by", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE fines ADD COLUMN {_fc} {_fd}")
+        except sqlite3.OperationalError:
+            pass
+
     # Vardiya SNAPSHOT kolonları: başlangıçta rol+kategori+ставка dondurulur —
     # kategori/ücret sonradan değişse TARİHSEL vardiyalar asla etkilenmez.
     for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
@@ -2662,7 +2673,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"pay_cfg={quote(json.dumps(get_pay_cfg(db) if role=='owner' else {}, ensure_ascii=False))}",
         f"pay_rate={int(get_pay_cfg(db).get('rate', HOURLY_RATE))}",
         f"my_rate={int(_my_pi['rate'])}",
-        f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi'], 'does_kasa': _my_pi['does_kasa']}, ensure_ascii=False))}",
+        f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi'], 'does_kasa': _my_pi['does_kasa'], 'slot_role': _my_pi['slot_role']}, ensure_ascii=False))}",
         f"my_does_kasa={int(_my_pi['does_kasa'])}",
         f"my_bonus_sys={_my_pi['bonus_system']}",
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
@@ -2824,6 +2835,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         # arkasindaki «собрано штрафов»). Hicbir hesap degismiyor — yalnizca alan.
         _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, f.period AS per, "
                     "f.type AS ftype, f.added_by AS by_id, f.user_id AS uid, "
+                    "COALESCE(f.settled,0) AS settled, f.settled_at, "
                     "COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
         _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
@@ -2847,7 +2859,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
         "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "",
                    "at": r["created_at"], "per": r["per"] or "", "ftype": r["ftype"] or "",
-                   "by": r["by_id"] or 0, "uid": r["uid"] or 0} for r in _fi],
+                   "by": r["by_id"] or 0, "uid": r["uid"] or 0,
+                   "settled": int(r["settled"] or 0), "settled_at": r["settled_at"] or ""} for r in _fi],
         "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
@@ -4916,6 +4929,54 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ─── Owner: ceza preseti TUTARINI değiştir ───
         # Tutarlar koda gömülüydü (30.000, 1.000.000 …) ve değiştirmek için deploy
         # gerekiyordu. Etiketler kodda kalıyor (ekranın dili), tutarlar meta'da.
+        elif action == "fine_settle":
+            # «Выплатить» — owner kestigi cezanin kendisine ODENDIGINI isaretler.
+            # PARA HAREKETI DEGIL: ceza tutari ve baristanin bakiyesi AYNEN kalir
+            # (ceza kesildiginde zaten islenmisti). Bu yalniz tahsilat damgasi;
+            # satir gecmiste durur, «Собрано» toplamindan duser.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                fid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                fid = 0
+            row = db.execute(
+                "SELECT id, user_id, amount, reason, type, period, added_by, "
+                "COALESCE(settled,0) AS settled FROM fines WHERE id=?", (fid,)).fetchone() if fid else None
+            if not row:
+                await update.message.reply_text("\u274c \u0428\u0442\u0440\u0430\u0444 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            # YALNIZ KENDI kestigi ceza: baskasinin kestigini «bana odendi» diye
+            # kapatmak yanlis kisinin hesabini kapatir.
+            if int(row["added_by"] or 0) != int(user.id):
+                await update.message.reply_text(
+                    "\u274c \u042d\u0442\u043e\u0442 \u0448\u0442\u0440\u0430\u0444 \u0432\u044b\u043f\u0438\u0441\u0430\u043b\u0438 \u043d\u0435 \u0432\u044b.")
+                return
+            want = 1 if int(data.get("settled", 1) or 0) else 0
+            if int(row["settled"] or 0) == want:
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u0421\u0442\u0430\u0442\u0443\u0441 \u0443\u0436\u0435 \u0442\u0430\u043a\u043e\u0439.")
+                return
+            now_s = datetime.now(TZ).isoformat()
+            if want:
+                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=? WHERE id=?",
+                           (now_s, user.id, fid))
+            else:
+                # Yanlislikla kapatilani geri ac — tutar yine degismiyor.
+                db.execute("UPDATE fines SET settled=0, settled_at=NULL, settled_by=NULL WHERE id=?",
+                           (fid,))
+            db.commit()
+            _tn = display_name_for(db, row["user_id"], fallback=f"ID {row['user_id']}")
+            log_action(db, "fine_settle", user.id, user.first_name, row["user_id"], _tn,
+                       {"fine_id": fid, "amount": row["amount"], "reason": row["reason"],
+                        "period": row["period"], "settled": want})
+            await update.message.reply_text(
+                ("\u2705 " if want else "\u267b\ufe0f ") + _tn + " \u00b7 " + fmt_sum(row["amount"] or 0)
+                + (" \u2014 \u0432\u044b\u043f\u043b\u0430\u0447\u0435\u043d\u043e" if want
+                   else " \u2014 \u0441\u043d\u043e\u0432\u0430 \u043e\u0442\u043a\u0440\u044b\u0442"))
+
         elif action == "fine_preset_save":
             db = get_db()
             if get_role(db, user.id) != "owner":
