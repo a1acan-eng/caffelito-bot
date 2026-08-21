@@ -3242,6 +3242,33 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             logger.warning(f"cps hist: {_he}")
         _cme["deduct_applied"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_DEDUCT) else 0
         _cme["bonus_paid"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_BONUS) else 0
+        # HERKESIN kendi subesi. Owner disindakilere `insp` (butun subeler,
+        # silme baglantilariyla) GITMEZ; yalniz kendi subesinin ozeti gider.
+        # Baska subenin sonucu kisiyi ilgilendirmiyor.
+        _my_insp = None
+        try:
+            _mib = acting_branch_id(db, user_id)
+            if _mib:
+                _mrs = db.execute(
+                    "SELECT idx, score, created_at FROM cps_inspections "
+                    "WHERE period=? AND branch_id=? ORDER BY idx", (_selp, int(_mib))).fetchall()
+                _mrch, _mtt = cps_fr_reached(db, _selp, int(_mib), _ccfg)
+                _mrest = bool(db.execute(
+                    "SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
+                    (_selp, f"branch:{int(_mib)}")).fetchone())
+                _my_insp = {
+                    "bid": int(_mib),
+                    "n": (get_branch(db, _mib) or {}).get("name", "") or "",
+                    "total": _mtt, "target": int(_ccfg["fr_target"]),
+                    "need": max(0, int(_ccfg["fr_target"]) - _mtt),
+                    "slots": int(_ccfg.get("fr_count", 2) or 2),
+                    "reached": 1 if _mrch else 0, "restored": 1 if _mrest else 0,
+                    "restore_to": int(_ccfg["fr_restore"]),
+                    "rows": [{"idx": r["idx"], "score": r["score"], "at": r["created_at"]}
+                             for r in _mrs],
+                }
+        except Exception as _mie:
+            logger.warning(f"cps my_insp: {_mie}")
         _cps = {
             "period": _selp,
             "cfg": _ccfg,
@@ -3249,6 +3276,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # kaldirmak geriye uyumu bozardi.
             "me": _cme,
             "months": _cps_hist,
+            "myinsp": _my_insp,
             "events": [{"id": r["id"], "kind": r["kind"] or "", "title": r["title"] or "",
                         "cat": r["category"] or "", "delta": r["delta"], "amount": r["amount"],
                         "note": r["note"] or "", "by": r["added_by_name"] or "",
@@ -3300,8 +3328,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _restored = bool(db.execute(
                     "SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
                     (_selp, f"branch:{_bid}")).fetchone())
+                # `need`: hedefe kalan. Ilk kontrol girilince ekip «ikinciden
+                # en az bu kadar» diye somut bir sayi gorur — «hedef 160»
+                # tek basina kimseye ne yapmasi gerektigini soylemiyor.
+                _need = max(0, int(_ccfg["fr_target"]) - _tt)
                 _insp.append({"bid": _bid, "n": _b["name"] or "", "total": _tt,
                               "reached": 1 if _rch else 0, "restored": 1 if _restored else 0,
+                              "need": _need, "slots": int(_ccfg.get("fr_count", 2) or 2),
+                              "target": int(_ccfg["fr_target"]),
                               "rows": [{"id": r["id"], "idx": r["idx"], "score": r["score"],
                                         "note": r["note"] or "", "by": r["added_by_name"] or "",
                                         "at": r["created_at"]} for r in _rs]})
@@ -6290,6 +6324,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _prev = db.execute(
                 "SELECT COUNT(*) AS n FROM cps_inspections WHERE period=? AND branch_id=?",
                 (per, bid)).fetchone()["n"]
+            # Ayda `fr_count` kontrol var. Fazlasini kabul etmek toplami sisirir
+            # ve hedefi anlamsiz kilar — yanlis satiri silip yeniden girmeli.
+            _slots = int(cps_cfg(db).get("fr_count", 2) or 2)
+            if int(_prev) >= _slots:
+                await update.message.reply_text(
+                    f"\u274c \u0417\u0430 \u043c\u0435\u0441\u044f\u0446 \u0443\u0436\u0435 {_slots} "
+                    f"\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438. \u0423\u0434\u0430\u043b\u0438\u0442\u0435 \u043b\u0438\u0448\u043d\u044e\u044e, "
+                    f"\u0447\u0442\u043e\u0431\u044b \u0432\u043d\u0435\u0441\u0442\u0438 \u0434\u0440\u0443\u0433\u0443\u044e.")
+                return
             now_s = datetime.now(TZ).isoformat()
             db.execute(
                 "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at) "
