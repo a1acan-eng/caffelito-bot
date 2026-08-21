@@ -1706,6 +1706,9 @@ def cps_pool_confirmed(db, period):
         return False
 
 
+# Gecmis ekraninda kac ay gezilebilir. Veri boyutu karari; buyutulurse
+# payload da buyur (kisi basina ayda ~onlarca olay).
+CPS_HIST_MONTHS = 6
 CPS_ADJ_DEDUCT = "cps_deduct"
 CPS_ADJ_BONUS = "cps_bonus"
 
@@ -3131,12 +3134,49 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "COALESCE(amount,0) AS amount, note, added_by_name, created_at "
             "FROM cps_events WHERE user_id=? AND period=? ORDER BY id DESC LIMIT 60",
             (user_id, _selp)).fetchall()
+        # ── GECMIS AYLAR ────────────────────────────────────────────────
+        # Son CPS_HIST_MONTHS ay, yeniden eskiye. Olay olmayan ay da gonderilir:
+        # «o ay temizdim» gormek, ayin hic olmamasindan farkli bir bilgi.
+        _cps_hist = []
+        try:
+            _hy, _hm = int(_selp[:4]), int(_selp[5:7])
+            for _k in range(CPS_HIST_MONTHS):
+                _mm = _hm - _k
+                _yy = _hy
+                while _mm <= 0:
+                    _mm += 12
+                    _yy -= 1
+                _hp = f"{_yy:04d}-{_mm:02d}"
+                _hpr = cps_person(db, user_id, _hp, _ccfg)
+                _hev = db.execute(
+                    "SELECT id, kind, title, category, COALESCE(delta,0) AS delta, "
+                    "COALESCE(amount,0) AS amount, note, added_by_name, created_at "
+                    "FROM cps_events WHERE user_id=? AND period=? ORDER BY id DESC LIMIT 60",
+                    (user_id, _hp)).fetchall()
+                _cps_hist.append({
+                    "p": _hp,
+                    "score": _hpr["score"], "lost": _hpr["lost"],
+                    "bonus_pct": _hpr["bonus_pct"], "bonus_base": _hpr["bonus_base"],
+                    "bonus_amount": _hpr["bonus_amount"], "salary_pct": _hpr["salary_pct"],
+                    "status": _hpr["status"],
+                    "deduct_applied": 1 if cps_adj_find(db, user_id, _hp, CPS_ADJ_DEDUCT) else 0,
+                    "bonus_paid": 1 if cps_adj_find(db, user_id, _hp, CPS_ADJ_BONUS) else 0,
+                    "events": [{"id": r["id"], "kind": r["kind"] or "", "title": r["title"] or "",
+                                "cat": r["category"] or "", "delta": r["delta"], "amount": r["amount"],
+                                "note": r["note"] or "", "by": r["added_by_name"] or "",
+                                "at": r["created_at"]} for r in _hev],
+                })
+        except Exception as _he:
+            logger.warning(f"cps hist: {_he}")
         _cme["deduct_applied"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_DEDUCT) else 0
         _cme["bonus_paid"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_BONUS) else 0
         _cps = {
             "period": _selp,
             "cfg": _ccfg,
+            # `me` = SECILI ay (months[0] ile ayni). Mevcut ekran ona bakiyor,
+            # kaldirmak geriye uyumu bozardi.
             "me": _cme,
+            "months": _cps_hist,
             "events": [{"id": r["id"], "kind": r["kind"] or "", "title": r["title"] or "",
                         "cat": r["category"] or "", "delta": r["delta"], "amount": r["amount"],
                         "note": r["note"] or "", "by": r["added_by_name"] or "",
