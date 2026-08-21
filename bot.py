@@ -1706,6 +1706,38 @@ def cps_pool_confirmed(db, period):
         return False
 
 
+CPS_ADJ_DEDUCT = "cps_deduct"
+CPS_ADJ_BONUS = "cps_bonus"
+
+
+def cps_adj_find(db, user_id, period, kind):
+    """Bu kisi+ay icin CPS para kaydi (kesinti/prim) zaten yazilmis mi.
+
+    Isaret `adjustments.note` icindeki etikette: ayri bir tablo acmak yerine
+    kaydin kendisi tasiyor, boylece owner satiri elle silerse isaret de gider
+    ve islem yeniden uygulanabilir olur.
+    """
+    try:
+        return db.execute(
+            "SELECT * FROM adjustments WHERE user_id=? AND period=? AND note LIKE ? "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, period, "%[" + kind + "]%")).fetchone()
+    except Exception:
+        return None
+
+
+def cps_deduct_base(db, user_id, period):
+    """Kesintinin uygulandigi tutar: YALNIZ saatlik ucret (owner karari).
+
+    Bahsis, fazla mesai ve urun bonusu disarida — bahsis musterinin parasi,
+    digerleri ayri kazanilmis. Taban degisirse TEK YER burasi.
+    """
+    try:
+        return int(calc_summary(db, user_id, period).get("hourly", 0) or 0)
+    except Exception:
+        return 0
+
+
 def cps_fr_total(db, period, branch_id=None):
     """Donemdeki proverka sonuclarinin TOPLAMI (+ kac tanesi girilmis)."""
     try:
@@ -3099,6 +3131,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "COALESCE(amount,0) AS amount, note, added_by_name, created_at "
             "FROM cps_events WHERE user_id=? AND period=? ORDER BY id DESC LIMIT 60",
             (user_id, _selp)).fetchall()
+        _cme["deduct_applied"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_DEDUCT) else 0
+        _cme["bonus_paid"] = 1 if cps_adj_find(db, user_id, _selp, CPS_ADJ_BONUS) else 0
         _cps = {
             "period": _selp,
             "cfg": _ccfg,
@@ -3116,7 +3150,12 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "rows": [{"uid": r["uid"], "n": r["name"], "score": r["score"],
                           "pct": r["bonus_pct"], "base": r["base"], "earned": r["earned"],
                           "lost": r["lost"], "spct": r["salary_pct"],
-                          "win": 1 if r["is_winner"] else 0, "total": r["total"]}
+                          "win": 1 if r["is_winner"] else 0, "total": r["total"],
+                          # PARA DURUMU: ekran «uygulandi mi» diye bilsin.
+                          # Kaynak `adjustments`in kendisi — owner satiri elle
+                          # silerse durum da geri doner, iki yerde tutulmaz.
+                          "dedon": 1 if cps_adj_find(db, r["uid"], _selp, CPS_ADJ_DEDUCT) else 0,
+                          "bonon": 1 if cps_adj_find(db, r["uid"], _selp, CPS_ADJ_BONUS) else 0}
                          for r in _sm["rows"]],
             }
             # KATALOG: kapali maddeler de gonderilir — owner yonetim ekraninda
@@ -6163,6 +6202,84 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"\u2705 {_tn} \u00b7 {per}: \u043f\u0440\u0435\u043c\u0438\u044f 100% = {fmt_sum(amt)} \u0441\u0443\u043c")
 
+        elif action == "cps_deduct_apply":
+            # MAAS KESINTISINI UYGULA. Otomatik degil: ekran yuzdeyi gosterir,
+            # parayi owner bu eylemle dusurur (spec §5 — «отдельное действие
+            # владельца, оно записывается в журнал»).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                tgt = int(data.get("user_id") or 0)
+            except (TypeError, ValueError):
+                tgt = 0
+            if not tgt or not db.execute("SELECT 1 FROM users WHERE user_id=?", (tgt,)).fetchone():
+                await update.message.reply_text("\u274c \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
+                return
+            per = (data.get("period") or current_period())[:7]
+            if cps_adj_find(db, tgt, per, CPS_ADJ_DEDUCT):
+                await update.message.reply_text(
+                    "\u26a0\ufe0f \u0423\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0435 \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446 \u0443\u0436\u0435 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u043e.")
+                return
+            _cfg = cps_cfg(db)
+            _sc = cps_score(db, tgt, per, _cfg)
+            _pct = cps_salary_pct(_sc, _cfg)
+            if _pct <= 0:
+                await update.message.reply_text(
+                    f"\u2705 CPS {_sc} \u2014 \u0443\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u044f \u043d\u0435\u0442.")
+                return
+            _base = cps_deduct_base(db, tgt, per)
+            _amt = int(round(_base * _pct / 100.0))
+            if _amt <= 0:
+                await update.message.reply_text(
+                    "\u274c \u041d\u0435\u0442 \u043d\u0430\u0447\u0438\u0441\u043b\u0435\u043d\u043d\u043e\u0439 \u0437\u0430\u0440\u043f\u043b\u0430\u0442\u044b \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446.")
+                return
+            now_s = datetime.now(TZ).isoformat()
+            _note = (f"\u0423\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0435 CPS \u00b7 {_pct}% \u00b7 CPS {_sc} [{CPS_ADJ_DEDUCT}]")
+            db.execute(
+                "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (tgt, -_amt, _note, per, acting_branch_id(db, tgt), user.id, user.first_name, now_s))
+            db.commit()
+            _tn = display_name_for(db, tgt, fallback=f"ID {tgt}")
+            log_action(db, "cps_deduct_apply", user.id, user.first_name, tgt, _tn,
+                       {"period": per, "score": _sc, "pct": _pct, "base": _base, "amount": -_amt})
+            try:
+                await context.bot.send_message(
+                    chat_id=int(tgt),
+                    text=(f"\u26a0\ufe0f CPS {_sc} \u00b7 {per}"
+                          f"\n\u0423\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0435 {_pct}%: \u2212{fmt_sum(_amt)} \u0441\u0443\u043c"))
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"\u2705 {_tn} \u00b7 CPS {_sc} \u00b7 \u2212{fmt_sum(_amt)} \u0441\u0443\u043c ({_pct}%)")
+
+        elif action == "cps_money_undo":
+            # Yanlis uygulanan kesinti/primi geri al. Satir SILINIR (bakiye
+            # yerine gelsin) ama silinen kaydin tamami gunluge yazilir.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            try:
+                tgt = int(data.get("user_id") or 0)
+            except (TypeError, ValueError):
+                tgt = 0
+            per = (data.get("period") or current_period())[:7]
+            kind = CPS_ADJ_BONUS if str(data.get("kind") or "") == "bonus" else CPS_ADJ_DEDUCT
+            row = cps_adj_find(db, tgt, per, kind) if tgt else None
+            if not row:
+                await update.message.reply_text("\u274c \u0417\u0430\u043f\u0438\u0441\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.")
+                return
+            db.execute("DELETE FROM adjustments WHERE id=?", (row["id"],))
+            db.commit()
+            _tn = display_name_for(db, tgt, fallback=f"ID {tgt}")
+            log_action(db, "cps_money_undo", user.id, user.first_name, tgt, _tn,
+                       {"period": per, "kind": kind, "amount": row["amount"], "note": row["note"]})
+            await update.message.reply_text(
+                f"\u267b\ufe0f {_tn} \u00b7 {fmt_sum(abs(int(row['amount'] or 0)))} \u0441\u0443\u043c \u2014 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u043e")
+
         elif action == "cps_pool_confirm":
             # Owner: aylik CPS prim havuzunun dagitimini ONAYLA.
             # OTOMATIK DEGIL (spec §5): owner ozeti gorup onaylar.
@@ -6205,6 +6322,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (per, 0, r["uid"], r["score"], int(r["earned"]), (pool if is_w else 0),
                      total, is_w, user.id, user.first_name, now_s))
+                # PARAYI BAKIYEYE YAZ. Onceden dagitim yalniz `cps_payouts`ta
+                # duruyordu: kayitta vardi, kimsenin bakiyesinde yoktu.
+                # Pozitif adjustment = kisiye borc; odeme MEVCUT yoldan yapilir,
+                # CPS ikinci bir odeme kanali acmaz.
+                if total > 0 and not cps_adj_find(db, r["uid"], per, CPS_ADJ_BONUS):
+                    _bn = "\u041f\u0440\u0435\u043c\u0438\u044f CPS \u00b7 CPS " + str(r["score"])
+                    if is_w and pool > 0:
+                        _bn += " \u00b7 + \u0444\u043e\u043d\u0434 " + fmt_sum(pool)
+                    _bn += " [" + CPS_ADJ_BONUS + "]"
+                    db.execute(
+                        "INSERT INTO adjustments (user_id,amount,note,period,branch_id,"
+                        "added_by,added_by_name,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (r["uid"], total, _bn, per, acting_branch_id(db, r["uid"]),
+                         user.id, user.first_name, now_s))
             # GECMISE yazilir: para satiri delta=0 ile puani ETKILEMEZ.
             if pool > 0 and win_id:
                 db.execute(
@@ -6228,6 +6359,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _tx = (f"📅 CPS {per}"
                            f"\nВаш балл: {_r['score']}"
                            f"\nПремия: {fmt_sum(_r['earned'])} сум ({_r['bonus_pct']}%)")
+                    _tx += "\n\u0414\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u043e \u043a \u0431\u0430\u043b\u0430\u043d\u0441\u0443."
                     if _r["uid"] == win_id and pool > 0:
                         _tx += (f"\n🏆 Лучший результат месяца"
                                 f"\nМесячный фонд: +{fmt_sum(pool)} сум"
