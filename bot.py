@@ -2915,6 +2915,35 @@ def build_payroll_pdf(db, user_id, period, name=""):
     pdf.cell(0, 5, "Caffelito · Nero", align="C")
     return bytes(pdf.output())
 
+async def send_pdf_or_report(context, update, db, uid, blob, fname, caption=None,
+                             parse_mode=None):
+    """PDF'i kisiye gonder; olmazsa SADE dene; yine olmazsa owner'a NEDENI soyle.
+
+    Doner: gonderildiyse True.
+    """
+    try:
+        await context.bot.send_document(
+            chat_id=int(uid), document=io.BytesIO(blob), filename=fname,
+            caption=caption, parse_mode=parse_mode)
+        return True
+    except Exception as e:
+        logger.exception(f"PDF gonderilemedi (uid={uid}, ilk deneme): {e}")
+    # Caption/parse_mode yuzunden patlamis olabilir — dosya yine de gitsin.
+    try:
+        await context.bot.send_document(
+            chat_id=int(uid), document=io.BytesIO(blob), filename=fname)
+        return True
+    except Exception as e2:
+        logger.exception(f"PDF gonderilemedi (uid={uid}, sade deneme): {e2}")
+        _m = "❌ Файл не отправился."
+        try:
+            if get_role(db, uid) == "owner":
+                _m += f"\n`{type(e2).__name__}: {str(e2)[:200]}`"
+        except Exception:
+            pass
+        await update.message.reply_text(_m)
+        return False
+
 
 def build_reports(db, role, user_id):
     """Отчёт odaları için liste verisi. Owner → tüm baristalar; barista → sadece kendi
@@ -8526,8 +8555,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         elif action == "cash_report_pdf":
             # Raporu PDF yapip ISTEYENIN kendi sohbetine gonder (owner istegi:
-            # «Nero'nun kendi DM'sine insin»). Dosya `send_document` ile gider;
-            # ekran yalnizca «gonderildi» der.
+            # «Nero'nun kendi DM'sine insin»). Gonderim `send_pdf_or_report`ta:
+            # caption patlarsa sade yeniden dener, owner nedeni gorur.
             db = get_db()
             try:
                 rid = int(data.get("id") or 0)
@@ -8568,17 +8597,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _rawdt = str(row["date"] if row else (sh["start_time"] or ""))[:10]
             _dt = _rawdt.replace(".", "-") or "report"
             fname = f"Nero_{_nm}_{_dt}.pdf"
-            try:
-                await context.bot.send_document(
-                    chat_id=int(user.id),
-                    document=io.BytesIO(blob), filename=fname,
-                    caption=(f"📄 Сменный отчёт · {_rawnm} · {_rawdt}"
-                             + ("" if row else "\n_Кассовый отчёт по этой смене не сдан._")),
-                    parse_mode=(None if row else "Markdown"))
-            except Exception as e:
-                logger.exception(f"PDF gonderilemedi (uid={user.id}): {e}")
-                await update.message.reply_text(
-                    "❌ Файл не отправился.")
+            _cap = f"📄 Сменный отчёт · {_rawnm} · {_rawdt}"
+            if not row:
+                _cap += "\nКассовый отчёт по этой смене не сдан."
+            if not await send_pdf_or_report(context, update, db, user.id, blob, fname, _cap):
                 return
             log_action(db, "cash_report_pdf", user.id, user.first_name, None, None,
                        {"report_id": rid, "shift_id": sid, "size": len(blob)})
@@ -8615,14 +8637,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             _safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", _nm2).strip("_") or "otchet"
             fname = f"Nero_zarplata_{_safe}_{per}.pdf"
-            try:
-                await context.bot.send_document(
-                    chat_id=int(user.id),
-                    document=io.BytesIO(blob), filename=fname,
-                    caption=f"📄 Отчёт по зарплате · {_nm2} · {per}")
-            except Exception as e:
-                logger.exception(f"Zarplata PDF gonderilemedi (uid={user.id}): {e}")
-                await update.message.reply_text("❌ Файл не отправился.")
+            if not await send_pdf_or_report(context, update, db, user.id, blob, fname,
+                                            f"📄 Отчёт по зарплате · {_nm2} · {per}"):
                 return
             log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
                        {"period": per, "size": len(blob)})
