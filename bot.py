@@ -2579,6 +2579,133 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
 
+PDF_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+
+def _pdf_fmt(n):
+    """Rapordaki para/adet bicimi — ekranla ayni: 22.200"""
+    try:
+        return f"{int(n or 0):,}".replace(",", ".")
+    except Exception:
+        return "0"
+
+
+def build_report_pdf(db, rep_row):
+    """Bir kasa raporundan PDF uret, bayt olarak dondur.
+
+    Ekrandaki «Сменный отчёт» ile AYNI satirdan okur; ikinci bir hesap
+    yapilmaz. Font gomulu (Identity-H + ToUnicode), yani metin aranabilir
+    ve kopyalanabilir kaliyor.
+    """
+    from fpdf import FPDF
+
+    r = dict(rep_row)
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
+    pdf.add_font("nero", "B", os.path.join(PDF_FONT_DIR, "NeroSans-Bold.ttf"))
+    pdf.add_page()
+    W = pdf.w - pdf.l_margin - pdf.r_margin
+
+    def line(txt, sz=10, style="", gap=6, col=(40, 30, 16)):
+        pdf.set_font("nero", style, sz)
+        pdf.set_text_color(*col)
+        pdf.cell(0, gap, txt, new_x="LMARGIN", new_y="NEXT")
+
+    def row(left, right, sz=10, style="", gap=6.4, col=(40, 30, 16)):
+        pdf.set_font("nero", style, sz)
+        pdf.set_text_color(*col)
+        y = pdf.get_y()
+        pdf.cell(W * 0.62, gap, left, new_x="RIGHT", new_y="TOP")
+        pdf.set_xy(pdf.l_margin + W * 0.62, y)
+        pdf.cell(W * 0.38, gap, right, align="R", new_x="LMARGIN", new_y="NEXT")
+
+    def rule(pad=3):
+        pdf.ln(pad)
+        pdf.set_draw_color(214, 203, 184)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(pad)
+
+    # ── Baslik ──────────────────────────────────────────────────────────
+    line("СМЕННЫЙ ОТЧЁТ", 9, "B",
+         gap=5, col=(150, 132, 100))
+    line(str(r.get("user_name") or "?"), 19, "B", gap=9)
+    _dt = str(r.get("created_at") or "")[:16].replace("T", " ")
+    line(f"{r.get('date') or ''} · {_dt}", 9.5, "", gap=6, col=(120, 106, 84))
+    rule()
+
+    # ── Bardaklar ───────────────────────────────────────────────────────
+    line("СТАКАНЫ · было → "
+         "осталось = продано",
+         8.5, "B", gap=6, col=(150, 132, 100))
+    try:
+        _b = json.loads(r.get("bylo") or "{}")
+        _o = json.loads(r.get("ostalos") or "{}")
+        _s = json.loads(r.get("sold") or "{}")
+        _rs = json.loads(r.get("restock") or "{}")
+    except Exception:
+        _b = _o = _s = _rs = {}
+    _names = list(_b.keys()) or list(_s.keys())
+    for _k in _names:
+        _bv = int(_b.get(_k, 0) or 0)
+        _ov = int(_o.get(_k, 0) or 0)
+        _sv = int(_s.get(_k, 0) or 0)
+        _rv = int(_rs.get(_k, 0) or 0)
+        _mid = f"{_bv}" + (f" +{_rv}" if _rv else "") + f" → {_ov}"
+        row(f"{_k}", f"{_mid}   =  {_sv}", 9.5)
+    row("Итого продано",
+        f"{int(r.get('cups_total') or 0)} шт", 10.5, "B", gap=7)
+    rule()
+
+    # ── Odemeler ────────────────────────────────────────────────────────
+    line("ОПЛАТЫ", 8.5, "B", gap=6, col=(150, 132, 100))
+    for _lbl, _key in (("KARTA", "karta"), ("TERMINAL", "terminal"),
+                       ("CLICK", "click"), ("PAYME", "payme")):
+        _v = int(r.get(_key) or 0)
+        if _v:                       # sifir satiri cizilmez — gurultu
+            row(_lbl, _pdf_fmt(_v), 9.5)
+    row("Безнал итого",
+        _pdf_fmt(r.get("cashless")), 10, "B", gap=7)
+
+    # ── Harcamalar ──────────────────────────────────────────────────────
+    try:
+        _ex = json.loads(r.get("expenses") or "[]")
+    except Exception:
+        _ex = []
+    if _ex:
+        rule()
+        line("РАСХОДЫ", 8.5, "B", gap=6, col=(150, 132, 100))
+        for _e in _ex:
+            if isinstance(_e, dict):
+                row(str(_e.get("n") or ""), _pdf_fmt(_e.get("a")), 9.5)
+        row("Итого расходы",
+            _pdf_fmt(r.get("expenses_total")), 10, "B", gap=7)
+
+    # ── Kasa ────────────────────────────────────────────────────────────
+    rule()
+    line("КАССА", 8.5, "B", gap=6, col=(150, 132, 100))
+    row("Вышло", _pdf_fmt(r.get("vyshlo")), 9.5)
+    if int(r.get("na_sdachi") or 0):
+        row("На сдачу", _pdf_fmt(r.get("na_sdachi")), 9.5)
+    row("К сдаче", _pdf_fmt(r.get("kassa")), 13, "B", gap=9)
+
+    _note = str(r.get("note") or "").strip()
+    if _note:
+        rule()
+        pdf.set_font("nero", "", 9.5)
+        pdf.set_text_color(90, 78, 60)
+        pdf.multi_cell(0, 5.5, _note)
+
+    # ── Alt bilgi ───────────────────────────────────────────────────────
+    pdf.set_y(-14)
+    pdf.set_font("nero", "", 7.5)
+    pdf.set_text_color(160, 146, 122)
+    pdf.cell(0, 5, "Caffelito · Nero", align="C")
+
+    out = pdf.output()
+    return bytes(out)
+
+
 def build_reports(db, role, user_id):
     """Отчёт odaları için liste verisi. Owner → tüm baristalar; barista → sadece kendi
     (siparişler + mesai). Her sorgu defansif (kolon yoksa boş döner, state patlamasın)."""
@@ -8160,6 +8287,48 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💵 Дневной бонус: {fmt_sum(daily_pay)}\n"
                 "_Смена пересчитана: часы не менялись._",
                 parse_mode="Markdown")
+
+        elif action == "cash_report_pdf":
+            # Raporu PDF yapip ISTEYENIN kendi sohbetine gonder (owner istegi:
+            # «Nero'nun kendi DM'sine insin»). Dosya `send_document` ile gider;
+            # ekran yalnizca «gonderildi» der.
+            db = get_db()
+            try:
+                rid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                rid = 0
+            row = db.execute("SELECT * FROM cashreports WHERE id=?", (rid,)).fetchone() if rid else None
+            if not row:
+                await update.message.reply_text("❌ Отчёт не найден.")
+                return
+            # ERISIM: owner her raporu, barista YALNIZ kendi raporunu alabilir.
+            # Baskasinin kasa dokumu kisisel is bilgisi.
+            if get_role(db, user.id) != "owner" and int(row["user_id"] or 0) != int(user.id):
+                await update.message.reply_text("❌ Нет доступа.")
+                return
+            try:
+                blob = build_report_pdf(db, row)
+            except Exception as e:
+                logger.exception(f"PDF uretimi basarisiz (id={rid}): {e}")
+                await update.message.reply_text(
+                    "❌ Не удалось собрать PDF.")
+                return
+            _nm = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(row["user_name"] or "otchet")).strip("_") or "otchet"
+            _dt = str(row["date"] or "")[:10].replace(".", "-") or "report"
+            fname = f"Nero_{_nm}_{_dt}.pdf"
+            try:
+                await context.bot.send_document(
+                    chat_id=int(user.id),
+                    document=io.BytesIO(blob), filename=fname,
+                    caption=(f"📄 Сменный отчёт · "
+                             f"{row['user_name'] or '?'} · {row['date'] or ''}"))
+            except Exception as e:
+                logger.exception(f"PDF gonderilemedi (uid={user.id}): {e}")
+                await update.message.reply_text(
+                    "❌ Файл не отправился.")
+                return
+            log_action(db, "cash_report_pdf", user.id, user.first_name, None, None,
+                       {"report_id": rid, "size": len(blob)})
 
         elif action == "cash_report_edit":
             db = get_db()

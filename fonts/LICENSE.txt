@@ -1,0 +1,10 @@
+DejaVu Fonts — Bitstream Vera / Public Domain lisansi.
+Kaynak: https://github.com/dejavu-fonts/dejavu-fonts (surum 2.37)
+
+Buradaki NeroSans.ttf ve NeroSans-Bold.ttf, DejaVuSans ve DejaVuSans-Bold
+fontlarinin ALT KUMESIDIR: yalnizca Kiril, Latin, rakam ve raporda gecen
+birkac isaret birakildi (1.46 MB -> 33 KB). Yeniden uretmek icin:
+  fonttools subset DejaVuSans.ttf --unicodes=U+0020-007E,U+0400-045F,...
+
+Neden gerekli: PDF'te Kiril metin ancak GOMULU fontla dogru cikar. Font
+gommeden uretilen PDF «Смена» yerine «Ñìåíà» gosterir (denendi, dogrulandi).
