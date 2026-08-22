@@ -1813,6 +1813,56 @@ def cps_deduct_base(db, user_id, period):
         return 0
 
 
+def cps_do_restore(db, period, branch_id, cfg, actor_id, actor_name):
+    """Takim odulunu UYGULA: subedeki herkesin CPS'ini `fr_restore`a cikar.
+
+    Yalnizca YUKARI ceker — zaten daha yuksek olan kimsenin puani DUSMEZ.
+    Her kisi icin bir gecmis satiri yazilir (sessiz degisiklik yok) ve ayni
+    ay+sube icin IKINCI kez uygulanmaz.
+
+    Bildirimleri KENDISI GONDERMEZ: burasi senkron, gonderim async. Kime ne
+    yazilacagini liste olarak dondurur, cagiran gonderir. Boylece hem
+    otomatik hem elle yol ayni govdeyi kullanir.
+
+    Doner: (uygulanan_kisi_sayisi, [(uid, metin), ...])
+    """
+    _to = int(cfg["fr_restore"])
+    _key = f"branch:{int(branch_id)}"
+    if db.execute("SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
+                  (period, _key)).fetchone():
+        return 0, []
+    _reached, _tot = cps_fr_reached(db, period, branch_id, cfg)
+    if not _reached:
+        return 0, []
+    _fp = (f"{float(_tot):.2f}").rstrip("0").rstrip(".")
+    now_s = datetime.now(TZ).isoformat()
+    notes = []
+    done = 0
+    for _r in db.execute(
+            "SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+            "AND COALESCE(branch_id,1)=?", (int(branch_id),)).fetchall():
+        _uid = int(_r["user_id"])
+        _cur = cps_score(db, _uid, period, cfg)
+        if _cur >= _to:
+            continue
+        db.execute(
+            "INSERT INTO cps_events (user_id,period,kind,title,category,delta,amount,note,"
+            "added_by,added_by_name,created_at) VALUES (?,?,?,?,?,?,0,?,?,?,?)",
+            (_uid, period, "restore",
+             "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043f\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0435",
+             "Franchise", _to - _cur, _key, actor_id, actor_name, now_s))
+        done += 1
+        notes.append((_uid,
+                      f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430 ({_fp}). "
+                      f"\u0412\u0430\u0448 CPS \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d: {_cur} \u2192 {_to}"))
+    if done:
+        db.commit()
+        log_action(db, "cps_fr_restore_auto", actor_id, actor_name, None, None,
+                   {"period": period, "branch_id": int(branch_id), "total": _tot,
+                    "to": _to, "people": done})
+    return done, notes
+
+
 def cps_fr_total(db, period, branch_id=None):
     """Donemdeki proverka sonuclarinin TOPLAMI (+ kac tanesi girilmis)."""
     try:
@@ -6326,6 +6376,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if sc <= 0:
                 await update.message.reply_text("\u274c \u0423\u043a\u0430\u0436\u0438\u0442\u0435 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438.")
                 return
+            # Sonuc bir YUZDE: 100'den fazlasi anlamsiz ve toplami bozar.
+            # Kirpmiyoruz — owner yanlis yazdigini gormeli.
+            if sc > 100:
+                await update.message.reply_text(
+                    "\u274c \u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c 100%.")
+                return
             _prev = db.execute(
                 "SELECT COUNT(*) AS n FROM cps_inspections WHERE period=? AND branch_id=?",
                 (per, bid)).fetchone()["n"]
@@ -6355,9 +6411,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {_fp(sc)}"
                     f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_fp(_tot)} / {int(_cfg['fr_target'])}")
             if _reached:
-                # OTOMATIK UYGULANMAZ: sart saglandi denir, geri yuklemeyi
-                # owner ayrica onaylar (havuz onayiyla ayni felsefe).
-                _msg += "\n\U0001f3af \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430 \u2014 \u043c\u043e\u0436\u043d\u043e \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c CPS."
+                # OTOMATIK (owner karari 2026-08-22): hedef asilinca CPS
+                # kendiliginden yenilenir. Onceden onaya bagliydi; owner
+                # «otomatik olsun» dedi. Ikinci kez uygulanmaz (fonksiyon
+                # icinde kontrol).
+                _rdone, _rnotes = cps_do_restore(db, per, bid, _cfg, user.id, user.first_name)
+                if _rdone:
+                    _msg += (f"\n\U0001f3af \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430 \u2014 CPS "
+                             f"\u043a\u043e\u043c\u0430\u043d\u0434\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d ({_rdone}).")
+                else:
+                    _msg += "\n\U0001f3af \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430."
+                for _nu, _nt in _rnotes:
+                    try:
+                        await context.bot.send_message(chat_id=int(_nu), text=_nt)
+                    except Exception:
+                        pass
+                try:
+                    _g2 = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (bid,)).fetchone()
+                    if _rdone and _g2 and _g2["group_chat_id"]:
+                        await context.bot.send_message(
+                            chat_id=int(_g2["group_chat_id"]),
+                            text=(f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_fp(_tot)} / "
+                                  f"{int(_cfg['fr_target'])}. CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b "
+                                  f"\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {int(_cfg['fr_restore'])}."))
+                except Exception:
+                    pass
             await update.message.reply_text(_msg)
 
         elif action == "cps_insp_del":
@@ -6381,11 +6459,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430.")
 
         elif action == "cps_fr_restore":
-            # TAKIM ODULU: sart saglandiysa subedeki calisanlarin CPS'i
-            # yapilandirilan degere CIKARILIR. Yalnizca YUKARI: zaten daha
-            # yuksek olan kimsenin puani DUSURULMEZ. Her kisi icin bir gecmis
-            # satiri yazilir (sessiz degisiklik yok) ve ayni ay+sube icin
-            # IKINCI kez uygulanmaz.
+            # ELLE TETIKLEME. Normalde OTOMATIK calisir (`cps_insp_add` icinde,
+            # hedef asilinca). Bu yol yedek: proverka silinip yeniden girilirse
+            # ya da otomatik yol bir sekilde kacirilirsa. Govde ORTAK
+            # (`cps_do_restore`) — iki kopya birbirinden ayrisirdi.
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
@@ -6400,49 +6477,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             _cfg = cps_cfg(db)
             _reached, _tot = cps_fr_reached(db, per, bid, _cfg)
+            _fpr = lambda v: (f"{float(v):.2f}").rstrip("0").rstrip(".")
             if not _reached:
                 await update.message.reply_text(
-                    f"\u274c \u0426\u0435\u043b\u044c \u043d\u0435 \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430: {_tot} / {int(_cfg['fr_target'])}")
+                    f"\u274c \u0426\u0435\u043b\u044c \u043d\u0435 \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430: {_fpr(_tot)} / {int(_cfg['fr_target'])}")
                 return
-            if db.execute("SELECT 1 FROM cps_events WHERE period=? AND kind='restore' AND note=? LIMIT 1",
-                          (per, f"branch:{bid}")).fetchone():
+            _done, _notes = cps_do_restore(db, per, bid, _cfg, user.id, user.first_name)
+            if not _done:
                 await update.message.reply_text(
                     "\u26a0\ufe0f \u0423\u0436\u0435 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043e \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446.")
                 return
-            _to = int(_cfg["fr_restore"])
-            _rows = db.execute(
-                "SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
-                "AND COALESCE(branch_id,1)=?", (bid,)).fetchall()
-            now_s = datetime.now(TZ).isoformat()
-            _done = 0
-            for _r in _rows:
-                _uid = int(_r["user_id"])
-                _cur = cps_score(db, _uid, per, _cfg)
-                if _cur >= _to:
-                    continue
-                db.execute(
-                    "INSERT INTO cps_events (user_id,period,kind,title,category,delta,amount,note,"
-                    "added_by,added_by_name,created_at) VALUES (?,?,?,?,?,?,0,?,?,?,?)",
-                    (_uid, per, "restore",
-                     "\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0435 \u043f\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0435",
-                     "Franchise", _to - _cur, f"branch:{bid}", user.id, user.first_name, now_s))
-                _done += 1
+            for _nu, _nt in _notes:
                 try:
-                    await context.bot.send_message(
-                        chat_id=_uid,
-                        text=f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430 ({_tot}). \u0412\u0430\u0448 CPS \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d: {_cur} \u2192 {_to}")
+                    await context.bot.send_message(chat_id=int(_nu), text=_nt)
                 except Exception:
                     pass
-            db.commit()
-            log_action(db, "cps_fr_restore", user.id, user.first_name, None, None,
-                       {"period": per, "branch_id": bid, "total": _tot, "to": _to, "people": _done})
-            # Sube grubuna da bildir — takim odulu takimca gorulsun.
             try:
                 _g = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (bid,)).fetchone()
                 if _g and _g["group_chat_id"]:
                     await context.bot.send_message(
                         chat_id=int(_g["group_chat_id"]),
-                        text=f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_tot} / {int(_cfg['fr_target'])}. CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {_to}.")
+                        text=(f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_fpr(_tot)} / "
+                              f"{int(_cfg['fr_target'])}. CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b "
+                              f"\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {int(_cfg['fr_restore'])}."))
             except Exception:
                 pass
             await update.message.reply_text(
