@@ -420,6 +420,35 @@ def get_db():
         code TEXT, updated_by INTEGER, updated_by_name TEXT, updated_at TEXT,
         PRIMARY KEY (week_key, day, user_id))""")
     # ─── Выходной заявкаları (barista → owner onayı) ───
+    # ─── AÇILIŞ GECİKMESİ PARA CEZASI (Opening Delay Penalty) ───
+    # CPS DEĞİLDİR. CPS bir performans PUANIDIR; bu, sabah açılışının
+    # gecikmesinden doğan PARA cezasıdır. Franchise cezası da ayrı bir şeydir.
+    # Üçü birbirine karışmaz — her biri kendi tablosunda.
+    #
+    # Kayıt vardiya başlarken OTOMATİK oluşur ama `pending` durur: hiçbir para
+    # owner onayı olmadan kesinleşmez. Onaylanınca `fines`a bir satır yazılır
+    # (para bakiyeye ORADAN girer, ikinci bir ödeme kanalı açılmaz) ve o
+    # satırın id'si burada saklanır — karar geri alınırsa ceza da silinir.
+    #
+    # `amount_calc` kuralın ürettiği tutar, `amount` owner'ın onayladığı tutar.
+    # İkisi ayrı durur ki denetimde «ne hesaplandı / ne onaylandı» görünsün.
+    db.execute("""CREATE TABLE IF NOT EXISTS opening_delays (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, user_name TEXT, branch_id INTEGER, shift_id INTEGER,
+        code TEXT, date TEXT, period TEXT,
+        scheduled TEXT, actual TEXT,
+        delay_min INTEGER, grace_min INTEGER, charge_min INTEGER,
+        rate_hour INTEGER, amount_calc INTEGER, amount INTEGER,
+        status TEXT DEFAULT 'pending',
+        fine_id INTEGER,
+        decided_by INTEGER, decided_by_name TEXT, decided_at TEXT,
+        created_at TEXT)""")
+    try:
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_opdelay_shift "
+                   "ON opening_delays(shift_id)")
+    except sqlite3.OperationalError:
+        pass
+
     db.execute("""CREATE TABLE IF NOT EXISTS dayoff_requests (
         id INTEGER PRIMARY KEY,
         user_id INTEGER, week_key TEXT, day INTEGER, note TEXT,
@@ -1885,6 +1914,210 @@ def cps_fr_reached(db, period, branch_id=None, cfg=None):
     total, _n = cps_fr_total(db, period, branch_id)
     return total >= int(cfg["fr_target"]), total
 
+# ═══ AÇILIŞ GECİKMESİ PARA CEZASI ═══════════════════════════════════════
+# Owner kuralı (2026-08-22): ilk `grace` dakika normal CPS ile değerlendirilir;
+# ONDAN SONRAKİ her dakika ayrıca PARA cezasıdır. Tutar hard-code DEĞİL:
+#   ceza = (gecikme − grace) dakika × (saatlik ücret / 60)
+OP_DEFAULTS = {
+    "on": 1,           # açık/kapalı
+    "grace": 60,       # dakika — buraya kadar para cezası yok (CPS ayrı işler)
+    "per_hour": 100000,  # сум/saat. TEK KAYNAK — dakikalık bundan türer,
+                         # iki ayrı sayı tutmak ikisinin ayrışması demekti.
+    "codes": [],       # hangi vardiya ŞABLONLARI «açılış» sayılır (owner seçer)
+    "branches": [],    # hangi şubelerde aktif — BOŞ = hepsi
+}
+OP_FINE_TYPE = "opening_delay"
+
+
+def op_cfg(db):
+    """Açılış cezası ayarları (meta üzerinden ezilebilir)."""
+    cfg = dict(OP_DEFAULTS)
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='opening_penalty'").fetchone()
+        if r and r["val"]:
+            _j = json.loads(r["val"])
+            if isinstance(_j, dict):
+                for k in cfg:
+                    if k in _j:
+                        cfg[k] = _j[k]
+    except Exception:
+        pass
+    # Tipleri sabitle: ekrandan string gelebilir.
+    for _k in ("on", "grace", "per_hour"):
+        try:
+            cfg[_k] = int(float(cfg[_k]))
+        except Exception:
+            cfg[_k] = OP_DEFAULTS[_k]
+    for _k in ("codes", "branches"):
+        if not isinstance(cfg[_k], list):
+            cfg[_k] = []
+    cfg["grace"] = max(0, cfg["grace"])
+    cfg["per_hour"] = max(0, cfg["per_hour"])
+    return cfg
+
+
+def op_cfg_save(db, patch):
+    cfg = op_cfg(db)
+    for k in OP_DEFAULTS:
+        if k in patch:
+            cfg[k] = patch[k]
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('opening_penalty', ?)",
+               (json.dumps(cfg, ensure_ascii=False),))
+    db.commit()
+    return op_cfg(db)
+
+
+def op_amount(charge_min, per_hour):
+    """Dakika × (saatlik / 60). Kuruş yok: сум tam sayıya yuvarlanır.
+
+    60 dk × 100.000/saat = tam 100.000. 1 dk = 1.667 (1.666,67'nin yuvarlağı).
+    """
+    try:
+        return int(round(max(0, int(charge_min)) * float(per_hour) / 60.0))
+    except Exception:
+        return 0
+
+
+def op_scheduled(db, user_id, when_dt, tpls=None):
+    """O kişinin O GÜN için planlanan açılış anı → (datetime, code) ya da (None, "").
+
+    Kaynak: График. `shift_grid` o günün şablon kodunu, `shift_templates` o
+    kodun başlangıç saatini verir. Şube açılış saati DEĞİL kişinin PLANI
+    esas alınır: ceza kişiye kesiliyor, kişinin yükümlülüğü de planıdır.
+    """
+    try:
+        d = when_dt.date()
+        monday = d - timedelta(days=d.weekday())
+        row = db.execute(
+            "SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+            (monday.isoformat(), int(d.weekday()), int(user_id))).fetchone()
+        if not row or not row["code"] or row["code"] == "off":
+            return None, ""
+        code = row["code"]
+        tpls = tpls if tpls is not None else grid_templates(db)
+        t = tpls.get(code)
+        if not t or not t.get("start"):
+            return None, ""
+        hh, mm = str(t["start"]).split(":")
+        return (datetime(d.year, d.month, d.day)
+                + timedelta(hours=int(hh), minutes=int(mm))), code
+    except Exception as e:
+        logger.warning(f"op_scheduled: {e}")
+        return None, ""
+
+
+def op_register(db, shift_row):
+    """Vardiya başlarken açılış gecikmesini KAYDET (pending).
+
+    Hiçbir para hareketi yapmaz — yalnızca olguyu yazar. Kesinleşme owner
+    onayıyla olur. Kayıt yalnızca ÜCRETLENDİRİLECEK gecikme varsa açılır:
+    grace içinde kalan gecikme bu mekanizmanın konusu değildir (o CPS'in işi).
+
+    Döner: kayıt satırı ya da None.
+    """
+    try:
+        cfg = op_cfg(db)
+        if not cfg["on"] or cfg["per_hour"] <= 0:
+            return None
+        sh = dict(shift_row)
+        sid = int(sh.get("id") or 0)
+        if not sid or not sh.get("start_time"):
+            return None
+        if db.execute("SELECT 1 FROM opening_delays WHERE shift_id=? LIMIT 1",
+                      (sid,)).fetchone():
+            return None                      # aynı vardiya iki kez cezalanmaz
+        actual = datetime.fromisoformat(sh["start_time"])
+        sched, code = op_scheduled(db, int(sh.get("user_id") or 0), actual)
+        if not sched:
+            return None                      # plan yok → geç kalınacak bir şey yok
+        # AÇILIŞ SEÇİMİ owner'ın: hangi şablonlar açılış sayılıyor.
+        if code not in (cfg["codes"] or []):
+            return None
+        bid = int(sh.get("branch_id") or 0)
+        if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
+            return None
+        delay = int((actual - sched).total_seconds() // 60)
+        if delay <= 0:
+            return None
+        charge = delay - int(cfg["grace"])
+        if charge <= 0:
+            return None                      # grace içinde: para cezası YOK
+        amt = op_amount(charge, cfg["per_hour"])
+        if amt <= 0:
+            return None
+        _u = db.execute("SELECT COALESCE(display_name,name) AS nm FROM users "
+                        "WHERE user_id=?", (int(sh.get("user_id") or 0),)).fetchone()
+        cur = db.execute(
+            "INSERT INTO opening_delays (user_id,user_name,branch_id,shift_id,code,date,"
+            "period,scheduled,actual,delay_min,grace_min,charge_min,rate_hour,"
+            "amount_calc,amount,status,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
+            (int(sh.get("user_id") or 0), (_u["nm"] if _u else "") or "", bid, sid, code,
+             actual.strftime("%Y-%m-%d"), sh.get("period") or actual.strftime("%Y-%m"),
+             sched.isoformat(), actual.isoformat(), delay, int(cfg["grace"]), charge,
+             int(cfg["per_hour"]), amt, amt, datetime.now(TZ).isoformat()))
+        db.commit()
+        return db.execute("SELECT * FROM opening_delays WHERE id=?",
+                          (cur.lastrowid,)).fetchone()
+    except Exception as e:
+        logger.exception(f"op_register: {e}")
+        return None
+
+
+def op_reason(row):
+    """Ceza satırının gerekçesi — çalışan NEDEN kesildiğini görebilmeli."""
+    r = dict(row)
+    _s = str(r.get("scheduled") or "")[11:16]
+    _a = str(r.get("actual") or "")[11:16]
+    return (f"Опоздание с открытием · план {_s} → факт {_a} · "
+            f"{int(r.get('delay_min') or 0)} мин "
+            f"(сверх {int(r.get('grace_min') or 0)} мин: "
+            f"{int(r.get('charge_min') or 0)} мин)")
+
+
+def op_approve(db, rec_id, actor_id, actor_name, amount=None):
+    """Onayla: `fines`a satır yaz — para bakiyeye ORADAN girer.
+
+    Açılış cezası ikinci bir ödeme kanalı AÇMAZ; mevcut ceza kanalını
+    `type='opening_delay'` etiketiyle kullanır, böylece maaş hesabı,
+    ekranlar ve PDF onu zaten gördükleri gibi görür.
+    """
+    row = db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone()
+    if not row:
+        return None, "Запись не найдена."
+    if row["status"] == "approved":
+        return None, "Уже утверждено."
+    amt = int(row["amount_calc"] or 0) if amount is None else max(0, int(amount))
+    if amt <= 0:
+        return None, "Сумма должна быть больше нуля."
+    cur = db.execute(
+        "INSERT INTO fines (user_id, amount, reason, type, period, added_by, "
+        "added_by_name, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (row["user_id"], amt, op_reason(row), OP_FINE_TYPE, row["period"],
+         actor_id, actor_name or "", datetime.now(TZ).isoformat()))
+    db.execute("UPDATE opening_delays SET status='approved', amount=?, fine_id=?, "
+               "decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+               (amt, cur.lastrowid, actor_id, actor_name or "",
+                datetime.now(TZ).isoformat(), int(rec_id)))
+    db.commit()
+    return db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone(), ""
+
+
+def op_reject(db, rec_id, actor_id, actor_name):
+    """Reddet. Zaten onaylanmışsa yazılan ceza satırı da GERİ ALINIR —
+    yoksa ekranda «reddedildi» yazarken para kesik kalırdı."""
+    row = db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone()
+    if not row:
+        return None, "Запись не найдена."
+    if row["fine_id"]:
+        db.execute("DELETE FROM fines WHERE id=? AND type=?",
+                   (int(row["fine_id"]), OP_FINE_TYPE))
+    db.execute("UPDATE opening_delays SET status='rejected', fine_id=NULL, "
+               "decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+               (actor_id, actor_name or "", datetime.now(TZ).isoformat(), int(rec_id)))
+    db.commit()
+    return db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone(), ""
+
 
 def current_period():
     return datetime.now(TZ).strftime("%Y-%m")
@@ -2498,7 +2731,15 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
          start_dt.isoformat(), None, "", bid,
          _role, _pi.get("cat_id"), _pi.get("cat_name") or "", int(_pi.get("rate") or 0)))
     db.commit()
-    return db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
+    _row = db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
+    # AÇILIŞ GECİKMESİ: kayıt burada açılır — iki ayrı başlatma yolu var
+    # (barista kendi başlatır, owner zorla başlatır) ve ikisi de buradan geçer.
+    # Para hareketi YOK: yalnızca olgu yazılır, kesinleşme owner onayıyla.
+    try:
+        op_register(db, _row)
+    except Exception as _e:
+        logger.warning(f"op_register (start_shift): {_e}")
+    return _row
 
 
 def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
@@ -3096,6 +3337,23 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── Açılış gecikmesi cezası ──
+    # Owner: BEKLEYENLER + son kararlar (onay ekranı). Barista: YALNIZ kendi
+    # kayıtları — «neden kesildi» sorusunun cevabı kendi hesabında dursun.
+    try:
+        _opc = op_cfg(db)
+        if role == "owner":
+            _opr = db.execute(
+                "SELECT * FROM opening_delays ORDER BY "
+                "CASE status WHEN 'pending' THEN 0 ELSE 1 END, id DESC LIMIT 60").fetchall()
+        else:
+            _opr = db.execute(
+                "SELECT * FROM opening_delays WHERE user_id=? ORDER BY id DESC LIMIT 30",
+                (user_id,)).fetchall()
+        op_rows = [dict(r) for r in _opr]
+    except Exception:
+        _opc, op_rows = dict(OP_DEFAULTS), []
+
     # ── Rapor DIZINI: «bu vardiyanin raporu var mi?» ──
     # Vardiya penceresi 150, rapor penceresi 15'ti. Aradaki her vardiya
     # ekranda «Кассовый отчёт по этой смене не сдан» diyor ve owner'a
@@ -3292,6 +3550,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"kasa_index={quote(json.dumps(kasa_index))}",
+        f"op_cfg={quote(json.dumps(_opc, ensure_ascii=False))}",
+        f"op_rows={quote(json.dumps(op_rows, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
         f"backup={quote(json.dumps(backup_info, ensure_ascii=False))}",
@@ -8552,6 +8812,96 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💵 Дневной бонус: {fmt_sum(daily_pay)}\n"
                 "_Смена пересчитана: часы не менялись._",
                 parse_mode="Markdown")
+
+        elif action == "op_cfg_save":
+            # Acilis cezasi ayarlari. Owner'dan baskasi DOKUNAMAZ: bu para
+            # kesen bir kural.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _p = {}
+            if "on" in data:
+                _p["on"] = 1 if data.get("on") else 0
+            for _k in ("grace", "per_hour"):
+                if _k in data:
+                    try:
+                        _p[_k] = max(0, int(float(data.get(_k) or 0)))
+                    except (TypeError, ValueError):
+                        pass
+            # Dakikalik ucret AYRI SAKLANMAZ — saatlige cevrilir. Iki sayi
+            # tutmak ikisinin ayrismasi demekti.
+            if "per_minute" in data:
+                try:
+                    _p["per_hour"] = max(0, int(round(float(data.get("per_minute") or 0) * 60)))
+                except (TypeError, ValueError):
+                    pass
+            for _k in ("codes", "branches"):
+                if _k in data and isinstance(data.get(_k), list):
+                    _p[_k] = [str(x) if _k == "codes" else int(x) for x in data.get(_k)]
+            _cfg = op_cfg_save(db, _p)
+            log_action(db, "op_cfg_save", user.id, user.first_name, None, None, _cfg)
+            await update.message.reply_text(
+                "✅ Настройки штрафа за открытие сохранены."
+                if _cfg["on"] else "⏸ Штраф за открытие выключен.")
+
+        elif action == "op_approve":
+            # Onay: para BURADA kesinlesir. Otomatik kayit tek basina hicbir
+            # sey kesmiyordu.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _rid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _rid = 0
+            _amt = None
+            if data.get("amount") not in (None, ""):
+                try:
+                    _amt = max(0, int(float(data.get("amount"))))
+                except (TypeError, ValueError):
+                    _amt = None
+            _row, _err = op_approve(db, _rid, user.id, user.first_name or "", _amt)
+            if _err:
+                await update.message.reply_text("❌ " + _err)
+                return
+            log_action(db, "op_approve", user.id, user.first_name,
+                       _row["user_id"], _row["user_name"],
+                       {"id": _rid, "amount": int(_row["amount"] or 0)})
+            # Calisan NEDEN kesildigini gormeli — sessiz kesinti kabul edilemez.
+            try:
+                await context.bot.send_message(
+                    chat_id=int(_row["user_id"]),
+                    text=("⏰ *Опоздание с открытием*\n"
+                          f"План {str(_row['scheduled'])[11:16]} → факт "
+                          f"{str(_row['actual'])[11:16]}\n"
+                          f"Опоздание {int(_row['delay_min'] or 0)} мин · "
+                          f"без штрафа {int(_row['grace_min'] or 0)} мин\n"
+                          f"К оплате {int(_row['charge_min'] or 0)} мин · "
+                          f"*{fmt_sum(_row['amount'])} сум*"),
+                    parse_mode="Markdown")
+            except Exception as _e:
+                logger.warning(f"op_approve bildirim: {_e}")
+            await update.message.reply_text(
+                f"✅ Штраф утверждён · {fmt_sum(_row['amount'])} сум")
+
+        elif action == "op_reject":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _rid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _rid = 0
+            _row, _err = op_reject(db, _rid, user.id, user.first_name or "")
+            if _err:
+                await update.message.reply_text("❌ " + _err)
+                return
+            log_action(db, "op_reject", user.id, user.first_name,
+                       _row["user_id"], _row["user_name"], {"id": _rid})
+            await update.message.reply_text("✅ Штраф отменён.")
 
         elif action == "cash_report_pdf":
             # Raporu PDF yapip ISTEYENIN kendi sohbetine gonder (owner istegi:
