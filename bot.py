@@ -2582,6 +2582,48 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
 PDF_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 
+# Icecek id -> ekranda gorunen ad. Kaynak: nero-data.js `DRINK_LIST` +
+# `CUP_SIZES` — birebir ayni sira, ayni adlar. Kasa raporu YOKKEN bardaklar
+# vardiyanin `drinks`inden geliyor ve orada yalniz id var.
+DRINK_ORDER = ["ml500", "ml400", "ml300", "ml200", "ml100", "dome400", "dome300"]
+DRINK_NAMES = {
+    "ml500": "Стакан 500", "ml400": "Стакан 400", "ml300": "Стакан 300",
+    "ml200": "Стакан 200", "ml100": "Стакан 100",
+    "dome400": "Купол 400", "dome300": "Купол 300",
+}
+
+
+def shift_as_report(sh_row):
+    """Kasa raporu OLMAYAN vardiyadan PDF satiri uretir.
+
+    Yalnizca SATILAN biliniyor — было/осталось ve para YOK, uydurulmaz.
+    Owner istegi: «bardak sayimi yapilmayan raporlarin da PDF'i insin, bos
+    olsa da fark etmez».
+    """
+    sh = dict(sh_row)
+    try:
+        dk = json.loads(sh.get("drinks") or "{}")
+    except Exception:
+        dk = {}
+    sold = {}
+    for _id in DRINK_ORDER:
+        _v = int(dk.get(_id) or 0)
+        if _v:
+            sold[DRINK_NAMES[_id]] = _v
+    _st = str(sh.get("start_time") or "")
+    _d = ""
+    if len(_st) >= 10:
+        _d = _st[8:10] + "." + _st[5:7] + "." + _st[0:4]
+    return {
+        "user_name": sh.get("nm") or sh.get("user_name") or "",
+        "date": _d, "created_at": _st,
+        "bylo": "{}", "restock": "{}", "ostalos": "{}",
+        "sold": json.dumps(sold, ensure_ascii=False),
+        "cups_total": sum(sold.values()),
+        "hours": sh.get("hours") or 0,
+    }
+
+
 def _pdf_fmt(n):
     """Rapordaki para/adet bicimi — ekranla ayni: 22.200"""
     try:
@@ -2590,12 +2632,17 @@ def _pdf_fmt(n):
         return "0"
 
 
-def build_report_pdf(db, rep_row):
+def build_report_pdf(db, rep_row, partial=False):
     """Bir kasa raporundan PDF uret, bayt olarak dondur.
 
     Ekrandaki «Сменный отчёт» ile AYNI satirdan okur; ikinci bir hesap
     yapilmaz. Font gomulu (Identity-H + ToUnicode), yani metin aranabilir
     ve kopyalanabilir kaliyor.
+
+    `partial=True`: satir kasa raporundan DEGIL vardiyadan uretildi. O zaman
+    yalniz satilan bardaklar biliniyor — para bolumleri hic cizilmez ve
+    kagitta raporun sunulmadigi YAZAR. Bos bir kagit, yanlis rakam basan
+    kagittan iyidir.
     """
     from fpdf import FPDF
 
@@ -2635,8 +2682,9 @@ def build_report_pdf(db, rep_row):
     rule()
 
     # ── Bardaklar ───────────────────────────────────────────────────────
-    line("СТАКАНЫ · было → "
-         "осталось = продано",
+    # Rapor yoksa satirlarda было/осталось YOK — baslik soz vermesin.
+    line("СТАКАНЫ · продано за смену" if partial
+         else "СТАКАНЫ · было → осталось = продано",
          8.5, "B", gap=6, col=(150, 132, 100))
     try:
         _b = json.loads(r.get("bylo") or "{}")
@@ -2651,11 +2699,25 @@ def build_report_pdf(db, rep_row):
         _ov = int(_o.get(_k, 0) or 0)
         _sv = int(_s.get(_k, 0) or 0)
         _rv = int(_rs.get(_k, 0) or 0)
-        _mid = f"{_bv}" + (f" +{_rv}" if _rv else "") + f" → {_ov}"
-        row(f"{_k}", f"{_mid}   =  {_sv}", 9.5)
+        if partial:
+            row(f"{_k}", f"{_sv}", 9.5)
+        else:
+            _mid = f"{_bv}" + (f" +{_rv}" if _rv else "") + f" → {_ov}"
+            row(f"{_k}", f"{_mid}   =  {_sv}", 9.5)
     row("Итого продано",
         f"{int(r.get('cups_total') or 0)} шт", 10.5, "B", gap=7)
     rule()
+
+    if partial:
+        # Kasa raporu yok: para hakkinda TEK KELIME etmiyoruz.
+        rule()
+        line("Кассовый отчёт по этой смене не сдан", 9.5, "", gap=6,
+             col=(120, 106, 84))
+        pdf.set_y(-14)
+        pdf.set_font("nero", "", 7.5)
+        pdf.set_text_color(160, 146, 122)
+        pdf.cell(0, 5, "Caffelito · Nero", align="C")
+        return bytes(pdf.output())
 
     # ── Odemeler ────────────────────────────────────────────────────────
     line("ОПЛАТЫ", 8.5, "B", gap=6, col=(150, 132, 100))
@@ -2704,6 +2766,154 @@ def build_report_pdf(db, rep_row):
 
     out = pdf.output()
     return bytes(out)
+
+
+
+def build_payroll_pdf(db, user_id, period, name=""):
+    """Bir kisinin BIR DONEMDEKI hesabi — owner'in calisana gonderdigi kagit.
+
+    HESAP YAPMAZ: her rakam `calc_summary`den gelir, yani ekranin ve botun
+    kullandigi ayni fonksiyondan. Ikinci bir hesap er ya da gec ekranla
+    ayrisir ve hangisinin dogru oldugu bilinemez.
+
+    «Odemeden sonrasi» ayri bir hesap DEGILDIR: `net` zaten yapilan odemeleri
+    dusuyor, yani «K выплате» her zaman KALAN tutardir. Odemeler ayrica
+    tarihleriyle listelenir ki calisan neyi ne zaman aldigini gorsun.
+    """
+    from fpdf import FPDF
+
+    su = calc_summary(db, user_id, period)
+    if not name:
+        _u = db.execute("SELECT COALESCE(display_name,name) AS nm FROM users WHERE user_id=?",
+                        (user_id,)).fetchone()
+        name = (_u["nm"] if _u else "") or ""
+
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
+    pdf.add_font("nero", "B", os.path.join(PDF_FONT_DIR, "NeroSans-Bold.ttf"))
+    pdf.add_page()
+    W = pdf.w - pdf.l_margin - pdf.r_margin
+
+    def line(txt, sz=10, style="", gap=6, col=(40, 30, 16)):
+        pdf.set_font("nero", style, sz)
+        pdf.set_text_color(*col)
+        pdf.cell(0, gap, txt, new_x="LMARGIN", new_y="NEXT")
+
+    def row(left, right, sz=10, style="", gap=6.4, col=(40, 30, 16)):
+        pdf.set_font("nero", style, sz)
+        pdf.set_text_color(*col)
+        y = pdf.get_y()
+        pdf.cell(W * 0.62, gap, left, new_x="RIGHT", new_y="TOP")
+        pdf.set_xy(pdf.l_margin + W * 0.62, y)
+        pdf.cell(W * 0.38, gap, right, align="R", new_x="LMARGIN", new_y="NEXT")
+
+    def rule(pad=3):
+        pdf.ln(pad)
+        pdf.set_draw_color(214, 203, 184)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(pad)
+
+    def head(t):
+        line(t, 8.5, "B", gap=6, col=(150, 132, 100))
+
+    _MON = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+            "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+    try:
+        _y, _m = period.split("-")
+        _per_txt = _MON[int(_m) - 1] + " " + _y
+    except Exception:
+        _per_txt = str(period)
+
+    # ── Baslik ──────────────────────────────────────────────────────────
+    line("ОТЧЁТ ПО ЗАРПЛАТЕ", 9, "B", gap=5, col=(150, 132, 100))
+    line(name or "?", 19, "B", gap=9)
+    line(_per_txt + " · сформирован "
+         + datetime.now(TZ).isoformat()[:16].replace("T", " "),
+         9.5, "", gap=6, col=(120, 106, 84))
+    rule()
+
+    # ── Vardiyalar ──────────────────────────────────────────────────────
+    _shifts = su.get("shifts") or []
+    head("СМЕНЫ · " + str(len(_shifts)) + " · часы · стаканы")
+    for _sh in _shifts:
+        _st = str(_sh.get("start_time") or "")
+        _d = (_st[8:10] + "." + _st[5:7]) if len(_st) >= 10 else "—"
+        try:
+            _dk = json.loads(_sh.get("drinks") or "{}")
+        except Exception:
+            _dk = {}
+        _cups = sum(int(v or 0) for v in _dk.values())
+        row(_d + "   " + str(round(float(_sh.get("hours") or 0), 2)) + " ч",
+            (str(_cups) + " шт") if _cups else "—", 9.5)
+    row("Всего часов", str(round(float(su.get("hours") or 0), 2)) + " ч", 10, "B", gap=7)
+    rule()
+
+    # ── Kazanc ──────────────────────────────────────────────────────────
+    head("НАЧИСЛЕНО")
+    row("Почасовая оплата", _pdf_fmt(su.get("hourly")), 9.5)
+    if int(su.get("tips") or 0):
+        row("Чаевые", _pdf_fmt(su.get("tips")), 9.5)
+    if int(su.get("overtime") or 0):
+        row("Сверхурочные (смены)", _pdf_fmt(su.get("overtime")), 9.5)
+    if int(su.get("ot_month") or 0):
+        row("Сверхурочные (месяц)", _pdf_fmt(su.get("ot_month")), 9.5)
+    if int(su.get("product_bonus") or 0):
+        row("Бонус за продукты", _pdf_fmt(su.get("product_bonus")), 9.5)
+    row("Итого начислено", _pdf_fmt(su.get("gross")), 10, "B", gap=7)
+
+    # Bardak bonusu KASADAN gunluk cikiyor: burada borc gibi gosterilemez.
+    if int(su.get("bonus") or 0):
+        line("Бонус за стаканы " + _pdf_fmt(su.get("bonus"))
+             + " — выдаётся из кассы в день смены, в сумму к выплате не входит",
+             8.5, "", gap=6, col=(150, 132, 100))
+
+    # ── Kesintiler ──────────────────────────────────────────────────────
+    _fines = su.get("fines_list") or []
+    if _fines:
+        rule()
+        head("ШТРАФЫ")
+        for _f in _fines:
+            row(str(_f.get("reason") or "—")[:60], "−" + _pdf_fmt(_f.get("amount")), 9.5)
+        row("Итого штрафы", "−" + _pdf_fmt(su.get("fines")), 10, "B", gap=7)
+
+    _adj = su.get("adjustments_list") or []
+    if _adj:
+        rule()
+        head("КОРРЕКТИРОВКИ")
+        for _a in _adj:
+            _v = int(_a.get("amount") or 0)
+            row(str(_a.get("note") or "—")[:60],
+                ("+" if _v >= 0 else "−") + _pdf_fmt(abs(_v)), 9.5)
+        row("Итого корректировки", _pdf_fmt(su.get("adjustments")), 10, "B", gap=7)
+
+    # ── Yapilan odemeler ────────────────────────────────────────────────
+    try:
+        _pays = db.execute(
+            "SELECT amount, paid_at, kind, note FROM payments "
+            "WHERE user_id=? AND period=? ORDER BY id", (user_id, period)).fetchall()
+    except Exception:
+        _pays = []
+    if _pays:
+        rule()
+        head("ВЫПЛАЧЕНО")
+        for _p in _pays:
+            _at = str(_p["paid_at"] or "")
+            _d = (_at[8:10] + "." + _at[5:7]) if len(_at) >= 10 else ""
+            _lbl = "Аванс" if (_p["kind"] or "") == "loan" else "Выплата"
+            row(_d + "   " + _lbl + ((" · " + str(_p["note"])[:30]) if _p["note"] else ""),
+                "−" + _pdf_fmt(_p["amount"]), 9.5)
+        row("Итого выплачено", "−" + _pdf_fmt(su.get("paid")), 10, "B", gap=7)
+
+    # ── Kalan ───────────────────────────────────────────────────────────
+    rule()
+    row("К ВЫПЛАТЕ", _pdf_fmt(su.get("net")), 14, "B", gap=10)
+
+    pdf.set_y(-14)
+    pdf.set_font("nero", "", 7.5)
+    pdf.set_text_color(160, 146, 122)
+    pdf.cell(0, 5, "Caffelito · Nero", align="C")
+    return bytes(pdf.output())
 
 
 def build_reports(db, role, user_id):
@@ -8323,38 +8533,99 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 rid = int(data.get("id") or 0)
             except (TypeError, ValueError):
                 rid = 0
+            try:
+                sid = int(data.get("sid") or 0)
+            except (TypeError, ValueError):
+                sid = 0
             row = db.execute("SELECT * FROM cashreports WHERE id=?", (rid,)).fetchone() if rid else None
-            if not row:
+            # RAPORSUZ VARDIYA: owner istedi — «bardak sayimi yapilmayan
+            # raporlarin da PDF'i insin, bos olsa da fark etmez». Kagit o zaman
+            # vardiyadan uretilir: yalniz satilan bardaklar, para YOK.
+            sh = None
+            if not row and sid:
+                sh = db.execute(
+                    "SELECT s.*, COALESCE(u.display_name,u.name) AS nm FROM shifts s "
+                    "LEFT JOIN users u ON u.user_id=s.user_id WHERE s.id=?", (sid,)).fetchone()
+            if not row and not sh:
                 await update.message.reply_text("❌ Отчёт не найден.")
                 return
             # ERISIM: owner her raporu, barista YALNIZ kendi raporunu alabilir.
             # Baskasinin kasa dokumu kisisel is bilgisi.
-            if get_role(db, user.id) != "owner" and int(row["user_id"] or 0) != int(user.id):
+            _owner_uid = int((row["user_id"] if row else sh["user_id"]) or 0)
+            if get_role(db, user.id) != "owner" and _owner_uid != int(user.id):
                 await update.message.reply_text("❌ Нет доступа.")
                 return
             try:
-                blob = build_report_pdf(db, row)
+                blob = (build_report_pdf(db, row) if row
+                        else build_report_pdf(db, shift_as_report(sh), partial=True))
             except Exception as e:
                 logger.exception(f"PDF uretimi basarisiz (id={rid}): {e}")
                 await update.message.reply_text(
                     "❌ Не удалось собрать PDF.")
                 return
-            _nm = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(row["user_name"] or "otchet")).strip("_") or "otchet"
-            _dt = str(row["date"] or "")[:10].replace(".", "-") or "report"
+            _rawnm = str((row["user_name"] if row else sh["nm"]) or "otchet")
+            _nm = re.sub(r"[^0-9A-Za-z_.-]+", "_", _rawnm).strip("_") or "otchet"
+            _rawdt = str(row["date"] if row else (sh["start_time"] or ""))[:10]
+            _dt = _rawdt.replace(".", "-") or "report"
             fname = f"Nero_{_nm}_{_dt}.pdf"
             try:
                 await context.bot.send_document(
                     chat_id=int(user.id),
                     document=io.BytesIO(blob), filename=fname,
-                    caption=(f"📄 Сменный отчёт · "
-                             f"{row['user_name'] or '?'} · {row['date'] or ''}"))
+                    caption=(f"📄 Сменный отчёт · {_rawnm} · {_rawdt}"
+                             + ("" if row else "\n_Кассовый отчёт по этой смене не сдан._")),
+                    parse_mode=(None if row else "Markdown"))
             except Exception as e:
                 logger.exception(f"PDF gonderilemedi (uid={user.id}): {e}")
                 await update.message.reply_text(
                     "❌ Файл не отправился.")
                 return
             log_action(db, "cash_report_pdf", user.id, user.first_name, None, None,
-                       {"report_id": rid, "size": len(blob)})
+                       {"report_id": rid, "shift_id": sid, "size": len(blob)})
+
+        elif action == "payroll_pdf":
+            # Kisinin DONEM hesabi PDF olarak ISTEYENIN sohbetine. Owner her 10
+            # gunde bir bunu calisana gonderiyor.
+            #
+            # ERISIM: owner herkesin, barista YALNIZ kendi hesabini alabilir.
+            # Baskasinin maasi kisisel bilgidir.
+            db = get_db()
+            _role = get_role(db, user.id)
+            try:
+                uid = int(data.get("uid") or 0)
+            except (TypeError, ValueError):
+                uid = 0
+            if not uid:
+                uid = int(user.id)
+            if _role != "owner" and uid != int(user.id):
+                await update.message.reply_text("❌ Нет доступа.")
+                return
+            per = str(data.get("period") or "").strip() or current_period()
+            _u = db.execute("SELECT COALESCE(display_name,name) AS nm FROM users "
+                            "WHERE user_id=?", (uid,)).fetchone()
+            if not _u:
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            _nm2 = _u["nm"] or ""
+            try:
+                blob = build_payroll_pdf(db, uid, per, _nm2)
+            except Exception as e:
+                logger.exception(f"Zarplata PDF basarisiz (uid={uid}, per={per}): {e}")
+                await update.message.reply_text("❌ Не удалось собрать PDF.")
+                return
+            _safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", _nm2).strip("_") or "otchet"
+            fname = f"Nero_zarplata_{_safe}_{per}.pdf"
+            try:
+                await context.bot.send_document(
+                    chat_id=int(user.id),
+                    document=io.BytesIO(blob), filename=fname,
+                    caption=f"📄 Отчёт по зарплате · {_nm2} · {per}")
+            except Exception as e:
+                logger.exception(f"Zarplata PDF gonderilemedi (uid={user.id}): {e}")
+                await update.message.reply_text("❌ Файл не отправился.")
+                return
+            log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
+                       {"period": per, "size": len(blob)})
 
         elif action == "cash_report_edit":
             db = get_db()
