@@ -2857,6 +2857,31 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── Rapor DIZINI: «bu vardiyanin raporu var mi?» ──
+    # Vardiya penceresi 150, rapor penceresi 15'ti. Aradaki her vardiya
+    # ekranda «Кассовый отчёт по этой смене не сдан» diyor ve owner'a
+    # «Внести отчёт» oneriyordu — raporu OLDUGU halde. Veri bozulmadi
+    # (sunucu ayni vardiyaya ikinci raporu reddediyor), ama ekran yalan
+    # soyluyordu ve raporu indirmenin yolu yoktu.
+    #
+    # Pencereyi buyutmek cozum DEGIL: olculdu, 150 TAM satir 704 KB tutuyor
+    # ve her eylemden sonra state yeniden yukleniyor. Bunun yerine pencerenin
+    # TAMAMI icin UC alanlik bir dizin gider — rapor id, sahibi, hangi
+    # vardiya. 300 satir ~12 KB. Ekran boylece dogruyu soyler ve PDF dugmesi
+    # calisir; PDF'i zaten sunucu VERITABANINDAN uretiyor, satirin payload'da
+    # olmasi gerekmiyor.
+    try:
+        if role == "owner":
+            _ki = db.execute("SELECT id,user_id,start_time FROM cashreports "
+                             "ORDER BY id DESC LIMIT 300").fetchall()
+        else:
+            _ki = db.execute("SELECT id,user_id,start_time FROM cashreports "
+                             "WHERE user_id=? ORDER BY id DESC LIMIT 300",
+                             (user_id,)).fetchall()
+        # Nesne degil DIZI: alan adlari 300 kez tekrarlanmasin.
+        kasa_index = [[r["id"], r["user_id"], r["start_time"] or ""] for r in _ki]
+    except Exception:
+        kasa_index = []
     # ── Yedekleme durumu — SADECE owner ──
     # «Son yedek ne zaman alındı» sorusunun cevabı ekranda dursun; sessizce
     # çalışmayı bırakan bir yedekleme, hiç olmayan yedeklemeden beterdir.
@@ -3027,6 +3052,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
+        f"kasa_index={quote(json.dumps(kasa_index))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
         f"backup={quote(json.dumps(backup_info, ensure_ascii=False))}",
