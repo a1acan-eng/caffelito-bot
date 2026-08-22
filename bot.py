@@ -1822,7 +1822,9 @@ def cps_fr_total(db, period, branch_id=None):
         else:
             r = db.execute("SELECT COALESCE(SUM(score),0) AS s, COUNT(*) AS n FROM cps_inspections "
                            "WHERE period=?", (period,)).fetchone()
-        return int(r["s"] or 0), int(r["n"] or 0)
+        # Toplam ONDALIK kalir: sonuclar yuzde (82.46 + 77.54 = 160).
+        # int() alsaydik her kontrol asagi yuvarlanir, hedef yanlis kacardi.
+        return round(float(r["s"] or 0), 2), int(r["n"] or 0)
     except Exception:
         return 0, 0
 
@@ -3260,7 +3262,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "bid": int(_mib),
                     "n": (get_branch(db, _mib) or {}).get("name", "") or "",
                     "total": _mtt, "target": int(_ccfg["fr_target"]),
-                    "need": max(0, int(_ccfg["fr_target"]) - _mtt),
+                    "need": round(max(0, float(_ccfg["fr_target"]) - _mtt), 2),
                     "slots": int(_ccfg.get("fr_count", 2) or 2),
                     "reached": 1 if _mrch else 0, "restored": 1 if _mrest else 0,
                     "restore_to": int(_ccfg["fr_restore"]),
@@ -3331,7 +3333,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 # `need`: hedefe kalan. Ilk kontrol girilince ekip «ikinciden
                 # en az bu kadar» diye somut bir sayi gorur — «hedef 160»
                 # tek basina kimseye ne yapmasi gerektigini soylemiyor.
-                _need = max(0, int(_ccfg["fr_target"]) - _tt)
+                _need = round(max(0, float(_ccfg["fr_target"]) - _tt), 2)
                 _insp.append({"bid": _bid, "n": _b["name"] or "", "total": _tt,
                               "reached": 1 if _rch else 0, "restored": 1 if _restored else 0,
                               "need": _need, "slots": int(_ccfg.get("fr_count", 2) or 2),
@@ -6312,7 +6314,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             per = (data.get("period") or current_period())[:7]
             try:
                 bid = int(data.get("branch_id") or 0)
-                sc = int(float(data.get("score") or 0))
+                # Sonuc bir YUZDE ve ondalikli olabilir (kagitta «82.46%»).
+                # Tam sayiya cevirmek hem sonucu hem hedef toplamini bozuyordu.
+                # Virgul de kabul edilir: Rusca klavyede ondalik ayraci odur.
+                sc = round(float(str(data.get("score") or 0).replace(",", ".")), 2)
             except (TypeError, ValueError):
                 bid, sc = 0, 0
             if not bid or not db.execute("SELECT 1 FROM branches WHERE id=?", (bid,)).fetchone():
@@ -6346,8 +6351,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"period": per, "branch_id": bid, "score": sc,
                         "total": _tot, "reached": 1 if _reached else 0})
             _bn = (db.execute("SELECT name FROM branches WHERE id=?", (bid,)).fetchone() or {})["name"]
-            _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {sc}"
-                    f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_tot} / {int(_cfg['fr_target'])}")
+            _fp = lambda v: (f"{float(v):.2f}").rstrip("0").rstrip(".")
+            _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {_fp(sc)}"
+                    f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_fp(_tot)} / {int(_cfg['fr_target'])}")
             if _reached:
                 # OTOMATIK UYGULANMAZ: sart saglandi denir, geri yuklemeyi
                 # owner ayrica onaylar (havuz onayiyla ayni felsefe).
