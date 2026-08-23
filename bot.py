@@ -5848,6 +5848,33 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             period = sh["period"]
             _rate = barista_pay_info(db, user.id)["rate"]  # kategorinin gerçek ставка'sı
             _bname = (get_branch(db, sh["branch_id"]) or {}).get("name", "") if sh["branch_id"] else ""
+            # DENETIM IZI: vardiyanin KAPANMASI da gunluge yazilir.
+            # Acilis kaydi 2026-08-23"te eklendi; kapanis onun ikinci
+            # yarisi: saatler burada kesinlesiyor ve PARAYA doniyor.
+            # Itiraz halinde «kac saat yazildi, saat elle mi girildi,
+            # vardiyaya ne odendi» sorularinin cevabi tek satirda dursun.
+            #
+            # `manual`: uygulama normal kapanista da end_time gonderiyor,
+            # dolayisiyla «custom_end var mi» olcusu HER ZAMAN dogru cikar
+            # ve hicbir sey soylemez. Acilistaki ile AYNI olcut kullanilir:
+            # istenen an SIMDIYE 3 dakikadan uzaksa elle girilmistir.
+            _end_manual = False
+            if custom_end:
+                try:
+                    _req_e = _parse_user_time(custom_end)
+                    if _req_e:
+                        _end_manual = abs((datetime.now(TZ).replace(tzinfo=None)
+                                           - _req_e).total_seconds()) > 180
+                except Exception:
+                    _end_manual = False
+            log_action(db, "shift_end", user.id, user.first_name, None, None,
+                       {"shift_id": sh["id"], "branch_id": sh["branch_id"],
+                        "start_time": sh["start_time"], "end_time": sh["end_time"],
+                        "requested_end": custom_end or "", "manual": _end_manual,
+                        "hours": hours, "cups": cups, "sweets": sweets,
+                        "hourly_pay": hourly_pay, "drinks_bonus": drinks_bonus,
+                        "dessert_bonus": dessert_bonus,
+                        "overtime": int(sh["overtime"] or 0), "total": total})
             s = calc_summary(db, user.id, period)
             # DM cevabı: kişisel — saatlik dahil net
             text = (f"🔴 *Смена закрыта!*"
