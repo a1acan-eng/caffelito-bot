@@ -2659,8 +2659,15 @@ def _parse_user_time(s):
         return None
     s = str(s).strip()
     try:
-        # Tam ISO
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(TZ).replace(tzinfo=None) if "T" in s else None
+        # Tam ISO. DIKKAT: burada eskiden `... if "T" in s else None`
+        # yaziyordu, yani `T` ICERMEYEN her girdi ORACIKTA None donuyor
+        # ve asagidaki `HH:MM` dali HIC calismiyordu — docstring kabul
+        # ettigini soylemesine ragmen. Boyle verilen bir saat sessizce
+        # «simdi»ye duserdi; acilista bu DAHA BUYUK gecikme ve DAHA
+        # BUYUK para cezasi demek. Artik ISO degilse ALTA dusuyor.
+        if "T" in s:
+            return (datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    .astimezone(TZ).replace(tzinfo=None))
     except Exception:
         pass
     # HH:MM formatı → bugün
