@@ -2880,6 +2880,39 @@ def _pdf_fmt(n):
         return "0"
 
 
+def _pdf_date(v):
+    """«2026-08-23» ya da «23.08.2026» → «23.08.2026». Cozulemezse oldugu gibi.
+
+    `cashreports.date` iki bicimde de kayitli olabiliyor; kagit ikisini de
+    ayni gostermeli.
+    """
+    t = str(v or "").strip()[:10]
+    if len(t) == 10 and t[4] == "-" and t[7] == "-":
+        return f"{t[8:10]}.{t[5:7]}.{t[0:4]}"
+    return t
+
+
+def _pdf_when(rep):
+    """Baslik altindaki zaman satiri.
+
+    Owner'in indirdigi ilk kagitta «2026-08-23 · 2026-08-23 16:36» yaziyordu:
+    ayni gun iki kez, biri ISO biri degil. Kural:
+      · rapor gunu ile kayit gunu AYNIYSA  → «23.08.2026 · 16:36»
+      · FARKLIYSA (rapor sonradan girilmis) → «21.08.2026 · внесён 23.08 16:36»
+        cunku o zaman «ne zaman girildi» gizlenmemesi gereken bir bilgi.
+    """
+    d = _pdf_date(rep.get("date"))
+    c = str(rep.get("created_at") or "").replace("T", " ")
+    cd, ct = _pdf_date(c), c[11:16]
+    if not d:
+        return (cd + (" · " + ct if ct else "")).strip(" ·")
+    if not cd:
+        return d
+    if cd == d:
+        return f"{d} · {ct}" if ct else d
+    return f"{d} · внесён {cd[:5]}" + (f" {ct}" if ct else "")
+
+
 def build_report_pdf(db, rep_row, partial=False):
     """Bir kasa raporundan PDF uret, bayt olarak dondur.
 
@@ -2925,8 +2958,7 @@ def build_report_pdf(db, rep_row, partial=False):
     line("СМЕННЫЙ ОТЧЁТ", 9, "B",
          gap=5, col=(150, 132, 100))
     line(str(r.get("user_name") or "?"), 19, "B", gap=9)
-    _dt = str(r.get("created_at") or "")[:16].replace("T", " ")
-    line(f"{r.get('date') or ''} · {_dt}", 9.5, "", gap=6, col=(120, 106, 84))
+    line(_pdf_when(r), 9.5, "", gap=6, col=(120, 106, 84))
     rule()
 
     # ── Bardaklar ───────────────────────────────────────────────────────
