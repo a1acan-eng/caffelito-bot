@@ -5782,6 +5782,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                      f"закрылась в {start_dt.strftime('%H:%M')} — передача смены)_")
                 except Exception:
                     pass
+            # DENETIM IZI: vardiyanin ACILMASI da gunluge yazilir.
+            # Owner tarafindaki her vardiya eylemi (zorla baslat/bitir,
+            # duzelt, sil) iz birakiyordu; baristanin kendi baslatmasi
+            # BIRAKMIYORDU. Acilis gecikmesi cezasi artik DOGRUDAN bu
+            # saatten para turetiyor: «saat neydi, elle mi girildi, ceza
+            # neden olustu» sorularinin cevabi tek yerde durmali.
+            try:
+                _od = db.execute("SELECT id, amount_calc FROM opening_delays "
+                                 "WHERE shift_id=?", (sh["id"],)).fetchone()
+            except Exception:
+                _od = None
+            log_action(db, "shift_start", user.id, user.first_name, None, None,
+                       {"shift_id": sh["id"], "branch_id": sh["branch_id"],
+                        "start_time": sh["start_time"],
+                        "requested": custom_start or "",
+                        "manual": bool(custom_start and not _near_now),
+                        "mode": _mode or "normal",
+                        "opening_delay_id": (_od["id"] if _od else None),
+                        "opening_delay_amount": (int(_od["amount_calc"] or 0) if _od else 0)})
             await update.message.reply_text(
                 f"🟢 *Смена началась!*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
