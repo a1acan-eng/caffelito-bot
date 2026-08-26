@@ -449,6 +449,15 @@ def get_db():
     except sqlite3.OperationalError:
         pass
 
+    # ─── POS satislari (tablet satis noktasi) ───
+    # AYRI modul: product_sales ve urun bonusuyla KARISMAZ. Her satir bir
+    # musteri siparisi; kim (user_id), hangi vardiya (shift_id), ne (items
+    # JSON), kac (total), nasil odendi (pay). void=1 iptal (soft).
+    db.execute("""CREATE TABLE IF NOT EXISTS pos_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER, user_id INTEGER, user_name TEXT, shift_id INTEGER,
+        items TEXT, total INTEGER, pay TEXT, period TEXT, created_at TEXT,
+        void INTEGER DEFAULT 0, voided_by INTEGER, voided_by_name TEXT, voided_at TEXT)""")
     db.execute("""CREATE TABLE IF NOT EXISTS dayoff_requests (
         id INTEGER PRIMARY KEY,
         user_id INTEGER, week_key TEXT, day INTEGER, note TEXT,
@@ -2119,6 +2128,117 @@ def op_reject(db, rec_id, actor_id, actor_name):
     return db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone(), ""
 
 
+
+# ═══ POS — SATIS NOKTASI (izole modul) ══════════════════════════════════
+POS_PAY = ("cash", "card", "qr")
+
+
+def pos_menu(db):
+    """Birlesik menu: icecekler + tatlilar + urunler. Her kalem:
+    {ref, name, price, kind, cat}. ref ON EKI kaynagi ayirir:
+      d:<drink_id>  ·  s:<dessert_id>  ·  p:<product_id>
+    Boylece uc katalog tek listede cakismadan durur. Fiyatlar mevcut
+    tablolardan; POS kendi fiyat tutmaz (tek kaynak).
+    """
+    out = []
+    try:
+        _pr = get_prices(db)
+        for _id in DRINK_ORDER:
+            out.append({"ref": "d:" + _id, "name": DRINK_NAMES.get(_id, _id),
+                        "price": int(_pr.get(_id, 0) or 0), "kind": "drink", "cat": "Напитки"})
+    except Exception as e:
+        logger.warning(f"pos_menu drinks: {e}")
+    try:
+        for r in db.execute("SELECT id,label,price FROM desserts_catalog "
+                            "WHERE COALESCE(active,1)=1 ORDER BY sort_order,id").fetchall():
+            out.append({"ref": "s:" + str(r["id"]), "name": r["label"],
+                        "price": int(r["price"] or 0), "kind": "dessert", "cat": "Десерты"})
+    except Exception as e:
+        logger.warning(f"pos_menu desserts: {e}")
+    try:
+        _catru = {"food": "Еда", "snack": "Снеки", "coffee": "Кофе",
+                  "icecream": "Мороженое", "drink": "Напитки"}
+        for p in get_product_catalog(db, only_active=True):
+            _c = str(p.get("category") or "")
+            out.append({"ref": "p:" + str(p["id"]), "name": p["name"],
+                        "price": int(p["price"] or 0), "kind": "product",
+                        "cat": _catru.get(_c, "Товары")})
+    except Exception as e:
+        logger.warning(f"pos_menu products: {e}")
+    return out
+
+
+def pos_shift_summaries(db):
+    """{shift_id: {rev, cash, card, qr, cups, count}} — iptal HARIC.
+
+    `cups` = icecek (ref "d:") kalemlerinin adet toplami; kasa raporundaki
+    «продано» ile karsilastirilir. `card`+`qr` = безнал karsiligi.
+    Yalniz son 60 gunun satislari — payload sismesin.
+    """
+    out = {}
+    try:
+        rows = db.execute(
+            "SELECT shift_id, items, total, pay FROM pos_orders "
+            "WHERE void=0 AND shift_id>0 AND substr(created_at,1,10) >= date('now','-60 days')"
+        ).fetchall()
+    except Exception:
+        return out
+    for r in rows:
+        sid = int(r["shift_id"] or 0)
+        if not sid:
+            continue
+        d = out.setdefault(sid, {"rev": 0, "cash": 0, "card": 0, "qr": 0, "cups": 0, "count": 0})
+        _t = int(r["total"] or 0)
+        d["rev"] += _t
+        _p = r["pay"] if r["pay"] in ("cash", "card", "qr") else "cash"
+        d[_p] += _t
+        d["count"] += 1
+        try:
+            for it in json.loads(r["items"] or "[]"):
+                if str(it.get("ref") or "").startswith("d:"):
+                    d["cups"] += int(it.get("qty") or 0)
+        except Exception:
+            pass
+    return out
+
+
+def pos_shift_of(db, user_id):
+    """Kisinin ACIK vardiyasi (varsa) → (shift_id, branch_id). Yoksa (0, ev sube)."""
+    try:
+        sh = get_active_shift(db, user_id)
+        if sh:
+            return int(sh["id"]), int(sh["branch_id"] or 0)
+    except Exception:
+        pass
+    try:
+        u = db.execute("SELECT branch_id FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return 0, int((u["branch_id"] if u else 0) or 0)
+    except Exception:
+        return 0, 0
+
+
+def pos_order_total(db, items):
+    """Kalemlerin toplamini SUNUCUDA hesapla — istemcinin toplamina guvenme.
+    Fiyat menuden dogrulanir; olmayan ref atlanir. Doner: (temiz_items, toplam)."""
+    menu = {m["ref"]: m for m in pos_menu(db)}
+    clean, total = [], 0
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        ref = str(it.get("ref") or "")
+        m = menu.get(ref)
+        if not m:
+            continue
+        qty = max(0, int(it.get("qty") or 0))
+        if qty <= 0:
+            continue
+        price = int(m["price"])
+        clean.append({"ref": ref, "name": m["name"], "price": price,
+                      "qty": qty, "kind": m["kind"]})
+        total += price * qty
+    return clean, total
+
+
 def current_period():
     return datetime.now(TZ).strftime("%Y-%m")
 
@@ -3376,6 +3496,24 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _kr["edits"] = ""
     except Exception:
         kasa_reports = []
+    # ── POS: menu + bugunun satislari ──
+    # Barista KENDI satislarini gorur; owner subenin tumunu. Bugun = takvim gunu.
+    try:
+        _pm = pos_menu(db)
+        _today = datetime.now(TZ).strftime("%Y-%m-%d")
+        if role == "owner":
+            _po = db.execute(
+                "SELECT * FROM pos_orders WHERE void=0 AND substr(created_at,1,10)=? "
+                "ORDER BY id DESC LIMIT 100", (_today,)).fetchall()
+        else:
+            _po = db.execute(
+                "SELECT * FROM pos_orders WHERE void=0 AND user_id=? AND substr(created_at,1,10)=? "
+                "ORDER BY id DESC LIMIT 100", (user_id, _today)).fetchall()
+        pos_orders_out = [dict(r) for r in _po]
+        pos_shifts = pos_shift_summaries(db)
+    except Exception:
+        _pm, pos_orders_out, pos_shifts = [], [], {}
+
     # ── Açılış gecikmesi cezası ──
     # Owner: BEKLEYENLER + son kararlar (onay ekranı). Barista: YALNIZ kendi
     # kayıtları — «neden kesildi» sorusunun cevabı kendi hesabında dursun.
@@ -3591,6 +3729,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_index={quote(json.dumps(kasa_index))}",
         f"op_cfg={quote(json.dumps(_opc, ensure_ascii=False))}",
         f"op_rows={quote(json.dumps(op_rows, ensure_ascii=False))}",
+        f"pos_menu={quote(json.dumps(_pm, ensure_ascii=False))}",
+        f"pos_today={quote(json.dumps(pos_orders_out, ensure_ascii=False))}",
+        f"pos_shifts={quote(json.dumps(pos_shifts))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
         f"backup={quote(json.dumps(backup_info, ensure_ascii=False))}",
@@ -8897,6 +9038,56 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💵 Дневной бонус: {fmt_sum(daily_pay)}\n"
                 "_Смена пересчитана: часы не менялись._",
                 parse_mode="Markdown")
+
+        elif action == "pos_order_add":
+            # Barista kendi satisini kaydeder. Satis KENDI hesabina yazilir
+            # (user_id = istekte bulunan). Toplam SUNUCUDA hesaplanir.
+            db = get_db()
+            items = data.get("items", []) or []
+            clean, total = pos_order_total(db, items)
+            if not clean:
+                await update.message.reply_text("❌ Пустой заказ.")
+                return
+            pay = str(data.get("pay") or "cash")
+            if pay not in POS_PAY:
+                pay = "cash"
+            sid, bid = pos_shift_of(db, user.id)
+            _nm = display_name_for(db, user.id, fallback=user.first_name)
+            _now = datetime.now(TZ)
+            cur = db.execute(
+                "INSERT INTO pos_orders (branch_id,user_id,user_name,shift_id,items,total,"
+                "pay,period,created_at,void) VALUES (?,?,?,?,?,?,?,?,?,0)",
+                (bid, user.id, _nm, sid, json.dumps(clean, ensure_ascii=False), total, pay,
+                 _now.strftime("%Y-%m"), _now.isoformat()))
+            db.commit()
+            log_action(db, "pos_order_add", user.id, user.first_name, None, None,
+                       {"order_id": cur.lastrowid, "total": total, "pay": pay,
+                        "items": len(clean), "shift_id": sid})
+
+        elif action == "pos_order_void":
+            # Iptal: satisi YAPAN kisi ya da owner. Soft — satir kalir, void=1.
+            db = get_db()
+            try:
+                oid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                oid = 0
+            row = db.execute("SELECT * FROM pos_orders WHERE id=?", (oid,)).fetchone() if oid else None
+            if not row:
+                await update.message.reply_text("❌ Заказ не найден.")
+                return
+            if int(row["void"] or 0):
+                await update.message.reply_text("ℹ️ Уже отменён.")
+                return
+            _owner = get_role(db, user.id) == "owner"
+            if not _owner and int(row["user_id"] or 0) != int(user.id):
+                await update.message.reply_text("❌ Можно отменить только свой заказ.")
+                return
+            _nm = display_name_for(db, user.id, fallback=user.first_name)
+            db.execute("UPDATE pos_orders SET void=1, voided_by=?, voided_by_name=?, voided_at=? "
+                       "WHERE id=?", (user.id, _nm, datetime.now(TZ).isoformat(), oid))
+            db.commit()
+            log_action(db, "pos_order_void", user.id, user.first_name,
+                       row["user_id"], row["user_name"], {"order_id": oid, "total": row["total"]})
 
         elif action == "op_cfg_save":
             # Acilis cezasi ayarlari. Owner'dan baskasi DOKUNAMAZ: bu para
