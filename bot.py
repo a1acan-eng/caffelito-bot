@@ -2130,7 +2130,7 @@ def op_reject(db, rec_id, actor_id, actor_name):
 
 
 # ═══ POS — SATIS NOKTASI (izole modul) ══════════════════════════════════
-POS_PAY = ("cash", "card", "qr")
+POS_PAY = ("cash", "card", "click", "payme", "uzum")  # nakit + безнал yollari
 
 
 def pos_menu(db):
@@ -2187,11 +2187,13 @@ def pos_shift_summaries(db):
         sid = int(r["shift_id"] or 0)
         if not sid:
             continue
-        d = out.setdefault(sid, {"rev": 0, "cash": 0, "card": 0, "qr": 0, "cups": 0, "count": 0})
+        d = out.setdefault(sid, {"rev": 0, "cash": 0, "bezn": 0, "cups": 0, "count": 0})
         _t = int(r["total"] or 0)
         d["rev"] += _t
-        _p = r["pay"] if r["pay"] in ("cash", "card", "qr") else "cash"
-        d[_p] += _t
+        if (r["pay"] or "cash") == "cash":
+            d["cash"] += _t
+        else:
+            d["bezn"] += _t   # kart/click/payme/uzum = безнал
         d["count"] += 1
         try:
             for it in json.loads(r["items"] or "[]"):
