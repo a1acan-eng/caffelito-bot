@@ -3469,7 +3469,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     try:
         _kb = acting_branch_id(db, user_id)
         cr = db.execute(
-            "SELECT ostalos FROM cashreports WHERE COALESCE(branch_id,1)=? ORDER BY id DESC LIMIT 1",
+            "SELECT ostalos FROM cashreports WHERE COALESCE(branch_id,1)=? "
+            "ORDER BY COALESCE(NULLIF(end_time,''), created_at) DESC, id DESC LIMIT 1",
             (_kb,)).fetchone()
         kasa_last = json.loads(cr["ostalos"]) if (cr and cr["ostalos"]) else {}
     except Exception:
@@ -8643,33 +8644,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception:
                     pass
             if _my_act_cr and _my_act_cr["start_time"]:
-                # (a) BAŞKASI bu şubeyi benim vardiyam başladıktan sonra kapattı mı?
-                # ASISTAN SATIRLARI ATLANIR: asistan kasa vermez, o yuzden
-                # onun raporu «bu sube kapandi» anlamina gelmez. Duzeltme
-                # oncesi olusmus boyle bir satir, owner'in gercek kasasini
-                # engelledi (canlida bir kez oldu, 2026-08-22).
-                _prev_cr = None
-                for _pc in db.execute(
-                        "SELECT user_id, user_name, created_at FROM cashreports "
-                        "WHERE COALESCE(branch_id,1)=? AND created_at > ? AND user_id != ? "
-                        "ORDER BY id DESC LIMIT 10",
-                        (int(_cr_bid_chk or 1), _my_act_cr["start_time"], user.id)).fetchall():
-                    if closer_is_assistant(db, _pc["user_id"], branch_id=_cr_bid_chk):
-                        logger.info(f"cift kapatma: asistan raporu atlandi uid={_pc['user_id']}")
-                        continue
-                    _prev_cr = _pc
-                    break
-                if _prev_cr:
-                    try:
-                        _pt = datetime.fromisoformat(_prev_cr["created_at"]).strftime("%H:%M")
-                    except Exception:
-                        _pt = "?"
-                    logger.info(f"cift kapatma engellendi (baskasi) uid={user.id} sube={_cr_bid_chk}")
-                    await update.message.reply_text(
-                        f"⚠️ Смена уже закрыта: *{_prev_cr['user_name'] or '?'}* в {_pt}.\n"
-                        "Повторное закрытие не требуется — ваши часы будут учтены.",
-                        parse_mode="Markdown")
-                    return
+                # (a) BAŞKASININ kapanışı ARTIK ENGELLEMEZ (owner kararı 2026-08-27).
+                # Aynı şubede aynı gün iki kişi AYRI vardiya kapatabilir → iki kasa
+                # raporu alınsın. Eski davranış: «başkası bu şubeyi benim vardiyam
+                # başladıktan sonra kapattı» ise ikinci kapanış «Смена уже закрыта»
+                # deyip raporu DÜŞÜRÜYORDU. Rapor yazılmayınca «Осталось» zinciri o
+                # kişide takılı kalıyor ve bir sonraki «Было» yanlış (eski) kişiden
+                # doldruluyordu (canlı: Abdulatif'in пересменка'sı herkeste çıkıyordu).
+                # Artık farklı kişi bloklanmaz; yalnız GERÇEK tekrar (aynı kişi, aynı
+                # vardiya — (b)) engellenir. Asistan zaten kasa raporu VEREMEZ (yukarıda
+                # _cr_asst dalı engeller), o yüzden asistan satırı da zincire girmez.
                 # (b) BEN bu vardiya için zaten rapor gönderdim mi? (çift dokunuş,
                 #     ağ tekrarı, uygulamayı kapatıp yeniden onaylama). İstemcideki
                 #     kilit sayfa yenilenince kaybolur — asıl koruma burada olmalı.
