@@ -3508,6 +3508,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _order_catalog = (_ocrow["val"] if (_ocrow and _ocrow["val"]) else "[]")
     except Exception:
         _order_catalog = "[]"
+    # Görev bölümleri (Задачи): owner bölüm/görev ekler-siler-sıralar. Sipariş
+    # kataloğuyla aynı desen — tam snapshot meta'da JSON, payload ile döner; yoksa
+    # boş gider, client statik varsayılanı gösterir ve ilk düzenlemede kaydeder.
+    try:
+        _tsrow = db.execute("SELECT val FROM meta WHERE k='task_sections'").fetchone()
+        _task_sections = (_tsrow["val"] if (_tsrow and _tsrow["val"]) else "{}")
+    except Exception:
+        _task_sections = "{}"
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
@@ -3632,6 +3640,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"products={quote(json.dumps(get_product_catalog(db) if role == 'owner' else get_product_catalog(db, only_active=True), ensure_ascii=False))}",
         f"order_catalog={quote(_order_catalog)}",
+        f"task_sections={quote(_task_sections)}",
         f"my_product_ok={_my_pi['product_ok']}",
         f"prod_report={quote(json.dumps(get_product_report(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
@@ -10327,6 +10336,50 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"categories": len(_clean),
                         "items": sum(len(c["items"]) for c in _clean)})
             # Client kendi toast'ını gösterir; sessiz desen (klavye auto /start ile tazelenir).
+
+        elif action == "tasks_save":
+            # Görev bölümlerinin (Задачи) TAM snapshot'ı: {bölüm: {w,from,to,items:[[baslik,aciklama]]}}.
+            # Owner ekler/siler/sıralayınca client tümünü yollar, meta'da JSON saklanır,
+            # payload ile döner. order_catalog_save ile aynı kalıcılık deseni.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _ts_raw = data.get("sections")
+            if not isinstance(_ts_raw, dict):
+                await update.message.reply_text("❌ Неверные разделы.")
+                return
+            _ts_clean = {}
+            for _sk, _sv in list(_ts_raw.items())[:60]:
+                if not isinstance(_sv, dict):
+                    continue
+                _its = []
+                for _it in (_sv.get("items") or [])[:300]:
+                    # Kalem [baslik, aciklama] veya {t,d} olabilir — ikisini de kabul et.
+                    if isinstance(_it, (list, tuple)):
+                        _t = str(_it[0] if len(_it) > 0 else "")[:200]
+                        _d = str(_it[1] if len(_it) > 1 else "")[:300]
+                    elif isinstance(_it, dict):
+                        _t = str(_it.get("t") or "")[:200]
+                        _d = str(_it.get("d") or "")[:300]
+                    else:
+                        continue
+                    if _t:
+                        _its.append([_t, _d])
+                try:
+                    _fr = int(_sv.get("from") or 0)
+                    _to = int(_sv.get("to") if _sv.get("to") is not None else 24)
+                except Exception:
+                    _fr, _to = 0, 24
+                _ts_clean[str(_sk)[:80]] = {"w": str(_sv.get("w") or "")[:80],
+                                            "from": _fr, "to": _to, "items": _its}
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('task_sections', ?)",
+                       (json.dumps(_ts_clean, ensure_ascii=False),))
+            db.commit()
+            log_action(db, "tasks_save", user.id, user.first_name, None, None,
+                       {"sections": len(_ts_clean),
+                        "items": sum(len(s["items"]) for s in _ts_clean.values())})
+            # Client kendi toast'ını gösterir; sessiz desen.
 
         elif action == "order_item_delete":
             # (ESKI — geriye dönük) Tekil silme AUDIT'i. Kalıcılık artık
