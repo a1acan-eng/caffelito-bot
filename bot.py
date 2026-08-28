@@ -7698,6 +7698,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     text=f"ℹ️ Ваша смена была закрыта владельцем.\n⏱ Часы: {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум")
             except Exception:
                 pass
+            # GRUBA da bildir — barista kendi kapattığındaki gibi (owner istegi).
+            # force_end'de bardak/kasa girilmez → satis rakami yazilmaz; saatler +
+            # «закрыто владельцем» notu gider. Grup, KAPATILAN kisinin (target)
+            # calistigi subenin grubu; owner'in degil.
+            try:
+                _gid = resolve_group_id(db, target_id, context, branch_id=sh["branch_id"])
+                if _gid:
+                    from html import escape as esc_html
+                    _gst = datetime.fromisoformat(sh["start_time"])
+                    _get = datetime.fromisoformat(sh["end_time"])
+                    _gtext = (f"🔴 <b>{esc_html(_nm)}</b> закрыл(а) смену\n"
+                              f"━━━━━━━━━━━━━━━━━━━━\n"
+                              f"⏰ {_gst.strftime('%H:%M')} → {_get.strftime('%H:%M')}  "
+                              f"({fmt_hm(sh['hours'] or 0)})\n"
+                              f"👤 Закрыто владельцем")
+                    await context.bot.send_message(chat_id=int(_gid), text=_gtext, parse_mode="HTML")
+            except Exception as e:
+                logger.exception(f"FORCE_END GROUP FORWARD FAILED: {e}")
 
         elif action == "force_start_shift":
             # Owner: çalışan adına vardiya başlat (slot kuralları yine geçerli).
