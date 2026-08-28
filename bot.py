@@ -3498,6 +3498,16 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             last_closing_at = _lc["created_at"]
     except Exception:
         last_closing_at = ""
+    # Sipariş kataloğu (Заказ): owner ürün/kategori ekler-siler-sıralar. Eskiden
+    # yalnız client state + nero-data.js'te duruyordu, bot'ta depo yoktu → çıkıp
+    # girince değişiklikler kayboluyordu. Artık tam snapshot meta'da JSON olarak
+    # saklanır ve payload ile döner; yoksa boş gider, client statik varsayılanı
+    # gösterir ve ilk düzenlemede snapshot'ı kaydeder.
+    try:
+        _ocrow = db.execute("SELECT val FROM meta WHERE k='order_catalog'").fetchone()
+        _order_catalog = (_ocrow["val"] if (_ocrow and _ocrow["val"]) else "[]")
+    except Exception:
+        _order_catalog = "[]"
     # Ступени обслуживания — bu kullanıcı bugün onayladı mı?
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     std_acked = bool(db.execute("SELECT 1 FROM std_acks WHERE user_id=? AND date=?", (user_id, today_str)).fetchone())
@@ -3621,6 +3631,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"fine_presets={quote(json.dumps(get_fine_presets(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"sal_cats={quote(json.dumps(get_salary_categories(db) if role == 'owner' else [], ensure_ascii=False))}",
         f"products={quote(json.dumps(get_product_catalog(db) if role == 'owner' else get_product_catalog(db, only_active=True), ensure_ascii=False))}",
+        f"order_catalog={quote(_order_catalog)}",
         f"my_product_ok={_my_pi['product_ok']}",
         f"prod_report={quote(json.dumps(get_product_report(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
@@ -10280,11 +10291,46 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "category_delete", user.id, user.first_name, None, None, {"id": _cid})
             await update.message.reply_text("🗑 Категория удалена.")
 
+        elif action == "order_catalog_save":
+            # Sipariş kataloğunun (Заказ) TAM snapshot'ı: kategoriler + ürünler +
+            # sıra. Owner ekler/siler/sıralayınca client tüm kataloğu yollar, biz
+            # meta'da JSON olarak saklarız ve payload ile geri veririz. Böylece
+            # «çıkıp girince eski hâli dönüyor» sorunu biter (item deposu artık var).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _cat_raw = data.get("catalog")
+            if not isinstance(_cat_raw, list):
+                await update.message.reply_text("❌ Неверный каталог.")
+                return
+            # Temizle/normalize: yalnız beklenen alanlar, makul sınırlar (payload şişmesin).
+            _clean = []
+            for _c in _cat_raw[:100]:
+                if not isinstance(_c, dict):
+                    continue
+                _items = []
+                for _it in (_c.get("items") or [])[:300]:
+                    if not isinstance(_it, dict):
+                        continue
+                    _items.append({"id": str(_it.get("id") or "")[:40],
+                                   "n": str(_it.get("n") or "")[:120],
+                                   "note": str(_it.get("note") or "")[:200]})
+                _clean.append({"id": str(_c.get("id") or "")[:60],
+                               "n": str(_c.get("n") or "")[:80],
+                               "ic": str(_c.get("ic") or "inventory_2")[:40],
+                               "items": _items})
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('order_catalog', ?)",
+                       (json.dumps(_clean, ensure_ascii=False),))
+            db.commit()
+            log_action(db, "order_catalog_save", user.id, user.first_name, None, None,
+                       {"categories": len(_clean),
+                        "items": sum(len(c["items"]) for c in _clean)})
+            # Client kendi toast'ını gösterir; sessiz desen (klavye auto /start ile tazelenir).
+
         elif action == "order_item_delete":
-            # Kategori içinden ürün silindi. Sipariş kataloğunun ürünleri Nero tarafında
-            # (nero-data.js + client state) tutuluyor — bot'ta ürün deposu yok, bu yüzden
-            # karar AUDIT olarak kaydedilir (owner işlemi log_action'da izlenebilir).
-            # category = kategori id, index = kategori içindeki sıra.
+            # (ESKI — geriye dönük) Tekil silme AUDIT'i. Kalıcılık artık
+            # order_catalog_save ile tam snapshot üzerinden; bu yalnız iz bırakır.
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец.")
