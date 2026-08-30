@@ -541,7 +541,8 @@ def get_db():
         active INTEGER DEFAULT 1,
         created_at TEXT)""")
     # Şube-bazlı çalışma saatleri (kapalı pencere): open_hour, close_hour, unpaid_win
-    for _bc2, _bd2 in (("open_hour", "INTEGER"), ("close_hour", "INTEGER"), ("unpaid_win", "INTEGER")):
+    for _bc2, _bd2 in (("open_hour", "INTEGER"), ("close_hour", "INTEGER"), ("unpaid_win", "INTEGER"),
+                       ("product_pct", "INTEGER")):  # ürün bonusu yüzdesi (toplam выручка × %) — şube başı
         try:
             db.execute(f"ALTER TABLE branches ADD COLUMN {_bc2} {_bd2}")
         except sqlite3.OperationalError:
@@ -779,6 +780,7 @@ ANON_ADMIN_ID = 1087968824
 def get_branches(db, only_active=True):
     """Şubeler listesi (saatlerle + işgücü ayarı)."""
     q = ("SELECT id, name, group_chat_id, sort_order, active, open_hour, close_hour, unpaid_win, "
+         "COALESCE(product_pct,5) AS product_pct, "
          "COALESCE(trainee_enabled,0) AS trainee_enabled FROM branches")
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
@@ -3527,6 +3529,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                              "open": (b["open_hour"] if b["open_hour"] is not None else 7),
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
                              "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
+                             "pct": int(b["product_pct"] if b["product_pct"] is not None else 5),
                              "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
                             for b in get_branches(db, only_active=False)]
         else:
@@ -3540,6 +3543,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                              "open": (b["open_hour"] if b["open_hour"] is not None else 7),
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
                              "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
+                             "pct": int(b["product_pct"] if b["product_pct"] is not None else 5),
                              "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
                             for b in get_branches(db, only_active=True)]
     except Exception:
@@ -6276,19 +6280,40 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             # Ürün satışları (ödeme anında girildi) → bonus'a çevir, product_sales'e KAYDET
             # (calc_summary'den ÖNCE → net bu bonusu içerir ve toplam ödenir).
-            _psales = data.get("product_sales")
+            # YENİ: owner Poster'dan TOPLAM ürün выручка'sını girer; bonus = выручка ×
+            # ŞUBE yüzdesi (branches.product_pct). Yüzde SUNUCUDA uygulanır (istemciye
+            # güvenilmez). Tek tek ürün adedi yolu (product_sales) geriye dönük durur.
             _pbon = 0
-            if isinstance(_psales, dict) and _psales:
-                _elig = bool(barista_pay_info(db, target_id)["product_ok"])
-                _pc = calc_product_bonus(db, _psales, eligible=_elig)
-                if _pc["revenue"] > 0:
-                    db.execute(
-                        "INSERT INTO product_sales (user_id, period, sales, revenue, bonus, created_at, paid_by) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (target_id, period, json.dumps(_psales, ensure_ascii=False),
-                         _pc["revenue"], _pc["bonus"], now.isoformat(), user.id))
-                    db.commit()
-                    _pbon = _pc["bonus"]
+            try:
+                _prev = max(0, int(float(data.get("product_revenue") or 0)))
+            except Exception:
+                _prev = 0
+            _elig = bool(barista_pay_info(db, target_id)["product_ok"])
+            if _prev > 0:
+                _bid = user_branch_id(db, target_id)
+                _brow = db.execute("SELECT COALESCE(product_pct,5) AS p FROM branches WHERE id=?",
+                                   (int(_bid or 0),)).fetchone()
+                _pct = int(_brow["p"]) if _brow else 5
+                _bon = int(round(_prev * _pct / 100)) if _elig else 0
+                db.execute(
+                    "INSERT INTO product_sales (user_id, period, sales, revenue, bonus, created_at, paid_by) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (target_id, period, json.dumps({"_lump": _prev, "pct": _pct}, ensure_ascii=False),
+                     _prev, _bon, now.isoformat(), user.id))
+                db.commit()
+                _pbon = _bon
+            else:
+                _psales = data.get("product_sales")
+                if isinstance(_psales, dict) and _psales:
+                    _pc = calc_product_bonus(db, _psales, eligible=_elig)
+                    if _pc["revenue"] > 0:
+                        db.execute(
+                            "INSERT INTO product_sales (user_id, period, sales, revenue, bonus, created_at, paid_by) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (target_id, period, json.dumps(_psales, ensure_ascii=False),
+                             _pc["revenue"], _pc["bonus"], now.isoformat(), user.id))
+                        db.commit()
+                        _pbon = _pc["bonus"]
             s = calc_summary(db, target_id, period)
             if s["net"] <= 0:
                 await update.message.reply_text(f"❌ Нет средств: {fmt_sum(s['net'])} сум")
@@ -7589,6 +7614,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "branch_hours", user.id, user.first_name, None,
                        (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else "",
                        {"branch_id": bid, "open": oh, "close": ch, "unpaid": uw})
+
+        elif action == "branch_product_pct":
+            # Şube başı ürün bonusu yüzdesi (ödemede TOPLAM выручка × bu %). Owner.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                bid = int(data.get("branch_id") or 0)
+            except Exception:
+                bid = 0
+            if not get_branch(db, bid):
+                await update.message.reply_text("❌ Филиал не найден.")
+                return
+            try:
+                pct = max(0, min(100, int(float(str(data.get("pct", 5)).replace("%", "").strip() or 5))))
+            except Exception:
+                pct = 5
+            db.execute("UPDATE branches SET product_pct=? WHERE id=?", (pct, bid))
+            db.commit()
+            log_action(db, "branch_product_pct", user.id, user.first_name, None,
+                       (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else "",
+                       {"branch_id": bid, "pct": pct})
 
         elif action == "branch_trainee":
             # Owner: bu şubede «Ассистент/стажёр» pozisyonunu aç/kapat (şube-bazlı işgücü ayarı)
