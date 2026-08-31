@@ -3901,6 +3901,11 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "u": b["username"] or "",
                 "r": b["role"], "h": bs["hours"], "b": bs["bonus"],
                 "hp": bs["hourly"], "f": bs["fines"],
+                # Ürün bonusu ARTIK ödemeden ÖNCE kaydedilebiliyor (черновик):
+                # owner ciroyu girip «Сохранить» der, tutar product_sales'e yazılır
+                # ve calc_summary onu zaten net'e katar. İstemci çift saymasın diye
+                # kaydedilmiş tutarı ayrıca görür.
+                "pb": bs.get("product_bonus", 0), "prv": bs.get("product_revenue", 0),
                 "paid": bs["paid"], "net": bs["net"],
                 "tips": bs["tips"],
                 "adj": bs["adjustments"],
@@ -7614,6 +7619,54 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "branch_hours", user.id, user.first_name, None,
                        (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else "",
                        {"branch_id": bid, "open": oh, "close": ch, "unpaid": uw})
+
+        elif action == "product_revenue_save":
+            # ÖDEMEDEN ÖNCE ürün cirosunu kaydet (черновик — owner isteği 2026-08-31).
+            # Eskiden ciro yalnız «Выплатить» anında gönderilebiliyordu: owner tek tek
+            # herkesin hesabını yapıp sonra ödeyemiyordu. Artık ciro product_sales'e
+            # AYRI kayıt olarak yazılır; calc_summary onu zaten net'e katar, ödeme
+            # sonra yapılır. Bonus SUNUCUDA hesaplanır (istemciye güvenilmez).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _t = int(data.get("target", 0) or 0)
+            except Exception:
+                _t = 0
+            _trow = db.execute("SELECT * FROM users WHERE user_id=?", (_t,)).fetchone() if _t else None
+            if not _trow:
+                await update.message.reply_text("❌ Бариста не найден.")
+                return
+            _per = data.get("period") or current_period()
+            try:
+                _rev = max(0, int(float(data.get("product_revenue") or 0)))
+            except Exception:
+                _rev = 0
+            if _rev <= 0:
+                await update.message.reply_text("❌ Введите выручку по товарам.")
+                return
+            _elig2 = bool(barista_pay_info(db, _t)["product_ok"])
+            _bid2 = user_branch_id(db, _t)
+            _brow2 = db.execute("SELECT COALESCE(product_pct,5) AS p FROM branches WHERE id=?",
+                                (int(_bid2 or 0),)).fetchone()
+            _pct2 = int(_brow2["p"]) if _brow2 else 5
+            _bon2 = int(round(_rev * _pct2 / 100)) if _elig2 else 0
+            db.execute(
+                "INSERT INTO product_sales (user_id, period, sales, revenue, bonus, created_at, paid_by) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (_t, _per, json.dumps({"_lump": _rev, "pct": _pct2}, ensure_ascii=False),
+                 _rev, _bon2, now.isoformat(), user.id))
+            db.commit()
+            _nm2 = display_name_for(db, _t, fallback="?")
+            log_action(db, "product_revenue_save", user.id, user.first_name, _t, _nm2,
+                       {"period": _per, "revenue": _rev, "pct": _pct2, "bonus": _bon2})
+            await update.message.reply_text(
+                f"💾 Товары записаны — *{md_safe(_nm2)}* · {_per}\n"
+                f"Выручка: {fmt_sum(_rev)} сум · бонус {_pct2}%: {fmt_sum(_bon2)} сум\n"
+                + ("_Начислено в баланс. Выплатить можно позже._"
+                   if _elig2 else "_У категории нет бонуса за товары — начислено 0._"),
+                parse_mode="Markdown")
 
         elif action == "branch_product_pct":
             # Şube başı ürün bonusu yüzdesi (ödemede TOPLAM выручка × bu %). Owner.
