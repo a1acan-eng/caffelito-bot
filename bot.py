@@ -9200,6 +9200,37 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     new_sold[_n] = max(0, _b + _r - _o)
             else:
                 new_bylo, new_rest, new_ost, new_sold = old_bylo, old_rest, old_ost, old_sold
+            # ── Bardak değişince VARDİYANIN bonusu yeniden hesaplanır (owner istegi
+            # 2026-08-31): eskiden edit yalniz cashreports satirini guncelliyor,
+            # shifts.drinks/bonus'a HIC dokunmuyordu → «Смена» detayi eski sayida
+            # (68) ve дневной бонус eski tutarda kaliyordu. Istemci `drinks` (id→adet)
+            # yollar (kapanis/sonradan-girme ile ayni sozlesme); yoksa (eski istemci)
+            # shift'e dokunulmaz. Bonus sistemi vardiyanin SNAPSHOT kategorisinden.
+            _edit_sh = db.execute(
+                "SELECT * FROM shifts WHERE user_id=? AND start_time=? AND end_time IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1", (rep["user_id"], rep["start_time"])).fetchone()
+            _drk_in = data.get("drinks")
+            _recomp_bonus = None
+            _recomp_drinks = None
+            if _edit_sh and isinstance(_drk_in, dict):
+                _recomp_drinks = {k: int(v or 0) for k, v in _drk_in.items() if int(v or 0) > 0}
+                _e_bsys, _e_kpi = "own", 0
+                try:
+                    _e_cid = _edit_sh["cat_id"] if "cat_id" in _edit_sh.keys() else None
+                except Exception:
+                    _e_cid = None
+                if _e_cid:
+                    _e_cr = db.execute("SELECT bonus_system, use_kpi FROM salary_categories WHERE id=?",
+                                       (_e_cid,)).fetchone()
+                    if _e_cr:
+                        _e_bsys = _e_cr["bonus_system"] or "own"
+                        _e_kpi = int(_e_cr["use_kpi"] or 0)
+                else:
+                    _e_pi = barista_pay_info(db, _edit_sh["user_id"], branch_id=_edit_sh["branch_id"])
+                    _e_bsys = _e_pi["bonus_system"]; _e_kpi = int(_e_pi["use_kpi"] or 0)
+                _e_prices = get_caffelito_bonus(db) if _e_bsys == "caffelito" else get_prices(db)
+                _e_drinks_bonus = 0 if _e_kpi else calc_bonus(_recomp_drinks, _e_prices)
+                _recomp_bonus = _e_drinks_bonus + int(_edit_sh["dessert_bonus"] or 0)
             exps_in = data.get("expenses")
             if isinstance(exps_in, list):
                 new_exps = [{"n": str(_e.get("n", "") or "").strip(), "a": _norm_amt(_e.get("a", 0))}
@@ -9222,6 +9253,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # olurdu. Kasadan negatif para çıkamaz: eksi gelirse 0 sayılır.
             _dp_neg = str(_dp_in).strip().startswith("-") if _dp_in is not None else False
             new_dp = old_dp if _dp_in is None else (0 if _dp_neg else max(0, int(_norm_amt(_dp_in))))
+            # Kasadan çıkan bonus, vardiyaya yeniden hesaplanan bonusu AŞAMAZ
+            # (cash_report_add'daki klempin AYNISI): bardak düşünce дневной бонус da
+            # düşer. Owner elle daha az girdiyse o kalır.
+            if _recomp_bonus is not None and new_dp > _recomp_bonus:
+                new_dp = _recomp_bonus
             old_kassa = int(rep["kassa"] or 0)
             # Oluşturmadaki formülün AYNISI: kassa = вышло − на сдачу − дневной бонус
             new_kassa = int(rep["vyshlo"] or 0) - int(rep["na_sdachi"] or 0) - new_dp
@@ -9250,6 +9286,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if new_dp != old_dp:
                 ch["daily_pay"] = [old_dp, new_dp]
                 ch["kassa"] = [old_kassa, new_kassa]
+            if _recomp_bonus is not None:
+                _old_bonus = int(_edit_sh["bonus"] or 0)
+                if _recomp_bonus != _old_bonus:
+                    ch["bonus"] = [_old_bonus, _recomp_bonus]
             if not ch:
                 await update.message.reply_text("ℹ️ Изменений нет.")
                 return
@@ -9265,13 +9305,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, json.dumps(new_exps, ensure_ascii=False), exp_total, new_note,
                  new_dp, new_kassa,
                  json.dumps(hist, ensure_ascii=False), now.isoformat(), user.id, shown, rid))
+            # Vardiyanın bardakları + bonusu da yeniden yazılır (cash_report_add ile
+            # aynı) → «Смена» detayı ve дневной бонус yeni sayıyı gösterir.
+            if _recomp_bonus is not None and _edit_sh and _recomp_drinks is not None:
+                _e_total = int(_edit_sh["hourly_pay"] or 0) + _recomp_bonus
+                db.execute("UPDATE shifts SET drinks=?, bonus=?, total=? WHERE id=?",
+                           (json.dumps(_recomp_drinks, ensure_ascii=False), _recomp_bonus, _e_total, _edit_sh["id"]))
             db.commit()
             log_action(db, "cash_report_edit", user.id, user.first_name,
                        rep["user_id"], rep["user_name"] or "",
                        {"report_id": rid, "changes": ch})
             _lbl = {"bylo": "было", "restock": "завоз", "ostalos": "осталось",
                     "sold": "продано", "expenses": "расходы", "note": "заметка",
-                    "daily_pay": "дневной бонус", "kassa": "касса"}
+                    "daily_pay": "дневной бонус", "kassa": "касса", "bonus": "бонус за стаканы"}
             _what = " · ".join(_lbl.get(k, k) for k in ch)
             try:
                 _rd = datetime.fromisoformat(rep["created_at"]).strftime("%d.%m %H:%M")
