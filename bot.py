@@ -6241,19 +6241,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         parse_mode="Markdown")
                 except Exception as e:
                     logger.warning(f"Notify fine failed: {e}")
-            # Şef payı — owner kendi üstüne %50 ceza yazar (iyilik kuralı)
+            # ── ŞEF PAYI = ŞİRKETİN ÜSTLENDİĞİ KISIM, KİMSEYE CEZA DEĞİL ──────
+            # 🔴 ESKİDEN owner'ın KENDİ ÜSTÜNE `fines` satırı yazılıyordu → o para
+            # owner'ın maaş bakiyesinden düşüyordu (net = gross − fines − …).
+            # Owner: «şefe deyince şefe uygulansın, bana değil, ben şef değilim;
+            # tamamen şirketten olacak». Artık HİÇBİR kişiye kayıt açılmaz: ceza
+            # yalnızca çalışanlara yazılan kısımdır, kalan %50 tahsil EDİLMEZ.
+            # Denetim izi ayrı bir eylemle tutulur (kişiye ceza gibi görünmesin).
             if chef_share and chef_amount > 0:
-                chef_reason = reason + " (50% шефа)"
-                db.execute(
-                    "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (user.id, chef_amount, chef_reason, ftype, period,
-                     user.id, user.first_name, now.isoformat()))
-                log_action(db, "fine_add", user.id, user.first_name,
-                           user.id, user.first_name,
-                           {"amount": chef_amount, "reason": chef_reason, "type": ftype, "chef_share": True})
+                log_action(db, "fine_chef_share", user.id, user.first_name,
+                           None, "",
+                           {"amount": chef_amount, "reason": reason, "type": ftype,
+                            "fine_total": amount, "targets": len(targets)})
             db.commit()
-            tail = (f"\n🍴 Шеф взял на себя: -{fmt_sum(chef_amount)} сум" if chef_share and chef_amount > 0 else "")
+            tail = (f"\n🍴 Доля шефа (компания): -{fmt_sum(chef_amount)} сум  — ни на кого не записана"
+                    if chef_share and chef_amount > 0 else "")
             if split_eff and len(sent_to) > 1:
                 await update.message.reply_text(
                     f"⚠️ Штраф разделён на {len(sent_to)} человек\n"
