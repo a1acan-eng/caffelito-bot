@@ -6203,14 +6203,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Şef paylaşırsa toplam tutarın yarısı baristalara dağılır
             barista_pool = amount // 2 if chef_share else amount
             chef_amount = amount - barista_pool if chef_share else 0
-            per_target = (barista_pool // len(targets)) if split and len(targets) > 1 else barista_pool
+            # 🔴 ŞEF PAYI VARSA KALAN HER ZAMAN EŞİT BÖLÜNÜR (owner kuralı 2026-08-31).
+            # «Ceza BİR tanedir»: şef %50'sini üstlenince kalan %50 seçilenlere tam
+            # tam bölünür, toplam ASLA cezayı aşmaz. Eskiden `split` kapalıyken
+            # havuzun TAMAMI her kişiye yazılıyordu: 4.000.000 + şef + 2 kişi =
+            # 2M+2M+2M = 6.000.000 (owner bildirdi: «altı milyon falan yok»).
+            # `split` tek başına eski anlamını korur: şefsiz + kapalı = herkese tam
+            # tutar (30.000 temizlik cezası × 3 kişi gibi), açık = eşit bölüşüm.
+            split_eff = split or chef_share
+            per_target = (barista_pool // len(targets)) if split_eff and len(targets) > 1 else barista_pool
             period = current_period()
             sent_to = []
             for tid in targets:
                 trow = db.execute("SELECT * FROM users WHERE user_id=?", (tid,)).fetchone()
                 if not trow:
                     continue
-                final_reason = reason + (f" (раздел.: {len(targets)})" if split and len(targets) > 1 else "")
+                final_reason = reason + (f" (раздел.: {len(targets)})" if split_eff and len(targets) > 1 else "")
                 db.execute(
                     "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
                     "VALUES (?,?,?,?,?,?,?,?)",
@@ -6246,7 +6254,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                            {"amount": chef_amount, "reason": chef_reason, "type": ftype, "chef_share": True})
             db.commit()
             tail = (f"\n🍴 Шеф взял на себя: -{fmt_sum(chef_amount)} сум" if chef_share and chef_amount > 0 else "")
-            if split and len(sent_to) > 1:
+            if split_eff and len(sent_to) > 1:
                 await update.message.reply_text(
                     f"⚠️ Штраф разделён на {len(sent_to)} человек\n"
                     f"По {fmt_sum(per_target)} сум каждому\n"
@@ -6265,7 +6273,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     gtext = (f"⚠️ <b>ШТРАФ</b>\n"
                              f"👤 {_who}\n"
                              f"💸 -{fmt_sum(per_target)} сум"
-                             + (f" × {len(sent_to)} чел." if (split and len(sent_to) > 1) else "") + "\n"
+                             + (f" × {len(sent_to)} чел." if (split_eff and len(sent_to) > 1) else "") + "\n"
                              f"📝 {esc_html(reason)}\n"
                              f"👮 {esc_html(shown)}")
                     await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
