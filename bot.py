@@ -2593,6 +2593,74 @@ def calc_summary(db, user_id, period=None):
 
 
 # ─── Vardiya başlat / bitir ───
+# ─── BORÇ DEVRİ: geçmiş ayın tahsil edilmemiş eksisi bu aya taşınır ───────
+# Owner kuralı (2026-09-02): «cezalar her zaman ödenmeyen kadar bakiyede,
+# gerekirse eksi hâlde dursun.» Her şey `period` ile filtrelendiği için ay
+# değişince tahsil edilmemiş ceza geride kalıyordu: ağustosta hiç çalışmayan
+# kişinin ağustos neti −1.000.000 kalıyor, eylülde TAM maaş görünüyordu →
+# ceza fiilen siliniyordu.
+#
+# Çözüm calc_summary'yi DEĞİŞTİRMEZ (o saf ve her yerde kullanılıyor); devir
+# AÇIK bir `adjustments` çifti olarak yazılır:
+#   · eski ayda  +borç  → o ay kapanır (net 0)
+#   · yeni ayda  −borç  → bakiye eksiyi taşır
+# Not etiketi `[perenos:<eski ay>]` ile TEK SEFER yazılır (CPS'teki not-etiketi
+# deseninin aynısı). Denetim günlüğüne düşer, owner isterse silebilir.
+def carry_debt(db, user_id, period=None):
+    """Geçmiş ayların eksi bakiyesini `period`a devreder. Yazılan toplam borcu döner.
+
+    Idempotent: her kaynak ay için en fazla bir devir çifti yazılır."""
+    period = period or current_period()
+    if not re.fullmatch(r"\d{4}-\d{2}", str(period or "")):
+        return 0
+    pers = set()
+    try:
+        for _t in ("shifts", "fines", "payments", "adjustments"):
+            for r in db.execute(
+                    f"SELECT DISTINCT period AS p FROM {_t} WHERE user_id=?", (user_id,)).fetchall():
+                _p = str(r["p"] or "")
+                # Yalnız GEÇMİŞ aylar; biçim dışı değer (eski kayıt) atlanır.
+                if re.fullmatch(r"\d{4}-\d{2}", _p) and _p < period:
+                    pers.add(_p)
+    except Exception:
+        return 0
+    total = 0
+    now_iso = datetime.now(TZ).replace(tzinfo=None).isoformat()
+    for _p in sorted(pers):
+        tag = f"[perenos:{_p}]"
+        try:
+            if db.execute("SELECT 1 FROM adjustments WHERE user_id=? AND note LIKE ? LIMIT 1",
+                          (user_id, f"%{tag}%")).fetchone():
+                continue          # bu ay zaten devredildi
+            _s = calc_summary(db, user_id, _p)
+            _net = int(_s["net"])
+            if _net >= 0:
+                continue          # borç yok
+            _d = -_net            # pozitif borç
+            db.execute(
+                "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (user_id, _d, f"Долг перенесён в {period} {tag}", _p,
+                 user_branch_id(db, user_id), 0, "Nero", now_iso))
+            db.execute(
+                "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (user_id, -_d, f"Долг за {_p} {tag}", period,
+                 user_branch_id(db, user_id), 0, "Nero", now_iso))
+            total += _d
+        except Exception as e:
+            logger.warning(f"carry_debt {user_id} {_p}: {e}")
+    if total:
+        db.commit()
+        try:
+            log_action(db, "debt_carry", 0, "Nero", user_id,
+                       display_name_for(db, user_id, fallback="?"),
+                       {"amount": total, "to": period})
+        except Exception:
+            pass
+    return total
+
+
 def get_active_shift(db, user_id):
     return db.execute(
         "SELECT * FROM shifts WHERE user_id=? AND start_time IS NOT NULL AND end_time IS NULL "
@@ -3838,6 +3906,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         baristas = []
         for b in rows:
             # SEÇİLİ AY (_selp): owner geçmiş ayın maaşını görebilsin/ödeyebilsin.
+            # Borç devri: yalnız İÇİNDE BULUNULAN ay için (geçmiş aya bakarken
+            # tarihi değiştirmeyelim — o ay olduğu gibi görünsün).
+            if _selp == current_period():
+                try:
+                    carry_debt(db, b["user_id"], _selp)
+                except Exception as _e:
+                    logger.warning(f"carry_debt(payload) {b['user_id']}: {_e}")
             bs = calc_summary(db, b["user_id"], _selp)
             # Bu baristanın SEÇİLİ AYdaki bitmiş vardiyaları (owner "kim, ne zaman çalıştı" görsün)
             _rsh = db.execute(
@@ -6329,6 +6404,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                              _pc["revenue"], _pc["bonus"], now.isoformat(), user.id))
                         db.commit()
                         _pbon = _pc["bonus"]
+            # Geçmiş ayların tahsil edilmemiş eksisi ÖDEMEDEN ÖNCE bu aya taşınır —
+            # yoksa owner borcu görmeden tam maaş öderdi (owner kuralı 2026-09-02).
+            try:
+                carry_debt(db, target_id, period)
+            except Exception as _e:
+                logger.warning(f"carry_debt(pay) {target_id}: {_e}")
             s = calc_summary(db, target_id, period)
             if s["net"] <= 0:
                 await update.message.reply_text(f"❌ Нет средств: {fmt_sum(s['net'])} сум")
