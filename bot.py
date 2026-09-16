@@ -1937,6 +1937,13 @@ OP_DEFAULTS = {
     # ŞUBE BAŞINA сум/saat. {"2": 120000} gibi; şube yoksa `per_hour` geçerli.
     # Sebep: her dükkânın vardiya cirosu farklı, ceza ona göre ayarlanıyor.
     "rates": {},
+    # VARDİYA BİTİŞİ UYARISI (owner isteği 2026-09-16): «vardiya sonlanmasına
+    # 5-10 dk kaldı» diye kişiye hatırlatma. 0 = kapalı.
+    "warn_before": 10,
+    # DEVİR MUAFİYETİ: devir anında ÖNCEKİ vardiya hâlâ açıksa geç gelene ceza
+    # yazılmaz (owner: «1. eleman kapatmayıp bekliyorsa iki eleman anlaşmış
+    # demektir»). Kapalıysa dükkân boşta kalmış demektir → ceza işler.
+    "handover_waiver": 1,
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -1955,7 +1962,7 @@ def op_cfg(db):
     except Exception:
         pass
     # Tipleri sabitle: ekrandan string gelebilir.
-    for _k in ("on", "grace", "per_hour", "auto"):
+    for _k in ("on", "grace", "per_hour", "auto", "warn_before", "handover_waiver"):
         try:
             cfg[_k] = int(float(cfg[_k]))
         except Exception:
@@ -1978,6 +1985,7 @@ def op_cfg(db):
         cfg["rates"] = _r
     cfg["grace"] = max(0, cfg["grace"])
     cfg["per_hour"] = max(0, cfg["per_hour"])
+    cfg["warn_before"] = max(0, min(120, cfg["warn_before"]))
     return cfg
 
 
@@ -2086,6 +2094,25 @@ def op_register(db, shift_row):
         _g = int(cfg["grace"])
         if delay <= _g:
             return None                      # eşik içinde: para cezası YOK
+        # ── DEVİR MUAFİYETİ (owner kuralı 2026-09-16) ───────────────────────
+        # «1. vardiyadaki eleman 16:00'da kapatır ve diğerini bekler; gelmezse
+        #  ceza başlar. Eğer 1. vardiya açık kalırsa iki eleman anlaşmış
+        #  demektir» → devir anında (plan + eşik) ÖNCEKİ vardiya hâlâ AÇIKSA
+        # dükkân boşta kalmamıştır, geç gelene ceza yazılmaz.
+        if int(cfg.get("handover_waiver") or 0):
+            try:
+                _cut = sched + timedelta(minutes=_g)
+                _prole = str(sh.get("shift_role") or "barista")
+                _pv = db.execute(
+                    "SELECT end_time FROM shifts WHERE COALESCE(branch_id,1)=? "
+                    "AND COALESCE(shift_role,'barista')=? AND id<>? AND start_time<? "
+                    "ORDER BY start_time DESC LIMIT 1",
+                    (bid, _prole, sid, sched.isoformat())).fetchone()
+                if _pv and (not _pv["end_time"]
+                            or datetime.fromisoformat(_pv["end_time"]) > _cut):
+                    return None              # önceki hâlâ açıktı → anlaşmışlar
+            except Exception as _e:
+                logger.warning(f"op handover waiver: {_e}")
         charge = delay                       # eşik aşıldı: baştan itibaren sayılır
         _rate = op_rate_for(cfg, bid)      # şubeye özel tarife, yoksa genel
         if _rate <= 0:
@@ -2121,6 +2148,37 @@ def op_reason(row):
             f"{int(r.get('delay_min') or 0)} мин "
             f"(льгота {int(r.get('grace_min') or 0)} мин превышена — "
             f"оплачивается всё опоздание)")
+
+
+def op_recalc(db, shift_id):
+    """Vardiyanın saati SONRADAN düzeltilince açılış cezasını YENİDEN hesapla.
+
+    Owner kuralı (2026-09-16): «ben arada kendim ayarlarım çocukların geldiği
+    saati; o zaman para cezası da sonradan uyguladığım saate göre değişsin,
+    açıldığı saatteki gibi kalmasın.»
+
+    Eski kayıt ve varsa yazdığı ceza (+ owner'a geçen alacak) TAMAMEN geri
+    alınır, sonra kural baştan işletilir. Döner: (yeni_kayit|None, eski_tutar).
+    """
+    old_amt = 0
+    try:
+        row = db.execute("SELECT * FROM opening_delays WHERE shift_id=?",
+                         (int(shift_id),)).fetchone()
+        if row:
+            old_amt = int(row["amount"] or 0) if row["status"] == "approved" else 0
+            if row["fine_id"]:
+                fine_to_owner_undo(db, int(row["fine_id"]))
+                db.execute("DELETE FROM fines WHERE id=? AND type=?",
+                           (int(row["fine_id"]), OP_FINE_TYPE))
+            db.execute("DELETE FROM opening_delays WHERE id=?", (int(row["id"]),))
+            db.commit()
+        sh = db.execute("SELECT * FROM shifts WHERE id=?", (int(shift_id),)).fetchone()
+        if not sh:
+            return None, old_amt
+        return op_register(db, sh), old_amt
+    except Exception as e:
+        logger.warning(f"op_recalc {shift_id}: {e}")
+        return None, old_amt
 
 
 def op_approve(db, rec_id, actor_id, actor_name, amount=None):
@@ -8216,6 +8274,33 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute("UPDATE shifts SET start_time=?, period=? WHERE id=?",
                            (start_dt.isoformat(), start_dt.strftime("%Y-%m"), sid))
             db.commit()
+            # ── AÇILIŞ CEZASI YENİDEN HESAPLANIR (owner kuralı 2026-09-16) ──
+            # Saat sonradan düzeltilirse ceza da yeni saate göre olmalı; eski
+            # kayıt ve yazdığı ceza (owner'a geçen alacak dahil) geri alınır.
+            _opmsg = ""
+            try:
+                _oprec, _opold = op_recalc(db, sid)
+                _opnew = int(_oprec["amount_calc"] or 0) if _oprec else 0
+                if _oprec and int(op_cfg(db).get("auto") or 0):
+                    op_approve(db, int(_oprec["id"]), 0, "Nero")
+                if _opold or _opnew:
+                    _opmsg = ("\n⚠️ Штраф за опоздание пересчитан: "
+                              f"{fmt_sum(_opold)} → {fmt_sum(_opnew)} сум")
+                    log_action(db, "op_recalc", user.id, user.first_name,
+                               sh["user_id"], display_name_for(db, sh["user_id"], fallback="?"),
+                               {"shift_id": sid, "old": _opold, "new": _opnew})
+                    if _opnew != _opold:
+                        try:
+                            await context.bot.send_message(
+                                sh["user_id"],
+                                "✏️ *Время смены исправлено владельцем*\n"
+                                f"Штраф за опоздание: {fmt_sum(_opold)} → *{fmt_sum(_opnew)}* сум\n\n"
+                                "Баланс: /zarplata",
+                                parse_mode="Markdown")
+                        except Exception as _e3:
+                            logger.warning(f"op_recalc bildirim: {_e3}")
+            except Exception as _e2:
+                logger.warning(f"op_recalc(edit_shift) {sid}: {_e2}")
             _sh2 = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone()
             _nm = display_name_for(db, sh["user_id"], fallback="?")
             log_action(db, "edit_shift", user.id, user.first_name, sh["user_id"], _nm,
@@ -8225,11 +8310,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(
                     f"✏️ Смена *{_nm}* обновлена.\n"
                     f"⏰ {start_dt.strftime('%d.%m %H:%M')} → {end_dt.strftime('%H:%M')} · "
-                    f"{fmt_hm(_sh2['hours'] or 0)} · {fmt_sum(_sh2['total'] or 0)} сум",
+                    f"{fmt_hm(_sh2['hours'] or 0)} · {fmt_sum(_sh2['total'] or 0)} сум" + _opmsg,
                     parse_mode="Markdown")
             else:
                 await update.message.reply_text(
-                    f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}.",
+                    f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}." + _opmsg,
                     parse_mode="Markdown")
 
         elif action == "adjust_balance":
@@ -9293,6 +9378,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # OTOMATIK KESINTI anahtari (owner istegi 2026-09-02).
             if "auto" in data:
                 _p["auto"] = 1 if data.get("auto") else 0
+            if "handover_waiver" in data:
+                _p["handover_waiver"] = 1 if data.get("handover_waiver") else 0
+            if "warn_before" in data:
+                try:
+                    _p["warn_before"] = max(0, min(120, int(float(data.get("warn_before") or 0))))
+                except (TypeError, ValueError):
+                    pass
             # SUBE BASINA сум/saat: {"2": 120000}. 0/bos gelen sube SILINIR
             # (o subede genel tarife gecerli olur).
             if "rates" in data and isinstance(data.get("rates"), dict):
@@ -11355,6 +11447,67 @@ async def backup_loop(app):
         await asyncio.sleep(1800)   # yarım saatte bir kontrol
 
 
+async def shift_end_warn_loop(app):
+    """Vardiya bitimine N dk kala kisiye hatirlatma (owner istegi 2026-09-16).
+
+    «Elemanlara uyari yapilmasi lazim: vardiya sonlanmasina 5-10 dk kaldi.»
+    Planlanan bitis Grafik'ten gelir (shift_grid + shift_templates) — subenin
+    kapanis saati DEGIL, kisinin KENDI plani. Her vardiya icin BIR KEZ gonderilir
+    (meta anahtari `shend_<shift_id>`); sure `opening_penalty.warn_before`.
+    """
+    await asyncio.sleep(40)
+    while True:
+        try:
+            db = get_db()
+            lead = int(op_cfg(db).get("warn_before") or 0)
+            if lead > 0:
+                now = datetime.now(TZ).replace(tzinfo=None)
+                tpls = grid_templates(db)
+                rows = db.execute(
+                    "SELECT * FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 40").fetchall()
+                for sh in rows:
+                    try:
+                        _st = datetime.fromisoformat(sh["start_time"])
+                    except Exception:
+                        continue
+                    _sched, _code = op_scheduled(db, int(sh["user_id"] or 0), _st, tpls)
+                    if not _sched or not _code:
+                        continue
+                    _t = (tpls or {}).get(_code) or {}
+                    _e = str(_t.get("end") or "")
+                    if ":" not in _e:
+                        continue
+                    try:
+                        _hh, _mm = [int(x) for x in _e.split(":")[:2]]
+                    except Exception:
+                        continue
+                    _end = _sched.replace(hour=_hh, minute=_mm, second=0, microsecond=0)
+                    if _end <= _sched:
+                        _end += timedelta(days=1)      # gece vardiyasi
+                    _left = (_end - now).total_seconds() / 60.0
+                    if not (0 < _left <= lead):
+                        continue
+                    _k = "shend_%d" % int(sh["id"])
+                    if db.execute("SELECT 1 FROM meta WHERE k=?", (_k,)).fetchone():
+                        continue
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
+                               (_k, now.isoformat()))
+                    db.commit()
+                    try:
+                        await app.bot.send_message(
+                            int(sh["user_id"]),
+                            "⏰ *Смена скоро заканчивается*\n"
+                            f"По плану до *{_e}* — осталось {int(round(_left))} мин.\n\n"
+                            "Закройте смену вовремя и дождитесь сменщика.",
+                            parse_mode="Markdown")
+                    except Exception as _e2:
+                        logger.warning(f"shift_end_warn DM: {_e2}")
+        except Exception as e:
+            logger.warning(f"shift_end_warn_loop: {e}")
+        await asyncio.sleep(60)
+
+
 async def payment_reminder_loop(app):
     """Her gün kontrol: Railway ödemesinden (PAY_DAY=14) PAY_REMIND_BEFORE=3 gün önce
     (ayın 11'i) owner'lara DM hatırlatma. Ayda bir gönderilir (meta ile takip)."""
@@ -11445,6 +11598,7 @@ async def setup_commands(app):
     await start_web_server(app)
     # Ödeme hatırlatma arka plan görevi
     asyncio.create_task(payment_reminder_loop(app))
+    asyncio.create_task(shift_end_warn_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
 
