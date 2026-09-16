@@ -1923,10 +1923,20 @@ def cps_fr_reached(db, period, branch_id=None, cfg=None):
 OP_DEFAULTS = {
     "on": 1,           # açık/kapalı
     "grace": 60,       # dakika — buraya kadar para cezası yok (CPS ayrı işler)
-    "per_hour": 100000,  # сум/saat. TEK KAYNAK — dakikalık bundan türer,
+    "per_hour": 120000,  # сум/saat. TEK KAYNAK — dakikalık bundan türer,
                          # iki ayrı sayı tutmak ikisinin ayrışması demekti.
+                         # 120.000 owner'ın normali (2026-09-02); ekrandan
+                         # değiştirilir, şube başına da ezilebilir (`rates`).
     "codes": [],       # hangi vardiya ŞABLONLARI «açılış» sayılır (owner seçer)
     "branches": [],    # hangi şubelerde aktif — BOŞ = hepsi
+    # OTOMATİK KESİNTİ (owner isteği 2026-09-02): «o belirlediğim zamandan
+    # geçince hemen hesabında otomatik kesilsin». 1 = kayıt açılır açılmaz
+    # onaylanır, ceza bakiyeye girer ve kişiye DM gider. 0 = eski davranış
+    # (beklemede durur, owner onaylar) — o yol SİLİNMEDİ.
+    "auto": 1,
+    # ŞUBE BAŞINA сум/saat. {"2": 120000} gibi; şube yoksa `per_hour` geçerli.
+    # Sebep: her dükkânın vardiya cirosu farklı, ceza ona göre ayarlanıyor.
+    "rates": {},
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -1945,7 +1955,7 @@ def op_cfg(db):
     except Exception:
         pass
     # Tipleri sabitle: ekrandan string gelebilir.
-    for _k in ("on", "grace", "per_hour"):
+    for _k in ("on", "grace", "per_hour", "auto"):
         try:
             cfg[_k] = int(float(cfg[_k]))
         except Exception:
@@ -1953,6 +1963,19 @@ def op_cfg(db):
     for _k in ("codes", "branches"):
         if not isinstance(cfg[_k], list):
             cfg[_k] = []
+    # Şube başına tarife: anahtar str(branch_id), değer сум/saat (negatif olmaz).
+    if not isinstance(cfg.get("rates"), dict):
+        cfg["rates"] = {}
+    else:
+        _r = {}
+        for _bk, _bv in cfg["rates"].items():
+            try:
+                _rv = int(float(_bv))
+            except Exception:
+                continue
+            if _rv > 0:
+                _r[str(int(_bk))] = _rv
+        cfg["rates"] = _r
     cfg["grace"] = max(0, cfg["grace"])
     cfg["per_hour"] = max(0, cfg["per_hour"])
     return cfg
@@ -1967,6 +1990,20 @@ def op_cfg_save(db, patch):
                (json.dumps(cfg, ensure_ascii=False),))
     db.commit()
     return op_cfg(db)
+
+
+def op_rate_for(cfg, branch_id):
+    """O şubenin сум/saat tarifesi. Şubeye özel yoksa genel `per_hour`.
+
+    Owner: «her dükkânın bir vardiyada yapacağı ciro farklı, ceza ona göre
+    olsun» → şube başına tarife. Genel değer varsayılan olarak kalır."""
+    try:
+        _r = (cfg.get("rates") or {}).get(str(int(branch_id or 0)))
+        if _r:
+            return int(_r)
+    except Exception:
+        pass
+    return int(cfg.get("per_hour") or 0)
 
 
 def op_amount(charge_min, per_hour):
@@ -2019,7 +2056,7 @@ def op_register(db, shift_row):
     """
     try:
         cfg = op_cfg(db)
-        if not cfg["on"] or cfg["per_hour"] <= 0:
+        if not cfg["on"]:
             return None
         sh = dict(shift_row)
         sid = int(sh.get("id") or 0)
@@ -2041,10 +2078,19 @@ def op_register(db, shift_row):
         delay = int((actual - sched).total_seconds() // 60)
         if delay <= 0:
             return None
-        charge = delay - int(cfg["grace"])
-        if charge <= 0:
-            return None                      # grace içinde: para cezası YOK
-        amt = op_amount(charge, cfg["per_hour"])
+        # ── GRACE = EŞİK, İNDİRİM DEĞİL (owner kuralı 2026-09-02) ───────────
+        # «10 dakika gecikse uygulanmayacak; 10 dakikadan geçse o 10 dakika da
+        # hesaba katılacak.» Yani grace aşılmadıysa ceza YOK; aşıldıysa TÜM
+        # gecikme ücretlendirilir — ilk dakikalar düşülmez.
+        # (Eskiden `charge = delay - grace` idi: 30 dk gecikme 20 dk sayılıyordu.)
+        _g = int(cfg["grace"])
+        if delay <= _g:
+            return None                      # eşik içinde: para cezası YOK
+        charge = delay                       # eşik aşıldı: baştan itibaren sayılır
+        _rate = op_rate_for(cfg, bid)      # şubeye özel tarife, yoksa genel
+        if _rate <= 0:
+            return None
+        amt = op_amount(charge, _rate)
         if amt <= 0:
             return None
         _u = db.execute("SELECT COALESCE(display_name,name) AS nm FROM users "
@@ -2057,7 +2103,7 @@ def op_register(db, shift_row):
             (int(sh.get("user_id") or 0), (_u["nm"] if _u else "") or "", bid, sid, code,
              actual.strftime("%Y-%m-%d"), sh.get("period") or actual.strftime("%Y-%m"),
              sched.isoformat(), actual.isoformat(), delay, int(cfg["grace"]), charge,
-             int(cfg["per_hour"]), amt, amt, datetime.now(TZ).isoformat()))
+             int(_rate), amt, amt, datetime.now(TZ).isoformat()))
         db.commit()
         return db.execute("SELECT * FROM opening_delays WHERE id=?",
                           (cur.lastrowid,)).fetchone()
@@ -2073,8 +2119,8 @@ def op_reason(row):
     _a = str(r.get("actual") or "")[11:16]
     return (f"Опоздание с открытием · план {_s} → факт {_a} · "
             f"{int(r.get('delay_min') or 0)} мин "
-            f"(сверх {int(r.get('grace_min') or 0)} мин: "
-            f"{int(r.get('charge_min') or 0)} мин)")
+            f"(льгота {int(r.get('grace_min') or 0)} мин превышена — "
+            f"оплачивается всё опоздание)")
 
 
 def op_approve(db, rec_id, actor_id, actor_name, amount=None):
@@ -5941,6 +5987,39 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                  "WHERE shift_id=?", (sh["id"],)).fetchone()
             except Exception:
                 _od = None
+            # ── OTOMATİK KESİNTİ (owner isteği 2026-09-02) ────────────────────
+            # «Belirlediğim zamandan geçince hemen hesabında otomatik kesilsin ve
+            # ona bildirim gelsin hemen.» Kayıt `pending` açılıyordu ve para ancak
+            # owner onaylayınca hareket ediyordu; artık `auto` açıkken aynı onay
+            # yolu (op_approve → `fines`) HEMEN çalışır. İkinci bir para kanalı
+            # açılmıyor. `auto` kapatılırsa eski beklemede akışı aynen döner.
+            try:
+                _opc = op_cfg(db)
+                if _od and int(_opc.get("auto") or 0):
+                    _orow, _oerr = op_approve(db, int(_od["id"]), 0, "Nero")
+                    if _orow:
+                        log_action(db, "op_auto", 0, "Nero", user.id, shown,
+                                   {"record_id": int(_od["id"]),
+                                    "amount": int(_orow["amount"] or 0),
+                                    "delay_min": int(_orow["delay_min"] or 0),
+                                    "charge_min": int(_orow["charge_min"] or 0)})
+                        try:
+                            await context.bot.send_message(
+                                user.id,
+                                "⚠️ *Опоздание с открытием*\n"
+                                f"План: *{datetime.fromisoformat(_orow['scheduled']).strftime('%H:%M')}* · "
+                                f"открыто: *{datetime.fromisoformat(_orow['actual']).strftime('%H:%M')}*\n"
+                                f"Опоздание: *{int(_orow['delay_min'] or 0)} мин* — "
+                                f"льгота {int(_orow['grace_min'] or 0)} мин превышена\n"
+                                f"К оплате: *{int(_orow['charge_min'] or 0)} мин* (всё опоздание) × "
+                                f"{fmt_sum(int(_orow['rate_hour'] or 0))}/час\n"
+                                f"Удержано: *-{fmt_sum(int(_orow['amount'] or 0))}* сум\n\n"
+                                "Баланс: /zarplata",
+                                parse_mode="Markdown")
+                        except Exception as _e2:
+                            logger.warning(f"op_auto bildirim: {_e2}")
+            except Exception as _e:
+                logger.warning(f"op_auto: {_e}")
             log_action(db, "shift_start", user.id, user.first_name, None, None,
                        {"shift_id": sh["id"], "branch_id": sh["branch_id"],
                         "start_time": sh["start_time"],
@@ -9126,6 +9205,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _p = {}
             if "on" in data:
                 _p["on"] = 1 if data.get("on") else 0
+            # OTOMATIK KESINTI anahtari (owner istegi 2026-09-02).
+            if "auto" in data:
+                _p["auto"] = 1 if data.get("auto") else 0
+            # SUBE BASINA сум/saat: {"2": 120000}. 0/bos gelen sube SILINIR
+            # (o subede genel tarife gecerli olur).
+            if "rates" in data and isinstance(data.get("rates"), dict):
+                _r = {}
+                for _bk, _bv in (data.get("rates") or {}).items():
+                    try:
+                        _rv = max(0, int(float(_bv or 0)))
+                    except (TypeError, ValueError):
+                        continue
+                    if _rv > 0:
+                        _r[str(int(_bk))] = _rv
+                _p["rates"] = _r
             for _k in ("grace", "per_hour"):
                 if _k in data:
                     try:
