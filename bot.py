@@ -1944,6 +1944,12 @@ OP_DEFAULTS = {
     # yazılmaz (owner: «1. eleman kapatmayıp bekliyorsa iki eleman anlaşmış
     # demektir»). Kapalıysa dükkân boşta kalmış demektir → ceza işler.
     "handover_waiver": 1,
+    # MUAFİYET SINIRI, dakika (owner onayı 2026-09-17: 60). Muafiyet yalnız
+    # GERÇEK bir devirde geçerli: önceki vardiyanın PLANLI bitişi devir anından
+    # en fazla bu kadar önceyse. Unutulup açık kalmış bir vardiya (planlı bitişi
+    # saatler önce) sonraki kişinin gecikmesini örtmez. Önceki kişinin planı
+    # yoksa sınır hesaplanamaz → muafiyet olduğu gibi kalır.
+    "handover_bound": 60,
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -1962,7 +1968,7 @@ def op_cfg(db):
     except Exception:
         pass
     # Tipleri sabitle: ekrandan string gelebilir.
-    for _k in ("on", "grace", "per_hour", "auto", "warn_before", "handover_waiver"):
+    for _k in ("on", "grace", "per_hour", "auto", "warn_before", "handover_waiver", "handover_bound"):
         try:
             cfg[_k] = int(float(cfg[_k]))
         except Exception:
@@ -1986,6 +1992,7 @@ def op_cfg(db):
     cfg["grace"] = max(0, cfg["grace"])
     cfg["per_hour"] = max(0, cfg["per_hour"])
     cfg["warn_before"] = max(0, min(120, cfg["warn_before"]))
+    cfg["handover_bound"] = max(0, min(600, cfg["handover_bound"]))
     return cfg
 
 
@@ -2104,13 +2111,35 @@ def op_register(db, shift_row):
                 _cut = sched + timedelta(minutes=_g)
                 _prole = str(sh.get("shift_role") or "barista")
                 _pv = db.execute(
-                    "SELECT end_time FROM shifts WHERE COALESCE(branch_id,1)=? "
+                    "SELECT user_id, start_time, end_time FROM shifts WHERE COALESCE(branch_id,1)=? "
                     "AND COALESCE(shift_role,'barista')=? AND id<>? AND start_time<? "
                     "ORDER BY start_time DESC LIMIT 1",
                     (bid, _prole, sid, sched.isoformat())).fetchone()
                 if _pv and (not _pv["end_time"]
                             or datetime.fromisoformat(_pv["end_time"]) > _cut):
-                    return None              # önceki hâlâ açıktı → anlaşmışlar
+                    # SINIR (owner onayı 2026-09-17): gerçek devir mi, yoksa
+                    # unutulup açık kalmış eski bir vardiya mı? Önceki kişinin
+                    # PLANLI bitişi devir anından `handover_bound` dk'dan daha
+                    # önceyse muafiyet DÜŞER. Planı bilinmiyorsa muafiyet kalır.
+                    _ok = True
+                    _bound = int(cfg.get("handover_bound") or 0)
+                    if _bound > 0:
+                        try:
+                            _pst = datetime.fromisoformat(_pv["start_time"])
+                            _psched, _pcode = op_scheduled(db, int(_pv["user_id"] or 0), _pst)
+                            _pt = (grid_templates(db).get(_pcode) or {}) if _pcode else {}
+                            _pe = str(_pt.get("end") or "")
+                            if _psched and ":" in _pe:
+                                _ph, _pm = [int(x) for x in _pe.split(":")[:2]]
+                                _pend = _psched.replace(hour=_ph, minute=_pm, second=0, microsecond=0)
+                                if _pend <= _psched:
+                                    _pend += timedelta(days=1)      # gece vardiyası
+                                if _pend < _cut - timedelta(minutes=_bound):
+                                    _ok = False                     # bayat açık vardiya
+                        except Exception as _e3:
+                            logger.warning(f"op handover bound: {_e3}")
+                    if _ok:
+                        return None          # önceki hâlâ açıktı → anlaşmışlar
             except Exception as _e:
                 logger.warning(f"op handover waiver: {_e}")
         charge = delay                       # eşik aşıldı: baştan itibaren sayılır
@@ -11447,66 +11476,85 @@ async def backup_loop(app):
         await asyncio.sleep(1800)   # yarım saatte bir kontrol
 
 
+def shift_end_warn_tick(db, now, lead, tpls=None):
+    """Bir tur: bitisine `lead` dk kalan ACIK vardiyalari bul, meta ile isaretle,
+    gonderilecek mesajlari dondur. Asenkron degil -> test edilebilir.
+
+    Donen her kayit: {uid, shift_id, end, left}. `why` sozlugu teshis icin
+    (kac vardiya hangi sebeple atlandi) — owner «uyari gelmedi» dediginde
+    bakilacak ilk yer.
+    """
+    out, why = [], {"no_plan": 0, "no_end": 0, "not_in_window": 0, "already": 0}
+    if lead <= 0:
+        return out, why
+    tpls = tpls if tpls is not None else grid_templates(db)
+    rows = db.execute(
+        "SELECT * FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
+        "ORDER BY id DESC LIMIT 40").fetchall()
+    for sh in rows:
+        try:
+            _st = datetime.fromisoformat(sh["start_time"])
+        except Exception:
+            continue
+        _sched, _code = op_scheduled(db, int(sh["user_id"] or 0), _st, tpls)
+        if not _sched or not _code:
+            why["no_plan"] += 1; continue
+        _e = str(((tpls or {}).get(_code) or {}).get("end") or "")
+        if ":" not in _e:
+            why["no_end"] += 1; continue
+        try:
+            _hh, _mm = [int(x) for x in _e.split(":")[:2]]
+        except Exception:
+            why["no_end"] += 1; continue
+        _end = _sched.replace(hour=_hh, minute=_mm, second=0, microsecond=0)
+        if _end <= _sched:
+            _end += timedelta(days=1)          # gece vardiyasi
+        _left = (_end - now).total_seconds() / 60.0
+        if not (0 < _left <= lead):
+            why["not_in_window"] += 1; continue
+        _k = "shend_%d" % int(sh["id"])
+        if db.execute("SELECT 1 FROM meta WHERE k=?", (_k,)).fetchone():
+            why["already"] += 1; continue
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_k, now.isoformat()))
+        db.commit()
+        out.append({"uid": int(sh["user_id"]), "shift_id": int(sh["id"]),
+                    "end": _e, "left": int(round(_left))})
+        try:
+            log_action(db, "shift_end_warn", 0, "Nero", int(sh["user_id"]),
+                       display_name_for(db, int(sh["user_id"]), fallback="?"),
+                       {"shift_id": int(sh["id"]), "end": _e, "left": int(round(_left))})
+        except Exception:
+            pass
+    return out, why
+
+
 async def shift_end_warn_loop(app):
     """Vardiya bitimine N dk kala kisiye hatirlatma (owner istegi 2026-09-16).
 
-    «Elemanlara uyari yapilmasi lazim: vardiya sonlanmasina 5-10 dk kaldi.»
-    Planlanan bitis Grafik'ten gelir (shift_grid + shift_templates) — subenin
-    kapanis saati DEGIL, kisinin KENDI plani. Her vardiya icin BIR KEZ gonderilir
-    (meta anahtari `shend_<shift_id>`); sure `opening_penalty.warn_before`.
+    Planlanan bitis Grafik'ten gelir (kisinin KENDI plani). Her vardiya icin
+    BIR KEZ (meta shend_<id>); sure `opening_penalty.warn_before`. Mantik
+    `shift_end_warn_tick`te (test edilebilir); burasi yalniz zamanlar + DM.
     """
     await asyncio.sleep(40)
     while True:
         try:
             db = get_db()
             lead = int(op_cfg(db).get("warn_before") or 0)
-            if lead > 0:
-                now = datetime.now(TZ).replace(tzinfo=None)
-                tpls = grid_templates(db)
-                rows = db.execute(
-                    "SELECT * FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
-                    "ORDER BY id DESC LIMIT 40").fetchall()
-                for sh in rows:
-                    try:
-                        _st = datetime.fromisoformat(sh["start_time"])
-                    except Exception:
-                        continue
-                    _sched, _code = op_scheduled(db, int(sh["user_id"] or 0), _st, tpls)
-                    if not _sched or not _code:
-                        continue
-                    _t = (tpls or {}).get(_code) or {}
-                    _e = str(_t.get("end") or "")
-                    if ":" not in _e:
-                        continue
-                    try:
-                        _hh, _mm = [int(x) for x in _e.split(":")[:2]]
-                    except Exception:
-                        continue
-                    _end = _sched.replace(hour=_hh, minute=_mm, second=0, microsecond=0)
-                    if _end <= _sched:
-                        _end += timedelta(days=1)      # gece vardiyasi
-                    _left = (_end - now).total_seconds() / 60.0
-                    if not (0 < _left <= lead):
-                        continue
-                    _k = "shend_%d" % int(sh["id"])
-                    if db.execute("SELECT 1 FROM meta WHERE k=?", (_k,)).fetchone():
-                        continue
-                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
-                               (_k, now.isoformat()))
-                    db.commit()
-                    try:
-                        await app.bot.send_message(
-                            int(sh["user_id"]),
-                            "⏰ *Смена скоро заканчивается*\n"
-                            f"По плану до *{_e}* — осталось {int(round(_left))} мин.\n\n"
-                            "Закройте смену вовремя и дождитесь сменщика.",
-                            parse_mode="Markdown")
-                    except Exception as _e2:
-                        logger.warning(f"shift_end_warn DM: {_e2}")
+            now = datetime.now(TZ).replace(tzinfo=None)
+            hits, _why = shift_end_warn_tick(db, now, lead)
+            for h in hits:
+                try:
+                    await app.bot.send_message(
+                        h["uid"],
+                        "⏰ *Смена скоро заканчивается*\n"
+                        f"По плану до *{h['end']}* — осталось {h['left']} мин.\n\n"
+                        "Закройте смену вовремя и дождитесь сменщика.",
+                        parse_mode="Markdown")
+                except Exception as _e2:
+                    logger.warning(f"shift_end_warn DM: {_e2}")
         except Exception as e:
             logger.warning(f"shift_end_warn_loop: {e}")
         await asyncio.sleep(60)
-
 
 async def payment_reminder_loop(app):
     """Her gün kontrol: Railway ödemesinden (PAY_DAY=14) PAY_REMIND_BEFORE=3 gün önce
