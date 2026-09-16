@@ -2148,6 +2148,8 @@ def op_approve(db, rec_id, actor_id, actor_name, amount=None):
                (amt, cur.lastrowid, actor_id, actor_name or "",
                 datetime.now(TZ).isoformat(), int(rec_id)))
     db.commit()
+    # Acilis cezasi da owner'in parasi (marka cezasi degil) → bakiyesine gecer.
+    fine_to_owner(db, cur.lastrowid)
     return db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone(), ""
 
 
@@ -2158,6 +2160,7 @@ def op_reject(db, rec_id, actor_id, actor_name):
     if not row:
         return None, "Запись не найдена."
     if row["fine_id"]:
+        fine_to_owner_undo(db, int(row["fine_id"]))
         db.execute("DELETE FROM fines WHERE id=? AND type=?",
                    (int(row["fine_id"]), OP_FINE_TYPE))
     db.execute("UPDATE opening_delays SET status='rejected', fine_id=NULL, "
@@ -2705,6 +2708,79 @@ def carry_debt(db, user_id, period=None):
         except Exception:
             pass
     return total
+
+
+# ─── TOPLANAN CEZA OWNER'IN BAKİYESİNE GEÇER ──────────────────────────────
+# Owner kuralı (2026-09-16): «onlardan gelen para benim buraya geçsin.»
+# Daha önce bu bilerek YAPILMAMIŞTI: ceza yalnız cezalananın netini düşürüyor,
+# para kimseye geçmiyordu ve kart «в баланс не входит» diyordu. Owner artık
+# geçmesini istiyor → ceza yazılınca owner'a AYNI DÖNEMDE +tutar `adjustments`
+# satırı açılır. calc_summary'ye dokunulmaz; kayıt açık, etiketli ve geri
+# alınabilir (ceza silinirse karşı kayıt da silinir).
+#
+# DIŞARIDA KALANLAR:
+#   · Marka denetim cezaları (проверка / посторонняя) — o para Caffelito'ya
+#     gider, owner'a değil. Kart da onları hep dışarıda tutuyordu.
+#   · Owner'ın KENDİ üstüne yazılan ceza — kendi kendine para geçmez.
+OP_BRAND_TYPES = ("insp_70", "insp_60", "insp_50", "foreign")
+
+
+def _primary_owner(db):
+    try:
+        r = db.execute("SELECT user_id FROM users WHERE role='owner' "
+                       "ORDER BY user_id LIMIT 1").fetchone()
+        return int(r["user_id"]) if r else 0
+    except Exception:
+        return 0
+
+
+def fine_to_owner(db, fine_id):
+    """Yazılan cezayı owner'ın bakiyesine ALACAK olarak geçir. Idempotent.
+
+    Döner: yazılan tutar (0 = geçmedi)."""
+    try:
+        row = db.execute("SELECT * FROM fines WHERE id=?", (int(fine_id),)).fetchone()
+        if not row:
+            return 0
+        amt = int(row["amount"] or 0)
+        if amt <= 0:
+            return 0
+        if str(row["type"] or "") in OP_BRAND_TYPES:
+            return 0                      # marka cezası — owner'a geçmez
+        # Parayı kim alacak: cezayı kesen owner; sistem kestiyse (açılış cezası)
+        # birincil owner.
+        _by = int(row["added_by"] or 0)
+        if _by and get_role(db, _by) == "owner":
+            oid = _by
+        else:
+            oid = _primary_owner(db)
+        if not oid or int(row["user_id"] or 0) == oid:
+            return 0                      # kendi üstüne yazılan ceza sayılmaz
+        tag = f"[shtraf:{int(fine_id)}]"
+        if db.execute("SELECT 1 FROM adjustments WHERE user_id=? AND note LIKE ? LIMIT 1",
+                      (oid, f"%{tag}%")).fetchone():
+            return 0                      # zaten geçirilmiş
+        _nm = display_name_for(db, int(row["user_id"] or 0), fallback="?")
+        db.execute(
+            "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,"
+            "added_by_name,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (oid, amt, f"Штраф · {_nm} {tag}", row["period"],
+             user_branch_id(db, oid), 0, "Nero", datetime.now(TZ).isoformat()))
+        db.commit()
+        return amt
+    except Exception as e:
+        logger.warning(f"fine_to_owner {fine_id}: {e}")
+        return 0
+
+
+def fine_to_owner_undo(db, fine_id):
+    """Ceza silinince owner'a yazılan alacağı da geri al."""
+    try:
+        db.execute("DELETE FROM adjustments WHERE note LIKE ?",
+                   (f"%[shtraf:{int(fine_id)}]%",))
+        db.commit()
+    except Exception as e:
+        logger.warning(f"fine_to_owner_undo {fine_id}: {e}")
 
 
 def get_active_shift(db, user_id):
@@ -4973,12 +5049,13 @@ async def cmd_ceza(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     reason = " ".join(context.args[2:]) or "Без причины"
     period = current_period()
-    db.execute(
+    _fc2 = db.execute(
         "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
         "VALUES (?,?,?,?,?,?,?,?)",
         (target["user_id"], amount, reason, "manual", period,
          user.id, user.first_name, datetime.now(TZ).isoformat()))
     db.commit()
+    fine_to_owner(db, _fc2.lastrowid)
     await update.message.reply_text(
         f"⚠️ Штраф выписан\n\n"
         f"Кому: {target['name']}\n"
@@ -6373,11 +6450,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if not trow:
                     continue
                 final_reason = reason + (f" (раздел.: {len(targets)})" if split_eff and len(targets) > 1 else "")
-                db.execute(
+                _fc = db.execute(
                     "INSERT INTO fines (user_id, amount, reason, type, period, added_by, added_by_name, created_at) "
                     "VALUES (?,?,?,?,?,?,?,?)",
                     (tid, per_target, final_reason, ftype, period,
                      user.id, user.first_name, now.isoformat()))
+                db.commit()
+                # Toplanan ceza owner'in bakiyesine ALACAK olarak gecer
+                # (marka denetim cezalari haric — o para Caffelito'ya gider).
+                fine_to_owner(db, _fc.lastrowid)
                 sent_to.append(trow)
                 # Log
                 log_action(db, "fine_add", user.id, user.first_name,
@@ -8309,6 +8390,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         _rm = _drop_shift_daily_pay(db, rid)
                         if _rm:
                             logger.info(f"vardiya {rid} silindi → gunluk bonus odemesi {_rm} de silindi")
+                    # Ceza siliniyorsa owner'a yazilan ALACAK da geri alinir,
+                    # yoksa ceza yokken para owner'da kalirdi.
+                    if kind == "fine":
+                        fine_to_owner_undo(db, rid)
                     db.execute(f"DELETE FROM {tbl} WHERE id=?", (rid,))
                     db.commit()
                     log_action(db, "delete_record", user.id, user.first_name, None, None, {"kind": kind, "id": rid})
