@@ -2176,7 +2176,7 @@ def op_planned(db, cfg, user_id, branch_id, when_dt, tpls=None):
     return sched, en, "grid:" + code
 
 
-def op_register(db, shift_row):
+def op_register(db, shift_row, why=None):
     """Vardiya başlarken açılış gecikmesini KAYDET (pending).
 
     Hiçbir para hareketi yapmaz — yalnızca olguyu yazar. Kesinleşme owner
@@ -2187,27 +2187,34 @@ def op_register(db, shift_row):
     """
     try:
         cfg = op_cfg(db)
+        # `why`: ceza OLUSMADIYSA sebebi buraya yazilir (owner'a gosterilir).
+        # 2026-09-17: sessiz basarisizlik owner'i yakti — «neden ceza yok»
+        # sorusunun cevabi ekranda olmali, tahminle degil.
+        _why = why if isinstance(why, list) else []
         if not cfg["on"]:
-            return None
+            _why.append("штраф выключен в настройках"); return None
         sh = dict(shift_row)
         sid = int(sh.get("id") or 0)
         if not sid or not sh.get("start_time"):
-            return None
+            _why.append("у смены нет времени начала"); return None
         if db.execute("SELECT 1 FROM opening_delays WHERE shift_id=? LIMIT 1",
                       (sid,)).fetchone():
-            return None                      # aynı vardiya iki kez cezalanmaz
+            _why.append("по этой смене уже есть запись"); return None
         actual = datetime.fromisoformat(sh["start_time"])
         bid = int(sh.get("branch_id") or 0)
         if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
-            return None
+            _why.append("филиал выключен в настройках штрафа"); return None
         # PLAN: şube pencereleri öncelikli (owner 2026-09-17), yoksa eski yol.
         sched, _pend, _src = op_planned(db, cfg, int(sh.get("user_id") or 0), bid, actual)
         if not sched:
+            _haswin = bool((cfg.get("windows") or {}).get(str(bid)))
+            _why.append("смены филиала не заданы в настройках (нажмите Сохранить в «Смены по филиалам»)"
+                        if not _haswin else "приход не попал ни в одну смену филиала")
             return None                      # plan yok → geç kalınacak bir şey yok
         code = _src
         delay = int((actual - sched).total_seconds() // 60)
         if delay <= 0:
-            return None
+            _why.append(f"пришёл вовремя или раньше плана {sched.strftime('%H:%M')}"); return None
         # ── GRACE = EŞİK, İNDİRİM DEĞİL (owner kuralı 2026-09-02) ───────────
         # «10 dakika gecikse uygulanmayacak; 10 dakikadan geçse o 10 dakika da
         # hesaba katılacak.» Yani grace aşılmadıysa ceza YOK; aşıldıysa TÜM
@@ -2215,7 +2222,7 @@ def op_register(db, shift_row):
         # (Eskiden `charge = delay - grace` idi: 30 dk gecikme 20 dk sayılıyordu.)
         _g = int(cfg["grace"])
         if delay <= _g:
-            return None                      # eşik içinde: para cezası YOK
+            _why.append(f"опоздание {delay} мин — в пределах льготы {_g} мин"); return None
         # ── DEVİR MUAFİYETİ (owner kuralı 2026-09-16) ───────────────────────
         # «1. vardiyadaki eleman 16:00'da kapatır ve diğerini bekler; gelmezse
         #  ceza başlar. Eğer 1. vardiya açık kalırsa iki eleman anlaşmış
@@ -2247,16 +2254,16 @@ def op_register(db, shift_row):
                         except Exception as _e3:
                             logger.warning(f"op handover bound: {_e3}")
                     if _ok:
-                        return None          # önceki hâlâ açıktı → anlaşmışlar
+                        _why.append("предыдущая смена ещё была открыта (передача смены)"); return None
             except Exception as _e:
                 logger.warning(f"op handover waiver: {_e}")
         charge = delay                       # eşik aşıldı: baştan itibaren sayılır
         _rate = op_rate_for(cfg, bid)      # şubeye özel tarife, yoksa genel
         if _rate <= 0:
-            return None
+            _why.append("ставка сум/час равна 0"); return None
         amt = op_amount(charge, _rate)
         if amt <= 0:
-            return None
+            _why.append("сумма получилась 0"); return None
         _u = db.execute("SELECT COALESCE(display_name,name) AS nm FROM users "
                         "WHERE user_id=?", (int(sh.get("user_id") or 0),)).fetchone()
         cur = db.execute(
@@ -2287,7 +2294,7 @@ def op_reason(row):
             f"оплачивается всё опоздание)")
 
 
-def op_recalc(db, shift_id):
+def op_recalc(db, shift_id, why=None):
     """Vardiyanın saati SONRADAN düzeltilince açılış cezasını YENİDEN hesapla.
 
     Owner kuralı (2026-09-16): «ben arada kendim ayarlarım çocukların geldiği
@@ -2312,7 +2319,7 @@ def op_recalc(db, shift_id):
         sh = db.execute("SELECT * FROM shifts WHERE id=?", (int(shift_id),)).fetchone()
         if not sh:
             return None, old_amt
-        return op_register(db, sh), old_amt
+        return op_register(db, sh, why), old_amt
     except Exception as e:
         logger.warning(f"op_recalc {shift_id}: {e}")
         return None, old_amt
@@ -6259,6 +6266,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                  "WHERE shift_id=?", (sh["id"],)).fetchone()
             except Exception:
                 _od = None
+            # Ceza olusmadiysa SEBEBI gunluge yaz (owner «neden yok» diye bakabilsin).
+            _odwhy = []
+            if not _od:
+                try:
+                    op_register(db, sh, _odwhy)   # idempotent: kayit varsa yine None
+                except Exception:
+                    pass
             # ── OTOMATİK KESİNTİ (owner isteği 2026-09-02) ────────────────────
             # «Belirlediğim zamandan geçince hemen hesabında otomatik kesilsin ve
             # ona bildirim gelsin hemen.» Kayıt `pending` açılıyordu ve para ancak
@@ -6299,7 +6313,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "manual": bool(custom_start and not _near_now),
                         "mode": _mode or "normal",
                         "opening_delay_id": (_od["id"] if _od else None),
-                        "opening_delay_amount": (int(_od["amount_calc"] or 0) if _od else 0)})
+                        "opening_delay_amount": (int(_od["amount_calc"] or 0) if _od else 0),
+                        "opening_delay_why": (_odwhy[-1] if (not _od and _odwhy) else "")})
             await update.message.reply_text(
                 f"🟢 *Смена началась!*\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -8416,8 +8431,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # kayıt ve yazdığı ceza (owner'a geçen alacak dahil) geri alınır.
             _opmsg = ""
             try:
-                _oprec, _opold = op_recalc(db, sid)
+                _opwhy = []
+                _oprec, _opold = op_recalc(db, sid, _opwhy)
                 _opnew = int(_oprec["amount_calc"] or 0) if _oprec else 0
+                if not _oprec and _opwhy:
+                    # Ceza OLUSMADI -> owner sebebini gorsun (sessiz kalma).
+                    _opmsg = chr(10) + "ℹ️ Штраф не начислен: " + _opwhy[-1]
                 if _oprec and int(op_cfg(db).get("auto") or 0):
                     op_approve(db, int(_oprec["id"]), 0, "Nero")
                 if _opold or _opnew:
