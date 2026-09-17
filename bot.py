@@ -8426,7 +8426,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "op_recalc", user.id, user.first_name,
                                sh["user_id"], display_name_for(db, sh["user_id"], fallback="?"),
                                {"shift_id": sid, "old": _opold, "new": _opnew})
-                    if _opnew != _opold:
+                    # `silent` (owner istegi 2026-09-17): cezayi geriye donuk uygularken
+                    # kisiye DM GITMESIN. Kayit ve bakiye aynen isler, yalniz mesaj yok.
+                    if _opnew != _opold and not bool(data.get("silent")):
                         try:
                             await context.bot.send_message(
                                 sh["user_id"],
