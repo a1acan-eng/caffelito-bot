@@ -3310,7 +3310,35 @@ def _pdf_when(rep):
     return f"{d} · внесён {cd[:5]}" + (f" {ct}" if ct else "")
 
 
-def build_report_pdf(db, rep_row, partial=False):
+def op_row_for_report(db, rep_row=None, sid=0):
+    """Kagida basilacak acilis gecikmesi satiri. Once vardiya id ile, yoksa
+    rapordaki kisi + tarih ile (cashreports'ta shift_id yok). Reddedilmis
+    kayit basilmaz — ceza yok demektir. Bulunamazsa None."""
+    try:
+        if sid:
+            r = db.execute("SELECT * FROM opening_delays WHERE shift_id=? "
+                           "AND status!='rejected' ORDER BY id DESC LIMIT 1",
+                           (int(sid),)).fetchone()
+            if r:
+                return r
+        if rep_row is None:
+            return None
+        rr = dict(rep_row)
+        uid = int(rr.get("user_id") or 0)
+        d = str(rr.get("date") or "").strip()[:10]
+        if len(d) == 10 and d[2] == "." and d[5] == ".":
+            d = d[6:10] + "-" + d[3:5] + "-" + d[0:2]
+        if not uid or len(d) != 10:
+            return None
+        return db.execute("SELECT * FROM opening_delays WHERE user_id=? AND date=? "
+                          "AND status!='rejected' ORDER BY id DESC LIMIT 1",
+                          (uid, d)).fetchone()
+    except Exception as e:
+        logger.warning(f"op_row_for_report: {e}")
+        return None
+
+
+def build_report_pdf(db, rep_row, partial=False, op_row=None):
     """Bir kasa raporundan PDF uret, bayt olarak dondur.
 
     Ekrandaki «Сменный отчёт» ile AYNI satirdan okur; ikinci bir hesap
@@ -3384,6 +3412,26 @@ def build_report_pdf(db, rep_row, partial=False):
     row("Итого продано",
         f"{int(r.get('cups_total') or 0)} шт", 10.5, "B", gap=7)
     rule()
+
+    # ── Acilis gecikmesi ────────────────────────────────────────────────
+    # Owner (2026-09-17): «raporda gec kaldigi icin kesilen ceza yok».
+    # Kasa raporundan bagimsiz — raporsuz vardiyada da basilir.
+    if op_row is not None:
+        _op = dict(op_row)
+        def _hm(v):
+            try:
+                return datetime.fromisoformat(str(v)).strftime("%H:%M")
+            except Exception:
+                return str(v or "")[11:16]
+        line("ОПОЗДАНИЕ С ОТКРЫТИЕМ", 8.5, "B", gap=6, col=(150, 132, 100))
+        row("План → факт", f"{_hm(_op.get('scheduled'))} → {_hm(_op.get('actual'))}", 9.5)
+        row("Опоздание", f"{int(_op.get('delay_min') or 0)} мин"
+            + (f" · льгота {int(_op.get('grace_min') or 0)} мин" if int(_op.get('grace_min') or 0) else ""), 9.5)
+        if str(_op.get("status") or "pending") == "approved":
+            row("Штраф", "-" + _pdf_fmt(_op.get("amount")), 10.5, "B", gap=7, col=(170, 40, 30))
+        else:
+            row("Штраф", _pdf_fmt(_op.get("amount")) + " · ожидает решения", 10, "B", gap=7)
+        rule()
 
     if partial:
         # Kasa raporu yok: para hakkinda TEK KELIME etmiyoruz.
@@ -9669,8 +9717,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Нет доступа.")
                 return
             try:
-                blob = (build_report_pdf(db, row) if row
-                        else build_report_pdf(db, shift_as_report(sh), partial=True))
+                _oprow = op_row_for_report(db, row, sid)
+                blob = (build_report_pdf(db, row, op_row=_oprow) if row
+                        else build_report_pdf(db, shift_as_report(sh), partial=True, op_row=_oprow))
             except Exception as e:
                 logger.exception(f"PDF uretimi basarisiz (id={rid}): {e}")
                 await update.message.reply_text(
