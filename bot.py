@@ -1922,7 +1922,7 @@ def cps_fr_reached(db, period, branch_id=None, cfg=None):
 #   ceza = (gecikme − grace) dakika × (saatlik ücret / 60)
 OP_DEFAULTS = {
     "on": 1,           # açık/kapalı
-    "grace": 60,       # dakika — buraya kadar para cezası yok (CPS ayrı işler)
+    "grace": 10,       # dakika — ESIK: buraya kadar ceza yok, aşınca tamamı (owner: 10)
     "per_hour": 120000,  # сум/saat. TEK KAYNAK — dakikalık bundan türer,
                          # iki ayrı sayı tutmak ikisinin ayrışması demekti.
                          # 120.000 owner'ın normali (2026-09-02); ekrandan
@@ -1934,7 +1934,7 @@ OP_DEFAULTS = {
     # onaylanır, ceza bakiyeye girer ve kişiye DM gider. 0 = eski davranış
     # (beklemede durur, owner onaylar) — o yol SİLİNMEDİ.
     "auto": 1,
-    # ŞUBE BAŞINA сум/saat. {"2": 120000} gibi; şube yoksa `per_hour` geçerli.
+    # ŞUBE BAŞINA сум/saat. {"2": 150000} gibi; şube yoksa `per_hour` geçerli.
     # Sebep: her dükkânın vardiya cirosu farklı, ceza ona göre ayarlanıyor.
     "rates": {},
     # VARDİYA BİTİŞİ UYARISI (owner isteği 2026-09-16): «vardiya sonlanmasına
@@ -1950,6 +1950,12 @@ OP_DEFAULTS = {
     # saatler önce) sonraki kişinin gecikmesini örtmez. Önceki kişinin planı
     # yoksa sınır hesaplanamaz → muafiyet olduğu gibi kalır.
     "handover_bound": 60,
+    # ŞUBE VARDİYA PENCERELERİ (owner isteği 2026-09-17): {"1": [{"s":"07:00",
+    # "e":"17:00"}, ...]}. Ceza artık kişinin График planına DEĞİL, şubenin
+    # pencerelerine göre: kim hangi saatte açarsa, en yakın pencerenin
+    # başlangıcına göre gecikme hesaplanır. Owner ekler/siler/düzenler.
+    # Pencere tanımlı olmayan şubede eski (План + şablon) yol yedek olarak çalışır.
+    "windows": {},
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -1965,6 +1971,22 @@ def op_cfg(db):
                 for k in cfg:
                     if k in _j:
                         cfg[k] = _j[k]
+                # TEK SEFERLİK GÖÇ (2026-09-17): eşik ESKİ varsayılan 60'ta kalmışsa
+                # owner'ın defalarca söylediği 10'a çek. 60 hiç seçilmiş bir değer
+                # değildi — ilk kurulumun varsayılanıydı; 15 dk geç gelen bu yüzden
+                # cezasız kaldı («rezalet»). Bir kez yapılır (meta bayrağı).
+                try:
+                    if int(float(_j.get("grace", 60))) == 60 and not db.execute(
+                            "SELECT 1 FROM meta WHERE k='op_grace_migrated'").fetchone():
+                        _j["grace"] = 10
+                        cfg["grace"] = 10
+                        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('opening_penalty', ?)",
+                                   (json.dumps(_j, ensure_ascii=False),))
+                        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('op_grace_migrated','1')")
+                        db.commit()
+                        logger.info("opening_penalty: grace 60 -> 10 (tek seferlik goc)")
+                except Exception as _ge:
+                    logger.warning(f"op grace goc: {_ge}")
     except Exception:
         pass
     # Tipleri sabitle: ekrandan string gelebilir.
@@ -1976,6 +1998,31 @@ def op_cfg(db):
     for _k in ("codes", "branches"):
         if not isinstance(cfg[_k], list):
             cfg[_k] = []
+    # Şube pencereleri: {str(branch_id): [{"s":"HH:MM","e":"HH:MM"}, ...]}
+    _w = {}
+    if isinstance(cfg.get("windows"), dict):
+        for _bk, _lst in cfg["windows"].items():
+            if not isinstance(_lst, list):
+                continue
+            _rows = []
+            for _x in _lst:
+                if not isinstance(_x, dict):
+                    continue
+                _s0, _e0 = str(_x.get("s") or "").strip(), str(_x.get("e") or "").strip()
+                if _mins(_s0) is None or _mins(_e0) is None:
+                    continue
+                _rows.append({"s": _s0[:5], "e": _e0[:5]})
+            # ayni baslangic iki kez olmasin; baslangica gore sirali
+            _seen, _uniq = set(), []
+            for _r0 in sorted(_rows, key=lambda r: _mins(r["s"])):
+                if _r0["s"] in _seen:
+                    continue
+                _seen.add(_r0["s"]); _uniq.append(_r0)
+            try:
+                _w[str(int(_bk))] = _uniq
+            except Exception:
+                continue
+    cfg["windows"] = _w
     # Şube başına tarife: anahtar str(branch_id), değer сум/saat (negatif olmaz).
     if not isinstance(cfg.get("rates"), dict):
         cfg["rates"] = {}
@@ -2003,6 +2050,8 @@ def op_cfg_save(db, patch):
             cfg[k] = patch[k]
     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('opening_penalty', ?)",
                (json.dumps(cfg, ensure_ascii=False),))
+    # Owner AÇIKÇA kaydetti → 60→10 göçü bir daha çalışmasın (60'ı bilerek seçmiş olabilir).
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('op_grace_migrated','1')")
     db.commit()
     return op_cfg(db)
 
@@ -2060,6 +2109,73 @@ def op_scheduled(db, user_id, when_dt, tpls=None):
         return None, ""
 
 
+def op_window_for(cfg, branch_id, when_dt, early_tol=60):
+    """Şube pencerelerinden bu başlangıca uyan vardiya → (planlı_başlangıç, planlı_bitiş).
+
+    Kural: gelişten en fazla `early_tol` dk SONRA başlayan pencereler de aday
+    (erken gelen bir sonraki vardiyaya sayılır); adaylar içinde EN GEÇ başlayan
+    seçilir. Örnekler (07:00 · 16:00 pencereleri): 07:15→07:00 (15 dk geç),
+    15:30→16:00 (erken, ceza yok), 16:40→16:00 (40 dk geç), 12:00→07:00 (5 sa geç).
+    Gece pencereleri (bitiş < başlangıç) ertesi güne taşar; dün başlayan pencere
+    de adaydır (00:30'da gelen 22:00 vardiyasına sayılır).
+    """
+    try:
+        rows = (cfg.get("windows") or {}).get(str(int(branch_id or 0))) or []
+    except Exception:
+        rows = []
+    if not rows:
+        return None, None
+    best = None
+    for dd in (when_dt.date() - timedelta(days=1), when_dt.date()):
+        base = datetime(dd.year, dd.month, dd.day)
+        for r in rows:
+            ms, me = _mins(r.get("s")), _mins(r.get("e"))
+            if ms is None or me is None:
+                continue
+            st = base + timedelta(minutes=ms)
+            en = base + timedelta(minutes=me)
+            if en <= st:
+                en += timedelta(days=1)
+            # Bitmiş pencereye eşleşme YOK: vardiya bittikten sonra gelen kişi
+            # ona «geç kalmış» sayılmaz (02:00'de gelen, 16:00–01:00'e 10 saat
+            # geç değildir — o vardiya kapanmıştır).
+            if when_dt >= en:
+                continue
+            if st <= when_dt + timedelta(minutes=early_tol):
+                if best is None or st > best[0]:
+                    best = (st, en)
+    return best if best else (None, None)
+
+
+def op_planned(db, cfg, user_id, branch_id, when_dt, tpls=None):
+    """Bu vardiya için planlı (başlangıç, bitiş, kaynak).
+
+    Öncelik: ŞUBE PENCERELERİ (owner 2026-09-17: «kim hangi saatte açarsa, en
+    yakın pencereye göre»). Pencere tanımlı değilse ESKİ yol: kişinin График
+    planı + owner'ın seçtiği şablonlar (`codes`). Böylece pencere girilmemiş
+    şubede hiçbir şey bozulmaz."""
+    st, en = op_window_for(cfg, branch_id, when_dt)
+    if st:
+        return st, en, "window"
+    sched, code = op_scheduled(db, int(user_id or 0), when_dt, tpls)
+    if not sched or not code:
+        return None, None, ""
+    if code not in (cfg.get("codes") or []):
+        return None, None, ""
+    tpls = tpls if tpls is not None else grid_templates(db)
+    _e = str(((tpls or {}).get(code) or {}).get("end") or "")
+    en = None
+    if ":" in _e:
+        try:
+            _hh, _mm = [int(x) for x in _e.split(":")[:2]]
+            en = sched.replace(hour=_hh, minute=_mm, second=0, microsecond=0)
+            if en <= sched:
+                en += timedelta(days=1)
+        except Exception:
+            en = None
+    return sched, en, "grid:" + code
+
+
 def op_register(db, shift_row):
     """Vardiya başlarken açılış gecikmesini KAYDET (pending).
 
@@ -2081,15 +2197,14 @@ def op_register(db, shift_row):
                       (sid,)).fetchone():
             return None                      # aynı vardiya iki kez cezalanmaz
         actual = datetime.fromisoformat(sh["start_time"])
-        sched, code = op_scheduled(db, int(sh.get("user_id") or 0), actual)
-        if not sched:
-            return None                      # plan yok → geç kalınacak bir şey yok
-        # AÇILIŞ SEÇİMİ owner'ın: hangi şablonlar açılış sayılıyor.
-        if code not in (cfg["codes"] or []):
-            return None
         bid = int(sh.get("branch_id") or 0)
         if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
             return None
+        # PLAN: şube pencereleri öncelikli (owner 2026-09-17), yoksa eski yol.
+        sched, _pend, _src = op_planned(db, cfg, int(sh.get("user_id") or 0), bid, actual)
+        if not sched:
+            return None                      # plan yok → geç kalınacak bir şey yok
+        code = _src
         delay = int((actual - sched).total_seconds() // 60)
         if delay <= 0:
             return None
@@ -2126,16 +2241,9 @@ def op_register(db, shift_row):
                     if _bound > 0:
                         try:
                             _pst = datetime.fromisoformat(_pv["start_time"])
-                            _psched, _pcode = op_scheduled(db, int(_pv["user_id"] or 0), _pst)
-                            _pt = (grid_templates(db).get(_pcode) or {}) if _pcode else {}
-                            _pe = str(_pt.get("end") or "")
-                            if _psched and ":" in _pe:
-                                _ph, _pm = [int(x) for x in _pe.split(":")[:2]]
-                                _pend = _psched.replace(hour=_ph, minute=_pm, second=0, microsecond=0)
-                                if _pend <= _psched:
-                                    _pend += timedelta(days=1)      # gece vardiyası
-                                if _pend < _cut - timedelta(minutes=_bound):
-                                    _ok = False                     # bayat açık vardiya
+                            _psched, _pend, _psrc = op_planned(db, cfg, int(_pv["user_id"] or 0), bid, _pst)
+                            if _psched and _pend and _pend < _cut - timedelta(minutes=_bound):
+                                _ok = False                         # bayat açık vardiya
                         except Exception as _e3:
                             logger.warning(f"op handover bound: {_e3}")
                     if _ok:
@@ -9426,6 +9534,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     if _rv > 0:
                         _r[str(int(_bk))] = _rv
                 _p["rates"] = _r
+            if "windows" in data and isinstance(data.get("windows"), dict):
+                _p["windows"] = data.get("windows")     # op_cfg temizler/siralar
             for _k in ("grace", "per_hour"):
                 if _k in data:
                     try:
@@ -11476,7 +11586,7 @@ async def backup_loop(app):
         await asyncio.sleep(1800)   # yarım saatte bir kontrol
 
 
-def shift_end_warn_tick(db, now, lead, tpls=None):
+def shift_end_warn_tick(db, now, lead, tpls=None, cfg=None):
     """Bir tur: bitisine `lead` dk kalan ACIK vardiyalari bul, meta ile isaretle,
     gonderilecek mesajlari dondur. Asenkron degil -> test edilebilir.
 
@@ -11488,6 +11598,7 @@ def shift_end_warn_tick(db, now, lead, tpls=None):
     if lead <= 0:
         return out, why
     tpls = tpls if tpls is not None else grid_templates(db)
+    cfg = cfg if cfg is not None else op_cfg(db)
     rows = db.execute(
         "SELECT * FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
         "ORDER BY id DESC LIMIT 40").fetchall()
@@ -11496,19 +11607,13 @@ def shift_end_warn_tick(db, now, lead, tpls=None):
             _st = datetime.fromisoformat(sh["start_time"])
         except Exception:
             continue
-        _sched, _code = op_scheduled(db, int(sh["user_id"] or 0), _st, tpls)
-        if not _sched or not _code:
+        _sched, _end, _src = op_planned(db, cfg, int(sh["user_id"] or 0),
+                                        int(sh["branch_id"] or 0), _st, tpls)
+        if not _sched:
             why["no_plan"] += 1; continue
-        _e = str(((tpls or {}).get(_code) or {}).get("end") or "")
-        if ":" not in _e:
+        if not _end:
             why["no_end"] += 1; continue
-        try:
-            _hh, _mm = [int(x) for x in _e.split(":")[:2]]
-        except Exception:
-            why["no_end"] += 1; continue
-        _end = _sched.replace(hour=_hh, minute=_mm, second=0, microsecond=0)
-        if _end <= _sched:
-            _end += timedelta(days=1)          # gece vardiyasi
+        _e = _end.strftime("%H:%M")
         _left = (_end - now).total_seconds() / 60.0
         if not (0 < _left <= lead):
             why["not_in_window"] += 1; continue
