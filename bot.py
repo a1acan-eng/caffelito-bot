@@ -278,6 +278,12 @@ def get_db():
             pass
     # ─── Meta (key-value: ödeme hatırlatması vb.) ───
     db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
+    # Owner aktarımları tek seferlik temizlik (bkz. purge_owner_fine_transfers).
+    try:
+        if not FINES_TO_OWNER_BALANCE:
+            purge_owner_fine_transfers(db)
+    except Exception as _pe:
+        logger.warning(f"purge skipped: {_pe}")
     # ─── Bardak fiyatları (override) ───
     db.execute("""CREATE TABLE IF NOT EXISTS prices (
         drink_id TEXT PRIMARY KEY,
@@ -2936,10 +2942,38 @@ def _primary_owner(db):
         return 0
 
 
+# 2026-09-18 (owner: «benim maaşıma eklenmesin kesilen para cezaları»):
+# kesilen ceza owner'ın bakiyesine GEÇMEZ. 16.09'da açılan aktarım kapatıldı.
+# Штрафы kartı ayrı bir defterdir: kesildi / elime geçti işareti orada durur,
+# maaş hesabına dokunmaz. Eski [shtraf:*] aktarımları bir kez temizlenir.
+FINES_TO_OWNER_BALANCE = False
+
+
+def purge_owner_fine_transfers(db):
+    """[shtraf:<id>] etiketli owner aktarımlarını BİR KEZ siler (meta bayrağı).
+    Cezaların kendisi durur; yalnız owner tarafındaki artı kayıt gider."""
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k='shtraf_adj_purged'").fetchone():
+            return 0
+        n = db.execute("DELETE FROM adjustments WHERE note LIKE '%[shtraf:%'").rowcount
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('shtraf_adj_purged', ?)",
+                   (datetime.now(TZ).isoformat(),))
+        db.commit()
+        if n:
+            logger.warning(f"owner ceza aktarimlari temizlendi: {n} satir")
+        return n
+    except Exception as e:
+        logger.warning(f"purge_owner_fine_transfers: {e}")
+        return 0
+
+
 def fine_to_owner(db, fine_id):
     """Yazılan cezayı owner'ın bakiyesine ALACAK olarak geçir. Idempotent.
 
-    Döner: yazılan tutar (0 = geçmedi)."""
+    Döner: yazılan tutar (0 = geçmedi). FINES_TO_OWNER_BALANCE kapalıyken
+    HİÇBİR ŞEY yazmaz (owner kararı 2026-09-18)."""
+    if not FINES_TO_OWNER_BALANCE:
+        return 0
     try:
         row = db.execute("SELECT * FROM fines WHERE id=?", (int(fine_id),)).fetchone()
         if not row:
