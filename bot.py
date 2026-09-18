@@ -3238,6 +3238,24 @@ DRINK_NAMES = {
 }
 
 
+def drinks_from_names(obj):
+    """Rapordaki bardak adlarini ({"Стакан 500": 3} ya da [{n,s},...]) vardiyanin
+    `drinks` sozlugune ({"ml500": 3}) cevirir. Bilinmeyen ad atlanir, 0 yazilmaz."""
+    inv = {v: k for k, v in DRINK_NAMES.items()}
+    out = {}
+    try:
+        items = obj.items() if isinstance(obj, dict) else [
+            (str((c or {}).get("n") or ""), (c or {}).get("s")) for c in (obj or []) if isinstance(c, dict)]
+        for nm, v in items:
+            _id = inv.get(str(nm or "").strip())
+            _v = int(v or 0)
+            if _id and _v > 0:
+                out[_id] = _v
+    except Exception:
+        return {}
+    return out
+
+
 def shift_as_report(sh_row):
     """Kasa raporu OLMAYAN vardiyadan PDF satiri uretir.
 
@@ -8280,7 +8298,28 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # doğrular: başlangıçtan önce olamaz + SONRAKİ aynı-rol vardiyasına taşamaz
             # (devir bütünlüğü) + ödeme şube kapanış penceresine göre.
             _req_end = data.get("end_time") or None
-            sh = end_shift(db, target_id, {}, note="закрыто владельцем", custom_end=_req_end)
+            # Kisi kapanis raporunu VERMIS ama vardiya acik kalmis olabilir
+            # (shift_end sunucuya ulasmadi — 18.09 Абдулатиф). O zaman «simdi»
+            # ile kapatmak saatleri sabaha kadar sayar ve bardak bonusunu
+            # sifirlar. Vardiya basladiktan sonra yazilmis rapor varsa kapanis
+            # o raporun saatinden ve bardaklarindan yapilir.
+            _fe_drk, _fe_rep = {}, None
+            if not _req_end:
+                try:
+                    _fe_act = get_active_shift(db, target_id)
+                    _fe_rep = db.execute(
+                        "SELECT * FROM cashreports WHERE user_id=? AND created_at > ? "
+                        "ORDER BY id DESC LIMIT 1", (target_id, _fe_act["start_time"])).fetchone()
+                    if _fe_rep:
+                        _req_end = (_fe_rep["end_time"] if "end_time" in _fe_rep.keys() and _fe_rep["end_time"]
+                                    else _fe_rep["created_at"])
+                        _fe_drk = drinks_from_names(json.loads(_fe_rep["sold"] or "{}"))
+                except Exception as _e:
+                    logger.warning(f"force_end: rapor bakisi basarisiz: {_e}")
+                    _fe_drk, _fe_rep = {}, None
+            sh = end_shift(db, target_id, _fe_drk,
+                           note=("закрыто владельцем по отчёту" if _fe_rep else "закрыто владельцем"),
+                           custom_end=_req_end)
             if not sh:
                 await update.message.reply_text("❌ Не удалось закрыть смену.")
                 return
@@ -8288,6 +8327,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "force_end_shift", user.id, user.first_name, target_id, _nm,
                        {"shift_id": sh["id"], "branch_id": sh["branch_id"],
                         "requested_end": _req_end, "actual_end": sh["end_time"],
+                        "from_report": (int(_fe_rep["id"]) if _fe_rep else 0),
+                        "cups": sum(_fe_drk.values()),
                         "hours": sh["hours"], "total": sh["total"]})
             _adj = ""
             try:
@@ -8298,6 +8339,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             "позиция передана следующей смене (пересечение недопустимо).")
             except Exception:
                 pass
+            if _fe_rep:
+                try:
+                    _adj += (f"\n📋 По отчёту от {datetime.fromisoformat(sh['end_time']).strftime('%d.%m %H:%M')}: "
+                             f"{sum(_fe_drk.values())} стаканов учтено.")
+                except Exception:
+                    pass
             await update.message.reply_text(
                 f"🔴 Смена *{_nm}* закрыта владельцем.\n"
                 f"⏱ {fmt_hm(sh['hours'] or 0)} · 💰 {fmt_sum(sh['total'] or 0)} сум{_adj}",
@@ -9159,6 +9206,33 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "\u0431\u0430\u0440\u0438\u0441\u0442\u0430.")
                 return
 
+            # ── KENDINI ONARAN KAPANIS (2026-09-18) ─────────────────────────
+            # Canli: Абдулатиф 18.09 01:02 — kasa raporu geldi, `shift_end` ise
+            # sunucuya HIC ULASMADI (o dakikada tek bir /api/action satiri var).
+            # Istemci ilk istek dusse bile raporu yolluyor (kasa kaybolmasin) ve
+            # ekranda «Смена закрыта» yaziyor; vardiya sabaha kadar acik kaldi.
+            # Rapor bir KAPANIS raporudur: kapanis saatini ve satilan bardaklari
+            # tasir. Vardiya hala acikken geldiyse sunucu onu raporla kapatir —
+            # ayni saat, ayni bardaklar, ayni bonus kurallari (end_shift).
+            _cr_autoclosed = None
+            if _my_act_cr_pre is not None:
+                try:
+                    _cr_drk = drinks_from_names(data.get("cups") or [])
+                    _cr_autoclosed = end_shift(db, user.id, _cr_drk,
+                                               (data.get("note") or "").strip(),
+                                               custom_end=data.get("end_time"))
+                    if _cr_autoclosed:
+                        logger.warning(f"vardiya raporla kapatildi (shift_end gelmedi) uid={user.id} "
+                                       f"sid={_cr_autoclosed['id']} end={_cr_autoclosed['end_time']}")
+                        log_action(db, "shift_end", user.id, user.first_name, None, None,
+                                   {"shift_id": _cr_autoclosed["id"], "branch_id": _cr_autoclosed["branch_id"],
+                                    "start_time": _cr_autoclosed["start_time"], "end_time": _cr_autoclosed["end_time"],
+                                    "requested_end": data.get("end_time") or "", "manual": False,
+                                    "auto_from": "cash_report", "hours": _cr_autoclosed["hours"],
+                                    "cups": sum(_cr_drk.values()), "total": _cr_autoclosed["total"]})
+                except Exception as _e:
+                    logger.exception(f"raporla kapatma basarisiz uid={user.id}: {_e}")
+                    _cr_autoclosed = None
             _my_act_cr = get_active_shift(db, user.id)
             if not _my_act_cr:
                 _my_act_cr = db.execute(
@@ -9433,6 +9507,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         await context.bot.send_message(chat_id=int(group_id), text=st, parse_mode="HTML")
                 except Exception as e:
                     logger.error(f"STOK alert failed: {e}")
+            if _cr_autoclosed is not None:
+                # Kisi normal «Смена закрыта» mesajini almadi — kapanisin gercekten
+                # oldugunu ve saatini gorsun.
+                try:
+                    _ac_s = datetime.fromisoformat(_cr_autoclosed["start_time"]).strftime("%H:%M")
+                    _ac_e = datetime.fromisoformat(_cr_autoclosed["end_time"]).strftime("%H:%M")
+                    await update.message.reply_text(
+                        f"🔴 Смена закрыта по отчёту: {_ac_s} → {_ac_e} ({fmt_hm(_cr_autoclosed['hours'] or 0)}). "
+                        f"Стаканы и бонус учтены из отчёта.")
+                except Exception as _e:
+                    logger.warning(f"auto-close DM: {_e}")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
 
         # ─── Kasa raporu DÜZELTMESİ (owner) ───
