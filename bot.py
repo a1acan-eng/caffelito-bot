@@ -9804,6 +9804,65 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        _row["user_id"], _row["user_name"], {"id": _rid})
             await update.message.reply_text("✅ Штраф отменён.")
 
+        elif action == "announce":
+            # Owner'dan gruba DUYURU (2026-09-19, owner istegi): Nero'da metin
+            # yazar, subeleri secer; bot her subenin grubuna yazar. Ayni gruba
+            # bagli iki sube varsa TEK mesaj (dedupe). Barista gonderemez.
+            from html import escape as _esc_a
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _txt = str(data.get("text") or "").strip()
+            if not _txt:
+                await update.message.reply_text("❌ Пустое сообщение.")
+                return
+            if len(_txt) > 3500:
+                await update.message.reply_text("❌ Слишком длинно — до 3500 знаков.")
+                return
+            try:
+                _bids = [int(x) for x in (data.get("branches") or []) if str(x).strip()]
+            except (TypeError, ValueError):
+                _bids = []
+            if not _bids:
+                await update.message.reply_text("❌ Не выбран филиал.")
+                return
+            _targets, _names, _skipped = [], [], []
+            for _b in _bids:
+                _g = branch_group_id(db, _b)
+                _bn = (get_branch(db, _b) or {}).get("name") or str(_b)
+                if not _g:
+                    _skipped.append(_bn); continue
+                if _g in [t for t, _ in _targets]:
+                    continue
+                _targets.append((_g, _bn)); _names.append(_bn)
+            if not _targets:
+                await update.message.reply_text(
+                    "❌ У выбранных филиалов нет группы. Привяжите группу в Филиалы.")
+                return
+            _who = display_name_for(db, user.id, fallback=user.first_name or "владелец")
+            _body = (f"📣 <b>Сообщение от владельца</b> · {_esc_a(_who)}\n\n"
+                     f"{_esc_a(_txt)}")
+            _sent, _failed = [], []
+            for _g, _bn in _targets:
+                try:
+                    await context.bot.send_message(chat_id=int(_g), text=_body, parse_mode="HTML")
+                    _sent.append(_bn)
+                except Exception as _e:
+                    logger.warning(f"announce → {_bn}: {_e}")
+                    _failed.append(_bn)
+            log_action(db, "announce", user.id, user.first_name, None, None,
+                       {"branches": _bids, "sent": _sent, "failed": _failed,
+                        "skipped": _skipped, "len": len(_txt), "text": _txt[:300]})
+            _rep = ""
+            if _sent:
+                _rep += "✅ Отправлено: " + ", ".join(_sent)
+            if _failed:
+                _rep += ("\n" if _rep else "") + "❌ Не дошло: " + ", ".join(_failed)
+            if _skipped:
+                _rep += ("\n" if _rep else "") + "ℹ️ Без группы: " + ", ".join(_skipped)
+            await update.message.reply_text(_rep or "❌ Ничего не отправлено.")
+
         elif action == "cash_report_pdf":
             # Raporu PDF yapip ISTEYENIN kendi sohbetine gonder (owner istegi:
             # «Nero'nun kendi DM'sine insin»). Gonderim `send_pdf_or_report`ta:
