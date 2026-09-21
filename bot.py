@@ -10220,6 +10220,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _p["auto"] = 1 if data.get("auto") else 0
             if "handover_waiver" in data:
                 _p["handover_waiver"] = 1 if data.get("handover_waiver") else 0
+            # ПЕРЕДАЧА СМЕНЫ anahtari + fazla mesai carpani (2026-09-21). Bu beyaz
+            # listeye eklenmemisti → owner acsa da kayit «kapali» kaliyordu.
+            if "handover_flow" in data:
+                _p["handover_flow"] = 1 if data.get("handover_flow") else 0
+            if "extra_k" in data:
+                try:
+                    _p["extra_k"] = max(1.0, min(3.0, float(data.get("extra_k") or 1.5)))
+                except (TypeError, ValueError):
+                    pass
             if "warn_before" in data:
                 try:
                     _p["warn_before"] = max(0, min(120, int(float(data.get("warn_before") or 0))))
