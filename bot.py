@@ -2473,6 +2473,31 @@ def ho_windows_for_shift(cfg, branch_id, start_dt):
     return st, en, b2
 
 
+def ho_is_second_window(cfg, branch_id, when_dt):
+    """Bu baslangic subenin IKINCI vardiya penceresine mi dusuyor (penceresi
+    baska bir pencerenin icinde basliyor: 16:30, 07:00–17:30'un icinde)?
+    Devir akisinda 2. baristanin baslangici 1. vardiyanin bitisine KLEMPLENMEZ."""
+    try:
+        st, en = op_window_for(cfg, branch_id, when_dt)
+        if not st:
+            return False
+        rows = (cfg.get("windows") or {}).get(str(int(branch_id or 0))) or []
+        for dd in (st.date() - timedelta(days=1), st.date()):
+            base = datetime(dd.year, dd.month, dd.day)
+            for r in rows:
+                ms, me = _mins(r.get("s")), _mins(r.get("e"))
+                if ms is None or me is None:
+                    continue
+                s2 = base + timedelta(minutes=ms); e2 = base + timedelta(minutes=me)
+                if e2 <= s2:
+                    e2 += timedelta(days=1)
+                if s2 < st < e2:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
 def ho_row_for_shift(db, shift_id):
     try:
         return db.execute("SELECT * FROM handover WHERE shift_id=?", (int(shift_id),)).fetchone()
@@ -3589,8 +3614,17 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
     # süresi ASLA çakışamaz. Önceki vardiya 17:05'te kapandıysa yeni vardiya 17:00'a
     # GERİYE YAZILAMAZ → başlangıç en erken 17:05'e kaydırılır. Günün ilk açılışını
     # engellemez (önceki bitiş start'tan önceyse dokunulmaz). Şube/rol dinamik — hardcode yok.
+    # ПЕРЕДАЧА СМЕНЫ (2026-09-21, canli: owner 2. baristayi 16:30'a baslatti,
+    # 17:38'e kaydi): akis acikken 2. vardiya penceresine dusen baslangic 1.
+    # vardiyanin bitisine klemplenmez — 16:30–17:30 cakismasi BILEREK var.
+    _ho_overlap = False
     try:
-        _pe_row = db.execute(
+        _hoc = op_cfg(db)
+        _ho_overlap = ho_enabled(_hoc) and ho_is_second_window(_hoc, bid, start_dt)
+    except Exception:
+        _ho_overlap = False
+    try:
+        _pe_row = None if _ho_overlap else db.execute(
             "SELECT end_time FROM shifts WHERE COALESCE(branch_id,1)=? "
             "AND COALESCE(shift_role,'barista')=? AND end_time IS NOT NULL "
             "ORDER BY end_time DESC LIMIT 1",
