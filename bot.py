@@ -3714,6 +3714,29 @@ DRINK_NAMES = {
 }
 
 
+def announce_chunks(text, first_max, rest_max=3900):
+    """Uzun metni Telegram sinirina gore parcalar. Once paragraf (bos satir),
+    sonra satir, en son bosluk sinirinda keser; hic yoksa sert keser.
+    HTML-kacisli metin verilir; kacis dizileri (&lt; gibi) satir icinde
+    kaldigi icin bolunmez. Doner: [parca, ...] (en az 1)."""
+    text = str(text or "")
+    out, cur_max = [], max(200, int(first_max))
+    while len(text) > cur_max:
+        cut = -1
+        for sep in ("\n\n", "\n", " "):
+            cut = text.rfind(sep, 0, cur_max)
+            if cut > cur_max // 3:
+                break
+            cut = -1
+        if cut < 0:
+            cut = cur_max
+        out.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+        cur_max = max(200, int(rest_max))
+    out.append(text)
+    return [p for p in out if p] or [""]
+
+
 def drinks_from_names(obj):
     """Rapordaki bardak adlarini ({"Стакан 500": 3} ya da [{n,s},...]) vardiyanin
     `drinks` sozlugune ({"ml500": 3}) cevirir. Bilinmeyen ad atlanir, 0 yazilmaz."""
@@ -10465,8 +10488,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _txt:
                 await update.message.reply_text("❌ Пустое сообщение.")
                 return
-            if len(_txt) > 3500:
-                await update.message.reply_text("❌ Слишком длинно — до 3500 знаков.")
+            # Telegram tek mesajda 4096 karakter alir. Uzun duyuru (owner 2026-09-21:
+            # 4336 karakterlik metin gonderemedi) PARCALARA bolunup ayni gruba
+            # sirayla gider; baslik yalniz ilk parcada. Ust sinir 12.000.
+            if len(_txt) > 12000:
+                await update.message.reply_text("❌ Слишком длинно — до 12 000 знаков.")
                 return
             try:
                 _bids = [int(x) for x in (data.get("branches") or []) if str(x).strip()]
@@ -10489,12 +10515,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "❌ У выбранных филиалов нет группы. Привяжите группу в Филиалы.")
                 return
             _who = display_name_for(db, user.id, fallback=user.first_name or "владелец")
-            _body = (f"📣 <b>Сообщение от владельца</b> · {_esc_a(_who)}\n\n"
-                     f"{_esc_a(_txt)}")
+            _head = f"📣 <b>Сообщение от владельца</b> · {_esc_a(_who)}\n\n"
+            _chunks = announce_chunks(_esc_a(_txt), 3900 - len(_head))
             _sent, _failed = [], []
             for _g, _bn in _targets:
                 try:
-                    await context.bot.send_message(chat_id=int(_g), text=_body, parse_mode="HTML")
+                    for _i, _ch in enumerate(_chunks):
+                        _body = (_head + _ch) if _i == 0 else _ch
+                        await context.bot.send_message(chat_id=int(_g), text=_body, parse_mode="HTML")
                     _sent.append(_bn)
                 except Exception as _e:
                     logger.warning(f"announce → {_bn}: {_e}")
