@@ -7216,8 +7216,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("\u274c \u0428\u0442\u0440\u0430\u0444 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.")
                 return
             # YALNIZ KENDI kestigi ceza: baskasinin kestigini «bana odendi» diye
-            # kapatmak yanlis kisinin hesabini kapatir.
-            if int(row["added_by"] or 0) != int(user.id):
+            # kapatmak yanlis kisinin hesabini kapatir. Sistemin kestigi acilis
+            # cezasi (added_by=0, opening_delay) owner'in parasidir — o da sayilir
+            # (kart onu gosteriyordu ama tik reddediyordu).
+            _sys_fine = (int(row["added_by"] or 0) == 0 and str(row["type"] or "") == OP_FINE_TYPE)
+            if int(row["added_by"] or 0) != int(user.id) and not _sys_fine:
                 await update.message.reply_text(
                     "\u274c \u042d\u0442\u043e\u0442 \u0448\u0442\u0440\u0430\u0444 \u0432\u044b\u043f\u0438\u0441\u0430\u043b\u0438 \u043d\u0435 \u0432\u044b.")
                 return
@@ -7245,6 +7248,41 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 _fs_line + " \u00b7 " + _tn + " \u00b7 " + fmt_sum(row["amount"] or 0)
                 + "\n\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0443 \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0435 \u043d\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442\u0441\u044f.")
+
+        elif action == "fine_settle_all":
+            # «Все получены» (owner 2026-09-21): kapsuldeki ACIK cezalarin hepsine
+            # tek dokunusla tahsilat damgasi. Para hareketi YOK (fine_settle ile
+            # ayni). Yalniz owner; yalniz kendi kestigi + sistemin acilis cezasi.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _ids = [int(x) for x in (data.get("ids") or []) if str(x).strip()]
+            except (TypeError, ValueError):
+                _ids = []
+            if not _ids:
+                await update.message.reply_text("ℹ️ Открытых штрафов нет.")
+                return
+            _now_s = datetime.now(TZ).isoformat()
+            _n, _sum, _skip = 0, 0, 0
+            for _fid in _ids[:200]:
+                _r = db.execute("SELECT id, user_id, amount, type, added_by, COALESCE(settled,0) AS settled "
+                                "FROM fines WHERE id=?", (_fid,)).fetchone()
+                if not _r or int(_r["settled"] or 0):
+                    continue
+                _own = int(_r["added_by"] or 0) == int(user.id) or (
+                    int(_r["added_by"] or 0) == 0 and str(_r["type"] or "") == OP_FINE_TYPE)
+                if not _own:
+                    _skip += 1; continue
+                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=? WHERE id=?", (_now_s, user.id, _fid))
+                _n += 1; _sum += int(_r["amount"] or 0)
+            db.commit()
+            log_action(db, "fine_settle_all", user.id, user.first_name, None, None,
+                       {"ids": _ids[:200], "settled": _n, "sum": _sum, "skipped": _skip})
+            await update.message.reply_text(
+                f"✅ Получено: {_n} штрафов · {fmt_sum(_sum)} сум" + (f" · пропущено чужих: {_skip}" if _skip else "")
+                + "\nСуммы и балансы не меняются — только отметка.")
 
         elif action == "fine_preset_save":
             db = get_db()
