@@ -277,6 +277,30 @@ def get_db():
         except sqlite3.OperationalError:
             pass
     # ─── Meta (key-value: ödeme hatırlatması vb.) ───
+    # ─── ПЕРЕДАЧА СМЕНЫ (owner 2026-09-20/21) — 1. vardiyanin devir akisi ───
+    # Bir satir = 1. baristanin BIR vardiyasi. Taslak (kilitli), erken cikis
+    # talebi/karari, 17:30 otomatik kapanis (tek sefer), izinsiz cikis kaydi,
+    # 2. baristanin gelisi/geri sayim, fazla mesai. Kurallar handover-demo'da
+    # dogrulandi (A–G); burada ayni durum modeli, sadece gercek veriyle.
+    db.execute("""CREATE TABLE IF NOT EXISTS handover (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shift_id INTEGER UNIQUE, user_id INTEGER, user_name TEXT, branch_id INTEGER,
+        date TEXT, period TEXT, sched_start TEXT, sched_end TEXT, b2_start TEXT,
+        draft TEXT, draft_at TEXT,
+        early_status TEXT DEFAULT 'none', early_req_at TEXT, early_dec_at TEXT,
+        early_by INTEGER, early_min INTEGER,
+        finalized INTEGER DEFAULT 0, finalized_at TEXT, finalize_reason TEXT,
+        unauth INTEGER DEFAULT 0, unauth_at TEXT, unauth_json TEXT,
+        extra_from TEXT, extra_to TEXT, extra_min INTEGER, extra_amount INTEGER, extra_adj_id INTEGER,
+        b2_uid INTEGER, b2_name TEXT, b2_arrived_at TEXT,
+        ho_started_at TEXT, ho_ended_at TEXT, ho_end_reason TEXT,
+        nodraft_noted INTEGER DEFAULT 0, created_at TEXT)""")
+    # 2. baristanin «gec gelecegim» haberi; 1. barista kabul/ret eder.
+    db.execute("""CREATE TABLE IF NOT EXISTS late_notices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, user_name TEXT, branch_id INTEGER, date TEXT,
+        expected_at TEXT, status TEXT DEFAULT 'pending',
+        decided_by INTEGER, decided_by_name TEXT, decided_at TEXT, created_at TEXT)""")
     db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
     # Owner aktarımları tek seferlik temizlik (bkz. purge_owner_fine_transfers).
     try:
@@ -1962,6 +1986,13 @@ OP_DEFAULTS = {
     # başlangıcına göre gecikme hesaplanır. Owner ekler/siler/düzenler.
     # Pencere tanımlı olmayan şubede eski (План + şablon) yol yedek olarak çalışır.
     "windows": {},
+    # ПЕРЕДАЧА СМЕНЫ akisi (owner 2026-09-21): 0 = kapali (eski davranis
+    # birebir), 1 = 1. vardiya taslak kilidi + erken cikis izni + planli
+    # bitiste otomatik kapanis + izinsiz cikis kaydi + 2. barista gec-gelis
+    # haberi + fazla mesai. Sadece owner acar (Штраф за открытие ayarlari).
+    "handover_flow": 0,
+    # Fazla mesai carpani: 1. barista planli bitisten sonra kaldiysa saatlik × bu.
+    "extra_k": 1.5,
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -2229,12 +2260,36 @@ def op_register(db, shift_row, why=None):
         _g = int(cfg["grace"])
         if delay <= _g:
             _why.append(f"опоздание {delay} мин — в пределах льготы {_g} мин"); return None
+        # ── ONCEDEN HABER + 1. BARISTA KABULU (Передача смены, 2026-09-21) ──
+        # 2. barista gec gelecegini bildirdi ve 1. barista devir duzeni icin
+        # kabul ettiyse ceza YOK (LATE_ARRIVAL_APPROVED). Kabul edilmemis
+        # haber hicbir sey degistirmez — mevcut dakika kurali isler.
+        try:
+            _ln = db.execute(
+                "SELECT expected_at FROM late_notices WHERE user_id=? AND branch_id=? AND date=? "
+                "AND status='accepted' ORDER BY id DESC LIMIT 1",
+                (int(sh.get("user_id") or 0), bid, actual.strftime("%Y-%m-%d"))).fetchone()
+            if _ln:
+                _why.append("поздний приход согласован с 1-м баристой"); return None
+        except Exception as _e_ln:
+            logger.warning(f"late_notice waiver: {_e_ln}")
         # ── DEVİR MUAFİYETİ (owner kuralı 2026-09-16) ───────────────────────
         # «1. vardiyadaki eleman 16:00'da kapatır ve diğerini bekler; gelmezse
         #  ceza başlar. Eğer 1. vardiya açık kalırsa iki eleman anlaşmış
         #  demektir» → devir anında (plan + eşik) ÖNCEKİ vardiya hâlâ AÇIKSA
         # dükkân boşta kalmamıştır, geç gelene ceza yazılmaz.
-        if int(cfg.get("handover_waiver") or 0):
+        # ПЕРЕДАЧА СМЕНЫ acikken: 1. barista 17:30'dan sonra hala acik ve
+        # FAZLA MESAIDEYSE (2. barista gelmedigi icin) bu «anlasma» degil,
+        # gecikmenin sonucudur → muafiyet UYGULANMAZ, mevcut dakika kurali isler.
+        _ho_extra_open = False
+        try:
+            if ho_enabled(cfg):
+                _ho_extra_open = db.execute(
+                    "SELECT 1 FROM handover WHERE branch_id=? AND finalized=0 AND extra_from IS NOT NULL "
+                    "AND extra_to IS NULL AND user_id!=? LIMIT 1", (bid, int(sh.get("user_id") or 0))).fetchone() is not None
+        except Exception:
+            _ho_extra_open = False
+        if int(cfg.get("handover_waiver") or 0) and not _ho_extra_open:
             try:
                 _cut = sched + timedelta(minutes=_g)
                 _prole = str(sh.get("shift_role") or "barista")
@@ -2379,6 +2434,393 @@ def op_reject(db, rec_id, actor_id, actor_name):
 
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ПЕРЕДАЧА СМЕНЫ — devir akisi motoru (owner 2026-09-20/21)
+#  Durumlar AYRI tutulur (taslak ≠ kapanis; sayac ≠ izin; gecikme ≠ erken
+#  cikis). Kapanis TEK yerden (`ho_finalize`) ve idempotent.
+# ═══════════════════════════════════════════════════════════════════════
+def ho_enabled(cfg=None, db=None):
+    try:
+        c = cfg if cfg is not None else op_cfg(db)
+        return int(c.get("handover_flow") or 0) == 1
+    except Exception:
+        return False
+
+
+def ho_windows_for_shift(cfg, branch_id, start_dt):
+    """(planli_baslangic, planli_bitis, 2.vardiya_baslangici|None).
+    Pencere op_window_for ile; 2. vardiya = bu pencere bitmeden baslayan EN
+    ERKEN diger pencere (07:00–17:30 & 16:30–03:00 → b2 16:30). Yoksa None."""
+    st, en = op_window_for(cfg, branch_id, start_dt)
+    if not st:
+        return None, None, None
+    try:
+        rows = (cfg.get("windows") or {}).get(str(int(branch_id or 0))) or []
+    except Exception:
+        rows = []
+    b2 = None
+    for dd in (st.date(), st.date() + timedelta(days=1)):
+        base = datetime(dd.year, dd.month, dd.day)
+        for r in rows:
+            ms = _mins(r.get("s"))
+            if ms is None:
+                continue
+            s2 = base + timedelta(minutes=ms)
+            if st < s2 < en and (b2 is None or s2 < b2):
+                b2 = s2
+    return st, en, b2
+
+
+def ho_row_for_shift(db, shift_id):
+    try:
+        return db.execute("SELECT * FROM handover WHERE shift_id=?", (int(shift_id),)).fetchone()
+    except Exception:
+        return None
+
+
+def ho_get_or_create(db, cfg, sh):
+    """1. vardiya icin devir satiri (yoksa acar). Akis kapaliysa / pencere
+    yoksa / 2. vardiya penceresi yoksa None — bu vardiya devir akisina girmez."""
+    if not ho_enabled(cfg):
+        return None
+    sh = dict(sh)
+    row = ho_row_for_shift(db, sh.get("id"))
+    if row:
+        return row
+    try:
+        st_dt = datetime.fromisoformat(sh["start_time"])
+    except Exception:
+        return None
+    bid = int(sh.get("branch_id") or 0)
+    st, en, b2 = ho_windows_for_shift(cfg, bid, st_dt)
+    if not st or not b2:
+        return None
+    nm = display_name_for(db, int(sh.get("user_id") or 0), fallback="?")
+    db.execute(
+        "INSERT OR IGNORE INTO handover (shift_id,user_id,user_name,branch_id,date,period,"
+        "sched_start,sched_end,b2_start,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (int(sh["id"]), int(sh.get("user_id") or 0), nm, bid, st_dt.strftime("%Y-%m-%d"),
+         sh.get("period") or st_dt.strftime("%Y-%m"), st.isoformat(), en.isoformat(),
+         b2.isoformat(), datetime.now(TZ).isoformat()))
+    db.commit()
+    return ho_row_for_shift(db, sh["id"])
+
+
+def ho_draft_save(db, row, data):
+    """Taslak: BIR KEZ. Kaydedilince kilitlenir; vardiyayi KAPATMAZ."""
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if row["draft"]:
+        return None, "Черновик уже сохранён и заблокирован."
+    keep = {k: data.get(k) for k in ("cups", "expenses", "note", "daily_pay", "hours",
+                                     "start_time", "branch", "branch_id", "coffee_kg",
+                                     "itogo", "click", "payme", "karta", "terminal",
+                                     "vyshlo", "na_sdachi", "drinks") if k in data}
+    db.execute("UPDATE handover SET draft=?, draft_at=? WHERE id=?",
+               (json.dumps(keep, ensure_ascii=False), datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_early_request(db, row):
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if not row["draft"]:
+        return None, "Сначала сохраните черновик."
+    if row["early_status"] in ("requested", "approved"):
+        return None, "Заявка уже отправлена."
+    db.execute("UPDATE handover SET early_status='requested', early_req_at=? WHERE id=?",
+               (datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_early_decide(db, row, ok, actor_id):
+    """Yalniz OWNER cagirir (handler kontrol eder). Onay → kapanis ho_finalize ile."""
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if row["early_status"] != "requested":
+        return None, "Заявки нет."
+    now = datetime.now(TZ).replace(tzinfo=None)
+    try:
+        en = datetime.fromisoformat(row["sched_end"])
+    except Exception:
+        en = now
+    early_min = max(0, int((en - now).total_seconds() // 60))
+    db.execute("UPDATE handover SET early_status=?, early_dec_at=?, early_by=?, early_min=? WHERE id=?",
+               ("approved" if ok else "rejected", datetime.now(TZ).isoformat(), int(actor_id or 0),
+                early_min if ok else None, int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_extra_close(db, row, at_dt):
+    """Fazla mesai bitisi: dakika + tutar (saatlik × (k−1) — taban saat zaten
+    normal ucretle vardiyada). adjustments'a TEK satir [handover:<sid>]."""
+    if not row["extra_from"] or row["extra_to"]:
+        return row
+    try:
+        fr = datetime.fromisoformat(row["extra_from"])
+    except Exception:
+        return row
+    mins = max(0, int((at_dt - fr).total_seconds() // 60))
+    cfg = op_cfg(db)
+    k = float(cfg.get("extra_k") or 1.5)
+    sh = db.execute("SELECT rate FROM shifts WHERE id=?", (int(row["shift_id"]),)).fetchone()
+    rate = 0
+    try:
+        rate = int(sh["rate"] or 0) if sh and "rate" in sh.keys() else 0
+    except Exception:
+        rate = 0
+    if rate <= 0:
+        rate = int(barista_pay_info(db, int(row["user_id"]), branch_id=int(row["branch_id"] or 0))["rate"])
+    amt = int(round(mins / 60.0 * rate * max(0.0, k - 1.0)))
+    adj_id = None
+    if amt > 0 and mins > 0:
+        tag = f"[handover:{int(row['shift_id'])}]"
+        if not db.execute("SELECT 1 FROM adjustments WHERE note LIKE ? LIMIT 1", (f"%{tag}%",)).fetchone():
+            cur = db.execute(
+                "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (int(row["user_id"]), amt, f"Сверхурочно · передача смены · {mins} мин ×{k:g} {tag}",
+                 row["period"], int(row["branch_id"] or 0), 0, "Nero", datetime.now(TZ).isoformat()))
+            adj_id = cur.lastrowid
+    db.execute("UPDATE handover SET extra_to=?, extra_min=?, extra_amount=?, extra_adj_id=? WHERE id=?",
+               (at_dt.isoformat(), mins, amt, adj_id, int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"])
+
+
+def ho_on_b2_arrival(db, cfg, b2_sh):
+    """2. barista vardiya basladi → ayni subede ACIK devir satirini isaretle.
+    Doner: kapanis gereken satir (17:30 sonrasi gelis + taslak) ya da None."""
+    if not ho_enabled(cfg):
+        return None
+    b2 = dict(b2_sh)
+    bid = int(b2.get("branch_id") or 0)
+    try:
+        at = datetime.fromisoformat(b2["start_time"])
+    except Exception:
+        return None
+    row = db.execute(
+        "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
+        "AND b2_arrived_at IS NULL ORDER BY id DESC LIMIT 1", (bid, int(b2.get("user_id") or 0))).fetchone()
+    if not row:
+        return None
+    try:
+        en = datetime.fromisoformat(row["sched_end"])
+    except Exception:
+        return None
+    nm = display_name_for(db, int(b2.get("user_id") or 0), fallback="?")
+    ho_started = at.isoformat() if at < en else None
+    db.execute("UPDATE handover SET b2_uid=?, b2_name=?, b2_arrived_at=?, ho_started_at=COALESCE(ho_started_at, ?) WHERE id=?",
+               (int(b2.get("user_id") or 0), nm, at.isoformat(), ho_started, int(row["id"])))
+    db.commit()
+    row = ho_row_for_shift(db, row["shift_id"])
+    if at >= en:
+        row = ho_extra_close(db, row, at)
+        if row["draft"]:
+            return row          # kapanis: after_extra_work
+    return None
+
+
+def ho_tick(db, now, cfg=None):
+    """Dakika tiki (saf): planli bitisi gecmis acik satirlar.
+    Doner: [(row, 'finalize'|'extra_start'|'no_draft')]. DB'ye yalniz
+    extra_from / nodraft_noted yazar; kapanisi cagiran yapar (async)."""
+    out = []
+    cfg = cfg if cfg is not None else op_cfg(db)
+    if not ho_enabled(cfg):
+        return out
+    rows = db.execute("SELECT * FROM handover WHERE finalized=0").fetchall()
+    for r in rows:
+        try:
+            en = datetime.fromisoformat(r["sched_end"])
+        except Exception:
+            continue
+        if now < en:
+            continue
+        # Vardiya baska yoldan kapandiysa (elle) satiri kapat, hicbir sey gonderme
+        sh = db.execute("SELECT end_time FROM shifts WHERE id=?", (int(r["shift_id"]),)).fetchone()
+        if sh is None or sh["end_time"]:
+            db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason='closed_elsewhere' WHERE id=?",
+                       (datetime.now(TZ).isoformat(), int(r["id"])))
+            db.commit()
+            continue
+        if r["b2_arrived_at"]:
+            if r["draft"]:
+                out.append((r, "finalize"))
+            elif not r["nodraft_noted"]:
+                db.execute("UPDATE handover SET nodraft_noted=1 WHERE id=?", (int(r["id"]),))
+                db.commit()
+                out.append((r, "no_draft"))
+        else:
+            if not r["extra_from"]:
+                db.execute("UPDATE handover SET extra_from=? WHERE id=?", (en.isoformat(), int(r["id"])))
+                db.commit()
+                out.append((ho_row_for_shift(db, r["shift_id"]), "extra_start"))
+    return out
+
+
+def ho_claim_finalize(db, row, reason):
+    """Kapanisi TEK SEFER sahiplen: finalized 0→1 (UPDATE rowcount). Ikinci
+    cagri False doner — cift kapanis/cift rapor burada olur."""
+    cur = db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason=? "
+                     "WHERE id=? AND finalized=0", (datetime.now(TZ).isoformat(), reason, int(row["id"])))
+    db.commit()
+    return cur.rowcount == 1
+
+
+async def ho_finalize(bot_obj, bot_data, db, row, reason, end_dt=None):
+    """1. vardiyayi TASLAKLA kapat: rapor gruba TEK SEFER gider.
+    Yol: taslak `cash_report` olarak kisinin kendi kimligiyle ayni handler'a
+    verilir — vardiya raporun saatiyle kapanir (kendini onaran kapanis),
+    grup raporu + stok uyarisi + DM ayni kodla gider. Ikinci bir rapor yolu YOK."""
+    if not row["draft"]:
+        return False
+    if not ho_claim_finalize(db, row, reason):
+        return False
+    end_dt = end_dt or datetime.now(TZ).replace(tzinfo=None)
+    try:
+        payload = json.loads(row["draft"] or "{}")
+    except Exception:
+        payload = {}
+    payload["action"] = "cash_report"
+    payload["end_time"] = end_dt.replace(tzinfo=TZ).isoformat()
+    payload["branch_id"] = int(row["branch_id"] or 0)
+    payload["branch"] = int(row["branch_id"] or 0)
+    payload["_handover"] = reason
+    ur = db.execute("SELECT name, username FROM users WHERE user_id=?", (int(row["user_id"]),)).fetchone()
+    upd = _ShimUpdate(bot_obj, int(row["user_id"]), (ur["name"] if ur else None) or row["user_name"],
+                      (ur["username"] if ur else None), json.dumps(payload, ensure_ascii=False))
+    ctx = _ShimContext(bot_obj, bot_data, uid=int(row["user_id"]))
+    try:
+        await handle_webapp_data(upd, ctx)
+    except Exception as e:
+        logger.exception(f"ho_finalize {row['shift_id']}: {e}")
+    # Geri sayim bitisi
+    try:
+        db.execute("UPDATE handover SET ho_ended_at=COALESCE(ho_ended_at, ?), ho_end_reason=COALESCE(ho_end_reason, ?) WHERE id=?",
+                   (datetime.now(TZ).isoformat(), reason, int(row["id"])))
+        db.commit()
+    except Exception:
+        pass
+    log_action(db, "handover_finalize", 0, "Nero", int(row["user_id"]), row["user_name"] or "",
+               {"shift_id": int(row["shift_id"]), "reason": reason, "end": end_dt.isoformat(),
+                "early_status": row["early_status"], "extra_min": row["extra_min"] or 0})
+    return True
+
+
+def ho_on_shift_end(db, cfg, sh, now):
+    """1. barista vardiyayi ELLE kapatti (shift_end). Planli bitisten once ve
+    onaysizsa → IZINSIZ ERKEN CIKIS kaydi (gecikme DEGIL, ayri ihlal).
+    Satir 'closed_elsewhere' ile kapanir: 17:30 tiki bir daha gondermez."""
+    if not ho_enabled(cfg):
+        return None
+    row = ho_row_for_shift(db, dict(sh).get("id"))
+    if not row or row["finalized"]:
+        return None
+    try:
+        en = datetime.fromisoformat(row["sched_end"])
+    except Exception:
+        en = now
+    un = None
+    if now < en and row["early_status"] != "approved":
+        un = {"employee": row["user_name"], "scheduled_end": en.strftime("%H:%M"),
+              "actual_exit": now.strftime("%H:%M"), "minutes_early": int((en - now).total_seconds() // 60),
+              "request_existed": row["early_status"] != "none", "approval_status": row["early_status"],
+              "ts": datetime.now(TZ).isoformat()}
+        db.execute("UPDATE handover SET unauth=1, unauth_at=?, unauth_json=? WHERE id=?",
+                   (datetime.now(TZ).isoformat(), json.dumps(un, ensure_ascii=False), int(row["id"])))
+        log_action(db, "unauthorized_early_exit", int(row["user_id"]), row["user_name"] or "",
+                   int(row["user_id"]), row["user_name"] or "", dict(un, shift_id=int(row["shift_id"])))
+    if row["extra_from"] and not row["extra_to"]:
+        ho_extra_close(db, row, now)
+    db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason=?, "
+               "ho_ended_at=COALESCE(ho_ended_at, ?), ho_end_reason=COALESCE(ho_end_reason, 'shift_closed') WHERE id=?",
+               (datetime.now(TZ).isoformat(), "manual_close" if not un else "unauthorized_exit",
+                datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return un
+
+
+def ho_view(db, row, now):
+    """Istemciye giden ozet (tek satir)."""
+    r = dict(row)
+    def _hm(v):
+        try:
+            return datetime.fromisoformat(v).strftime("%H:%M")
+        except Exception:
+            return ""
+    try:
+        en = datetime.fromisoformat(r["sched_end"])
+    except Exception:
+        en = now
+    active = bool(r.get("ho_started_at")) and not r.get("ho_ended_at") and now < en and not r.get("finalized")
+    left = max(0, int((en - now).total_seconds() // 60)) if active else None
+    ex_min = r.get("extra_min")
+    if r.get("extra_from") and not r.get("extra_to"):
+        try:
+            ex_min = max(0, int((now - datetime.fromisoformat(r["extra_from"])).total_seconds() // 60))
+        except Exception:
+            ex_min = 0
+    return {"sid": r["shift_id"], "uid": r["user_id"], "nm": r["user_name"], "bid": r["branch_id"],
+            "sched_end": _hm(r["sched_end"]), "b2_start": _hm(r["b2_start"]),
+            "draft": 1 if r.get("draft") else 0, "draft_at": _hm(r.get("draft_at") or ""),
+            "early": r.get("early_status") or "none", "early_req_at": _hm(r.get("early_req_at") or ""),
+            "early_min": r.get("early_min") or 0,
+            "finalized": int(r.get("finalized") or 0), "reason": r.get("finalize_reason") or "",
+            "unauth": int(r.get("unauth") or 0),
+            "b2_name": r.get("b2_name") or "", "b2_at": _hm(r.get("b2_arrived_at") or ""),
+            "ho_active": 1 if active else 0, "left": left,
+            "extra_on": 1 if (r.get("extra_from") and not r.get("extra_to")) else 0,
+            "extra_min": ex_min or 0, "extra_amount": r.get("extra_amount") or 0}
+
+
+async def handover_loop(app):
+    """Planli bitis tiki (30 sn). 17:30: 2. barista geldiyse taslak raporu
+    TEK SEFER gonder ve kapat; gelmediyse fazla mesai baslat, owner'a haber."""
+    await asyncio.sleep(50)
+    while True:
+        try:
+            db = get_db()
+            cfg = op_cfg(db)
+            if ho_enabled(cfg):
+                now = datetime.now(TZ).replace(tzinfo=None)
+                for row, what in ho_tick(db, now, cfg):
+                    if what == "finalize":
+                        try:
+                            en = datetime.fromisoformat(row["sched_end"])
+                        except Exception:
+                            en = now
+                        await ho_finalize(app.bot, app.bot_data, db, row, "time", end_dt=en)
+                    elif what == "extra_start":
+                        try:
+                            await app.bot.send_message(
+                                int(row["user_id"]),
+                                f"⏱ {row['sched_end'][11:16]} — сменщик ещё не пришёл. Вы остаётесь: время после плана "
+                                f"считается сверхурочно ×{float(cfg.get('extra_k') or 1.5):g}. Смена закроется, когда он придёт.")
+                        except Exception as _e:
+                            logger.warning(f"handover extra DM: {_e}")
+                        try:
+                            _oid = _primary_owner(db)
+                            if _oid:
+                                await app.bot.send_message(
+                                    int(_oid), f"⏱ {row['user_name']}: сменщик не пришёл к {row['sched_end'][11:16]} — сверхурочно.")
+                        except Exception:
+                            pass
+                    elif what == "no_draft":
+                        try:
+                            await app.bot.send_message(
+                                int(row["user_id"]),
+                                f"⏰ {row['sched_end'][11:16]}: черновика нет — смена остаётся открытой. Закройте смену как обычно.")
+                        except Exception as _e:
+                            logger.warning(f"handover nodraft DM: {_e}")
+        except Exception as e:
+            logger.warning(f"handover_loop: {e}")
+        await asyncio.sleep(30)
 
 
 def current_period():
@@ -3889,8 +4331,40 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "SELECT * FROM opening_delays WHERE user_id=? ORDER BY id DESC LIMIT 30",
                 (user_id,)).fetchall()
         op_rows = [dict(r) for r in _opr]
+        # ── ПЕРЕДАЧА СМЕНЫ ozeti ──────────────────────────────────────────
+        # me: benim acik vardiyamin devir satiri; reqs: owner icin bekleyen
+        # erken cikis talepleri; ln: 1. baristaya gelen bekleyen gec-gelis
+        # haberleri; ln_me: benim bugunku haberim; b2: bugun 2. vardiya
+        # penceresi olan sube (haber dugmesi icin).
+        _ho_out = {"on": 1 if ho_enabled(_opc) else 0, "me": None, "reqs": [], "ln": [], "ln_me": None, "b2": None,
+                   "extra_k": float(_opc.get("extra_k") or 1.5)}
+        if _ho_out["on"]:
+            _now_ho = datetime.now(TZ).replace(tzinfo=None)
+            _act_ho = get_active_shift(db, user_id)
+            if _act_ho:
+                _hr = ho_get_or_create(db, _opc, _act_ho)
+                if _hr:
+                    _ho_out["me"] = ho_view(db, _hr, _now_ho)
+                    _ho_out["ln"] = [{"id": r["id"], "nm": r["user_name"], "at": (r["expected_at"] or "")[11:16]}
+                                     for r in db.execute("SELECT * FROM late_notices WHERE branch_id=? AND status='pending' AND user_id!=? ORDER BY id DESC LIMIT 5",
+                                                         (int(_act_ho["branch_id"] or 0), user_id)).fetchall()]
+            else:
+                _hb = user_branch_id(db, user_id)
+                _st0, _en0, _b20 = ho_windows_for_shift(_opc, _hb, _now_ho.replace(hour=7, minute=0, second=0, microsecond=0))
+                if _b20:
+                    _ho_out["b2"] = {"bid": _hb, "start": _b20.strftime("%H:%M")}
+                _lm = db.execute("SELECT * FROM late_notices WHERE user_id=? AND date=? AND status IN ('pending','accepted','declined') ORDER BY id DESC LIMIT 1",
+                                 (user_id, _now_ho.strftime("%Y-%m-%d"))).fetchone()
+                if _lm:
+                    _ho_out["ln_me"] = {"id": _lm["id"], "at": (_lm["expected_at"] or "")[11:16], "status": _lm["status"]}
+            if role == "owner":
+                _ho_out["reqs"] = [ho_view(db, r, _now_ho) for r in db.execute(
+                    "SELECT * FROM handover WHERE finalized=0 AND early_status='requested' ORDER BY id DESC LIMIT 10").fetchall()]
+                _ho_out["open"] = [ho_view(db, r, _now_ho) for r in db.execute(
+                    "SELECT * FROM handover WHERE finalized=0 ORDER BY id DESC LIMIT 10").fetchall()]
     except Exception:
         _opc, op_rows = dict(OP_DEFAULTS), []
+        _ho_out = {"on": 0, "me": None, "reqs": [], "ln": [], "ln_me": None, "b2": None}
 
     # ── Rapor DIZINI: «bu vardiyanin raporu var mi?» ──
     # Vardiya penceresi 150, rapor penceresi 15'ti. Aradaki her vardiya
@@ -4109,6 +4583,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"kasa_index={quote(json.dumps(kasa_index))}",
         f"op_cfg={quote(json.dumps(_opc, ensure_ascii=False))}",
+        f"ho={quote(json.dumps(_ho_out, ensure_ascii=False))}",
         f"op_rows={quote(json.dumps(op_rows, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
@@ -6334,6 +6809,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
             start_dt = datetime.fromisoformat(sh["start_time"])
             note_back = ""
+            # 2. barista 17:30'dan SONRA geldi → 1. vardiya taslakla simdi kapanir
+            # (fazla mesai biter, rapor tek sefer). `_ho_close` yukarida hesaplandi.
+            try:
+                if _ho_close is not None:
+                    await ho_finalize(context.bot, context.bot_data, db, _ho_close, "after_extra_work",
+                                      end_dt=datetime.fromisoformat(sh["start_time"]))
+            except Exception as _e_hf:
+                logger.warning(f"handover finalize on arrival: {_e_hf}")
             # «Ручное время» notu SADECE gerçekten geçmiş bir saat girildiğinde. Uygulama
             # artık normal başlatmada da start_time (dokunuş anı) gönderiyor → şimdiye yakın
             # (≤3 dk) ise bu normal başlatmadır, «вручную» yazma.
@@ -6373,6 +6856,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     op_register(db, sh, _odwhy)   # idempotent: kayit varsa yine None
                 except Exception:
                     pass
+            # ── ПЕРЕДАЧА СМЕНЫ (2026-09-21): bu vardiya 1. vardiya mi (devir satiri
+            # acilir) yoksa 2. baristanin gelisi mi (acik devir satiri isaretlenir;
+            # 17:30 sonrasi gelisse 1. vardiya taslakla kapanir).
+            _ho_close = None
+            try:
+                _hocfg = op_cfg(db)
+                if ho_enabled(_hocfg):
+                    ho_get_or_create(db, _hocfg, sh)
+                    _ho_close = ho_on_b2_arrival(db, _hocfg, sh)
+            except Exception as _e_ho:
+                logger.warning(f"handover on start: {_e_ho}")
             # ── OTOMATİK KESİNTİ (owner isteği 2026-09-02) ────────────────────
             # «Belirlediğim zamandan geçince hemen hesabında otomatik kesilsin ve
             # ona bildirim gelsin hemen.» Kayıt `pending` açılıyordu ve para ancak
@@ -6445,6 +6939,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             desserts = data.get("desserts", {}) or {}
             note = (data.get("note") or "").strip()
             custom_end = data.get("end_time") or data.get("custom_end")
+            # ПЕРЕДАЧА СМЕНЫ: elle kapanis planli bitisten once ve onaysizsa
+            # izinsiz erken cikis KAYDI (ceza degil, ayri ihlal); devir satiri kapanir.
+            _ho_un = None
+            try:
+                _ho_un = ho_on_shift_end(db, op_cfg(db), active, datetime.now(TZ).replace(tzinfo=None))
+            except Exception as _e_hu:
+                logger.warning(f"handover on end: {_e_hu}")
             sh = end_shift(db, user.id, drinks, note, desserts=desserts, custom_end=custom_end)
             if not sh:
                 await update.message.reply_text("❌ Не удалось закрыть смену.")
@@ -6516,6 +7017,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if note:
                 text += f"\n📝 {note}"
             await update.message.reply_text(text, parse_mode="Markdown")
+            if _ho_un:
+                try:
+                    await update.message.reply_text(
+                        f"⚠️ Зафиксирован самовольный ранний уход: план {_ho_un['scheduled_end']}, "
+                        f"ушли в {_ho_un['actual_exit']} (на {_ho_un['minutes_early']} мин раньше) без разрешения владельца.")
+                    _oid_u = _primary_owner(db)
+                    if _oid_u:
+                        await context.bot.send_message(
+                            int(_oid_u),
+                            f"⚠️ {_ho_un['employee']}: самовольный ранний уход — план {_ho_un['scheduled_end']}, "
+                            f"факт {_ho_un['actual_exit']} (на {_ho_un['minutes_early']} мин раньше). "
+                            f"Заявка: {'была, ' + _ho_un['approval_status'] if _ho_un['request_existed'] else 'не было'}.")
+                except Exception as _e_un:
+                    logger.warning(f"unauth DM: {_e_un}")
             # Klavye butonunu taze URL ile yenile (active=null, yeni vardiya başlatılabilsin)
             await refresh_webapp_keyboard(update, context, db, user,
                 "🔄 Смена закрыта. Готово к следующей смене 👇")
@@ -9804,6 +10319,130 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        _row["user_id"], _row["user_name"], {"id": _rid})
             await update.message.reply_text("✅ Штраф отменён.")
 
+        elif action == "ho_draft_save":
+            # 1. barista: kapanis taslagini KILITLE (vardiya acik kalir).
+            db = get_db()
+            _cfg = op_cfg(db)
+            active = get_active_shift(db, user.id)
+            if not active:
+                await update.message.reply_text("❌ Нет активной смены."); return
+            row = ho_get_or_create(db, _cfg, active)
+            if not row:
+                await update.message.reply_text("ℹ️ Для этой смены передача не настроена (нет второй смены в окнах филиала)."); return
+            row, err = ho_draft_save(db, row, data)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_draft_save", user.id, user.first_name, None, None,
+                       {"shift_id": int(row["shift_id"]), "cups": sum(int((c or {}).get("s") or 0) for c in (data.get("cups") or []) if isinstance(c, dict))})
+            await update.message.reply_text(
+                f"🔒 Черновик сохранён и заблокирован. Смена открыта до {row['sched_end'][11:16]}: "
+                f"отчёт уйдёт сам в {row['sched_end'][11:16]} или раньше — с разрешения владельца.")
+
+        elif action == "ho_early_request":
+            db = get_db()
+            active = get_active_shift(db, user.id)
+            row = ho_row_for_shift(db, active["id"]) if active else None
+            if not row:
+                await update.message.reply_text("❌ Нет смены с передачей."); return
+            row, err = ho_early_request(db, row)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_early_request", user.id, user.first_name, None, None, {"shift_id": int(row["shift_id"])})
+            await update.message.reply_text("🙋 Заявка отправлена владельцу. До решения смена продолжается.")
+            try:
+                _oid = _primary_owner(db)
+                if _oid:
+                    await context.bot.send_message(
+                        int(_oid), f"🙋 {row['user_name']} просит уйти раньше (план до {row['sched_end'][11:16]}). "
+                                   f"Решение — в Nero → Смена → «Заявки на ранний уход».")
+            except Exception as _e:
+                logger.warning(f"ho early DM: {_e}")
+
+        elif action == "ho_early_decide":
+            # YALNIZ OWNER (owner 2026-09-21: «sadece ben onaylayacagim»).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            try:
+                _sid = int(data.get("shift_id") or 0)
+            except (TypeError, ValueError):
+                _sid = 0
+            row = ho_row_for_shift(db, _sid)
+            if not row:
+                await update.message.reply_text("❌ Запись не найдена."); return
+            _ok = bool(int(data.get("ok") or 0))
+            row, err = ho_early_decide(db, row, _ok, user.id)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_early_decide", user.id, user.first_name, int(row["user_id"]), row["user_name"],
+                       {"shift_id": _sid, "ok": _ok, "early_min": row["early_min"] or 0})
+            if _ok:
+                await ho_finalize(context.bot, context.bot_data, db, row, "early_exit_approved")
+                await update.message.reply_text(f"✅ {row['user_name']}: уход разрешён на {row['early_min'] or 0} мин раньше. Смена закрыта, отчёт ушёл.")
+                try:
+                    await context.bot.send_message(int(row["user_id"]), "✅ Владелец разрешил уйти раньше. Смена закрыта, отчёт отправлен.")
+                except Exception:
+                    pass
+            else:
+                await update.message.reply_text(f"❌ {row['user_name']}: отказано. Работает до {row['sched_end'][11:16]}.")
+                try:
+                    await context.bot.send_message(int(row["user_id"]), f"❌ Владелец отказал. Работаем до {row['sched_end'][11:16]}; отчёт уйдёт сам.")
+                except Exception:
+                    pass
+
+        elif action == "late_notice":
+            # 2. barista: «gec gelecegim» — 1. baristaya (o subede acik vardiya) gider.
+            db = get_db()
+            _exp = _parse_user_time(data.get("expected_at") or "")
+            if not _exp:
+                await update.message.reply_text("❌ Укажите время прихода."); return
+            try:
+                _bid = int(data.get("branch_id") or data.get("branch") or 0) or acting_branch_id(db, user.id)
+            except Exception:
+                _bid = acting_branch_id(db, user.id)
+            _nm = display_name_for(db, user.id, fallback=user.first_name or "?")
+            _today = datetime.now(TZ).strftime("%Y-%m-%d")
+            db.execute("UPDATE late_notices SET status='superseded' WHERE user_id=? AND date=? AND status='pending'", (user.id, _today))
+            cur = db.execute("INSERT INTO late_notices (user_id,user_name,branch_id,date,expected_at,status,created_at) "
+                             "VALUES (?,?,?,?,?,'pending',?)",
+                             (user.id, _nm, _bid, _today, _exp.isoformat(), datetime.now(TZ).isoformat()))
+            db.commit()
+            log_action(db, "late_notice", user.id, user.first_name, None, None, {"id": cur.lastrowid, "expected": _exp.isoformat(), "branch_id": _bid})
+            await update.message.reply_text(f"📨 Передано 1-му баристе: придёте к {_exp.strftime('%H:%M')}. Штрафа не будет, если он примет.")
+            try:
+                _b1 = db.execute("SELECT user_id FROM shifts WHERE branch_id=? AND end_time IS NULL AND start_time IS NOT NULL AND user_id!=? ORDER BY id DESC LIMIT 1",
+                                 (_bid, user.id)).fetchone()
+                if _b1:
+                    await context.bot.send_message(int(_b1["user_id"]), f"⏰ {_nm} придёт к {_exp.strftime('%H:%M')}. Принять или нет — в Nero → Смена.")
+            except Exception as _e:
+                logger.warning(f"late_notice DM: {_e}")
+
+        elif action == "late_notice_decide":
+            # 1. barista (o subede acik vardiya) kabul/ret. Bu 1. baristanin KENDI
+            # cikisi degil — sadece devir duzeni.
+            db = get_db()
+            try:
+                _nid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _nid = 0
+            ln = db.execute("SELECT * FROM late_notices WHERE id=?", (_nid,)).fetchone()
+            if not ln or ln["status"] != "pending":
+                await update.message.reply_text("❌ Уведомление не найдено или уже решено."); return
+            _mine = get_active_shift(db, user.id)
+            if get_role(db, user.id) != "owner" and (not _mine or int(_mine["branch_id"] or 0) != int(ln["branch_id"] or 0)):
+                await update.message.reply_text("❌ Решает бариста, который сейчас в смене на этом филиале."); return
+            _ok = bool(int(data.get("ok") or 0))
+            db.execute("UPDATE late_notices SET status=?, decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                       ("accepted" if _ok else "declined", user.id, user.first_name or "", datetime.now(TZ).isoformat(), _nid))
+            db.commit()
+            log_action(db, "late_notice_decide", user.id, user.first_name, int(ln["user_id"]), ln["user_name"], {"id": _nid, "ok": _ok})
+            await update.message.reply_text("✅ Принято — штрафа за опоздание не будет." if _ok else "❌ Не принято — сменщик ожидается по плану.")
+            try:
+                await context.bot.send_message(int(ln["user_id"]), ("✅ Ваш поздний приход принят — без штрафа." if _ok
+                                                                 else "❌ Поздний приход не принят: ожидают по плану, действует обычное правило опоздания."))
+            except Exception:
+                pass
+
         elif action == "announce":
             # Owner'dan gruba DUYURU (2026-09-19, owner istegi): Nero'da metin
             # yazar, subeleri secer; bot her subenin grubuna yazar. Ayni gruba
@@ -12000,6 +12639,7 @@ async def setup_commands(app):
     # Ödeme hatırlatma arka plan görevi
     asyncio.create_task(payment_reminder_loop(app))
     asyncio.create_task(shift_end_warn_loop(app))
+    asyncio.create_task(handover_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
 
