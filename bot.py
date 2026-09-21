@@ -6813,6 +6813,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # kimse kapanmaya zorlanmaz). «Нет позиции» (asistan pozisyonu yok) bypass EDİLMEZ.
             _mode = (data.get("shift_mode") or "").strip()
             _blk = slot_block_reason(db, user.id, _bid_chk)
+            # ПЕРЕДАЧА СМЕНЫ (2026-09-21, canli: 2. barista 1. kapatmadan acamadi):
+            # akis acikken bu subede ACIK bir devir satiri (1. vardiya) varsa,
+            # 2. barista pozisyon dolu olsa da baslar — devir zaten bu demek.
+            # Istemci modu ne gonderirse gondersin (eski paket dahil) gecerli.
+            try:
+                if _blk and ho_enabled(None, db) and "Нет позиции" not in _blk:
+                    _ho_open = db.execute(
+                        "SELECT 1 FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? LIMIT 1",
+                        (int(_bid_chk or 0), user.id)).fetchone()
+                    if _ho_open:
+                        _blk = None
+                        if _mode not in ("takeover", "parallel"):
+                            _mode = "takeover"
+            except Exception as _e_hb:
+                logger.warning(f"handover slot bypass: {_e_hb}")
             if _blk:
                 _bypass = (_mode in ("takeover", "parallel")) and ("Нет позиции" not in _blk)
                 if not _bypass:
@@ -6832,14 +6847,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_id = resolve_group_id(db, user.id, context, branch_id=sh["branch_id"])
             start_dt = datetime.fromisoformat(sh["start_time"])
             note_back = ""
-            # 2. barista 17:30'dan SONRA geldi → 1. vardiya taslakla simdi kapanir
-            # (fazla mesai biter, rapor tek sefer). `_ho_close` yukarida hesaplandi.
-            try:
-                if _ho_close is not None:
-                    await ho_finalize(context.bot, context.bot_data, db, _ho_close, "after_extra_work",
-                                      end_dt=datetime.fromisoformat(sh["start_time"]))
-            except Exception as _e_hf:
-                logger.warning(f"handover finalize on arrival: {_e_hf}")
+
             # «Ручное время» notu SADECE gerçekten geçmiş bir saat girildiğinde. Uygulama
             # artık normal başlatmada da start_time (dokunuş anı) gönderiyor → şimdiye yakın
             # (≤3 dk) ise bu normal başlatmadır, «вручную» yazma.
@@ -6890,6 +6898,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _ho_close = ho_on_b2_arrival(db, _hocfg, sh)
             except Exception as _e_ho:
                 logger.warning(f"handover on start: {_e_ho}")
+            # 2. barista planli bitisten SONRA geldi → 1. vardiya taslakla simdi
+            # kapanir (fazla mesai biter, rapor tek sefer). Kapanis BURADA, kancanin
+            # hemen ardinda — daha once yukarida cagriliyordu ve `_ho_close` henuz
+            # tanimli degildi (canli uyarisi 21.09 15:48).
+            try:
+                if _ho_close is not None:
+                    await ho_finalize(context.bot, context.bot_data, db, _ho_close, "after_extra_work",
+                                      end_dt=datetime.fromisoformat(sh["start_time"]))
+            except Exception as _e_hf:
+                logger.warning(f"handover finalize on arrival: {_e_hf}")
             # ── OTOMATİK KESİNTİ (owner isteği 2026-09-02) ────────────────────
             # «Belirlediğim zamandan geçince hemen hesabında otomatik kesilsin ve
             # ona bildirim gelsin hemen.» Kayıt `pending` açılıyordu ve para ancak
