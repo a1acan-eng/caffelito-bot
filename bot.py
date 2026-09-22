@@ -2259,7 +2259,7 @@ def op_register(db, shift_row, why=None):
         # vardiyaya saatlerce «gec kalmis» sayilirdi (owner 2026-09-22).
         sched = _pend = _src = None
         try:
-            if ho_enabled(cfg):
+            if ho_enabled(cfg) and not ho_solo(db, bid, actual):
                 _hr2 = db.execute(
                     "SELECT b2_start, sched_end FROM handover WHERE branch_id=? AND finalized=0 "
                     "AND user_id!=? ORDER BY id DESC LIMIT 1",
@@ -2528,6 +2528,32 @@ def ho_is_second_window(cfg, branch_id, when_dt):
     return False
 
 
+def ho_solo_key(branch_id, when_dt=None):
+    d = (when_dt or datetime.now(TZ).replace(tzinfo=None)).strftime("%Y-%m-%d")
+    return f"ho_solo_{int(branch_id or 0)}_{d}"
+
+
+def ho_solo(db, branch_id, when_dt=None):
+    """«Сегодня один за двоих» (owner 2026-09-23): o gun o subede TEK kisi
+    iki vardiyayi da goturur. Devir akisi o gun icin kapali sayilir — fazla
+    mesai ×1.5 yok, beklenen sменщик yok, devir adimlari cikmaz. Gun bazli:
+    ertesi gun kendiliginden duser."""
+    try:
+        return db.execute("SELECT 1 FROM meta WHERE k=?", (ho_solo_key(branch_id, when_dt),)).fetchone() is not None
+    except Exception:
+        return False
+
+
+def ho_solo_set(db, branch_id, on, when_dt=None):
+    k = ho_solo_key(branch_id, when_dt)
+    if on:
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, datetime.now(TZ).isoformat()))
+    else:
+        db.execute("DELETE FROM meta WHERE k=?", (k,))
+    db.commit()
+    return bool(on)
+
+
 def ho_row_for_shift(db, shift_id):
     try:
         return db.execute("SELECT * FROM handover WHERE shift_id=?", (int(shift_id),)).fetchone()
@@ -2549,6 +2575,8 @@ def ho_get_or_create(db, cfg, sh):
     except Exception:
         return None
     bid = int(sh.get("branch_id") or 0)
+    if ho_solo(db, bid, st_dt):
+        return None                      # «один за двоих» — devir yok
     st, en, b2 = ho_windows_for_shift(cfg, bid, st_dt)
     if not st or not b2:
         return None
@@ -2799,6 +2827,8 @@ def ho_tick(db, now, cfg=None):
                 db.commit()
                 out.append((r, "no_draft"))
         else:
+            if ho_solo(db, r["branch_id"], en):
+                continue                 # «один за двоих» — sверхурочно baslatilmaz
             if not r["extra_from"]:
                 db.execute("UPDATE handover SET extra_from=? WHERE id=?", (en.isoformat(), int(r["id"])))
                 db.commit()
@@ -4542,6 +4572,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                  (user_id, _now_ho.strftime("%Y-%m-%d"))).fetchone()
                 if _lm:
                     _ho_out["ln_me"] = {"id": _lm["id"], "at": (_lm["expected_at"] or "")[11:16], "status": _lm["status"]}
+            _ho_out["solo"] = [int(b["id"]) for b in get_branches(db, only_active=True)
+                               if ho_solo(db, int(b["id"]), _now_ho)]
             if role == "owner":
                 _ho_out["reqs"] = [ho_view(db, r, _now_ho) for r in db.execute(
                     "SELECT * FROM handover WHERE finalized=0 AND early_status='requested' ORDER BY id DESC LIMIT 10").fetchall()]
@@ -10760,6 +10792,47 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             InlineKeyboardButton("❌ Отказать", callback_data=f"hoe_no:{int(row['shift_id'])}")]]))
             except Exception as _e:
                 logger.warning(f"ho early DM: {_e}")
+
+        elif action == "ho_solo":
+            # Owner: «Сегодня один за двоих» (o gun o subede tek kisi).
+            # YETKI (owner 2026-09-23: «ikimiz de yapalim»): owner her subede;
+            # barista YALNIZ kendi acik vardiyasinin subesinde — o gun tek basina
+            # calisan kisi kendi isaretleyebilsin, unuturssa owner yapar.
+            db = get_db()
+            try:
+                _sb = int(data.get("branch_id") or data.get("branch") or 0)
+            except (TypeError, ValueError):
+                _sb = 0
+            if not _sb or not get_branch(db, _sb):
+                await update.message.reply_text("❌ Филиал не найден."); return
+            if get_role(db, user.id) != "owner":
+                _my_sb = get_active_shift(db, user.id)
+                if not _my_sb or int(_my_sb["branch_id"] or 0) != _sb:
+                    await update.message.reply_text(
+                        "❌ Включить можно только на своём филиале и только в свою смену."); return
+            _on = bool(int(data.get("on") or 0))
+            ho_solo_set(db, _sb, _on)
+            _bn_s = (get_branch(db, _sb) or {}).get("name") or str(_sb)
+            # Acilirken: bugunun ACIK devir satirlari kapatilir (sверхурочно
+            # baslamissa geri alinir) — tek kisi calisiyorsa devir yoktur.
+            _undone = 0
+            if _on:
+                for _r in db.execute("SELECT * FROM handover WHERE branch_id=? AND date=? AND finalized=0",
+                                     (_sb, datetime.now(TZ).strftime("%Y-%m-%d"))).fetchall():
+                    if _r["extra_adj_id"]:
+                        db.execute("DELETE FROM adjustments WHERE id=?", (int(_r["extra_adj_id"]),))
+                    db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason='solo_day', "
+                               "extra_from=NULL, extra_to=NULL, extra_min=NULL, extra_amount=NULL, extra_adj_id=NULL "
+                               "WHERE id=?", (datetime.now(TZ).isoformat(), int(_r["id"])))
+                    _undone += 1
+                db.commit()
+            log_action(db, "ho_solo", user.id, user.first_name, None, None,
+                       {"branch_id": _sb, "on": _on, "closed_rows": _undone})
+            await update.message.reply_text(
+                (f"👤 {_bn_s}: сегодня один за двоих.\nПередача смены на сегодня отключена — "
+                 f"сверхурочно ×{float(op_cfg(db).get('extra_k') or 1.5):g} не начисляется, сменщика не ждём."
+                 + (f"\n↩️ Отменено начисление сверхурочных: {_undone}" if _undone else ""))
+                if _on else f"🤝 {_bn_s}: обычный режим — передача смены снова включена.")
 
         elif action == "ho_pass":
             # 1. barista: «Передаю смену» (taslak kilitli olmali).
