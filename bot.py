@@ -7014,11 +7014,51 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             desserts = data.get("desserts", {}) or {}
             note = (data.get("note") or "").strip()
             custom_end = data.get("end_time") or data.get("custom_end")
+            # ── ПЕРЕДАЧА СМЕНЫ: KAPANIS KILIDI (owner 2026-09-22) ──────────────
+            # «Devir penceresi varken 1. barista kendi kendine cikamaz — izin
+            # olmadan kapatamasin; taslak yolu ZORUNLU.» Plan bitisinden ONCE
+            # kapatma REDDEDILIR: ya taslak kaydedilir (rapor 17:30'da kendi
+            # gider) ya da owner izin verir. Plan bitisinden SONRA kapatilabilir,
+            # ama sменщик plan bitisine kadar geldiyse UCRET plan bitisinde durur
+            # (owner: «17:30'dan sonra hicbir sekilde ucret yazilmasin»).
+            _now_he = datetime.now(TZ).replace(tzinfo=None)
+            _hocfg_e = op_cfg(db)
+            _hrow_e = ho_row_for_shift(db, active["id"]) if ho_enabled(_hocfg_e) else None
+            if _hrow_e and not _hrow_e["finalized"]:
+                try:
+                    _en_he = datetime.fromisoformat(_hrow_e["sched_end"])
+                except Exception:
+                    _en_he = None
+                if _en_he and _now_he < _en_he and str(_hrow_e["early_status"] or "none") != "approved":
+                    _hhm = _en_he.strftime("%H:%M")
+                    if not _hrow_e["draft"]:
+                        await update.message.reply_text(
+                            f"🔒 Смена закрывается автоматически в {_hhm}.\n\n"
+                            "Сейчас нужно сохранить черновик: посчитайте стаканы, расходы — "
+                            "и нажмите «Сохранить черновик». Отчёт уйдёт сам.\n"
+                            "Нужно уйти раньше — спросите владельца в Nero.")
+                    else:
+                        await update.message.reply_text(
+                            f"🔒 Черновик сохранён — отчёт уйдёт сам в {_hhm}.\n"
+                            "Закрыть смену раньше можно только с разрешения владельца "
+                            "(в карточке смены — «Спросить владельца»).")
+                    log_action(db, "ho_close_blocked", user.id, user.first_name, None, None,
+                               {"shift_id": int(active["id"]), "sched_end": _hrow_e["sched_end"],
+                                "draft": 1 if _hrow_e["draft"] else 0,
+                                "early_status": _hrow_e["early_status"]})
+                    return
+                # Ucret tavani: sменщик plan bitisine kadar geldiyse kapanis plan bitisi sayilir.
+                if _en_he and _now_he >= _en_he and _hrow_e["b2_arrived_at"]:
+                    try:
+                        if datetime.fromisoformat(_hrow_e["b2_arrived_at"]) <= _en_he:
+                            custom_end = _en_he.isoformat()
+                    except Exception:
+                        pass
             # ПЕРЕДАЧА СМЕНЫ: elle kapanis planli bitisten once ve onaysizsa
             # izinsiz erken cikis KAYDI (ceza degil, ayri ihlal); devir satiri kapanir.
             _ho_un = None
             try:
-                _ho_un = ho_on_shift_end(db, op_cfg(db), active, datetime.now(TZ).replace(tzinfo=None))
+                _ho_un = ho_on_shift_end(db, _hocfg_e, active, _now_he)
             except Exception as _e_hu:
                 logger.warning(f"handover on end: {_e_hu}")
             sh = end_shift(db, user.id, drinks, note, desserts=desserts, custom_end=custom_end)
