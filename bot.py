@@ -2544,6 +2544,31 @@ def ho_solo(db, branch_id, when_dt=None):
         return False
 
 
+def ho_solo_can(db, user_id, branch_id, when_dt=None):
+    """Barista «один за двоих»u ACABILIR mi? (owner her zaman acabilir.)
+    Kural (owner 2026-09-23): «her sey yolundaysa bu ozellige erisim olmasin» →
+    yalnizca kisi o subede TEK BASINA ise ve o gun sменщик HENUZ GELMEDIYSE.
+    Kapatmak ayri: acikken kendi vardiyasinda her zaman geri alabilir."""
+    try:
+        bid = int(branch_id or 0)
+        mine = get_active_shift(db, user_id)
+        if not mine or int(mine["branch_id"] or 0) != bid:
+            return False
+        other = db.execute(
+            "SELECT 1 FROM shifts WHERE COALESCE(branch_id,1)=? AND end_time IS NULL "
+            "AND start_time IS NOT NULL AND user_id!=? LIMIT 1", (bid, int(user_id))).fetchone()
+        if other:
+            return False                  # sменщик zaten iste — normal gun
+        d = (when_dt or datetime.now(TZ).replace(tzinfo=None)).strftime("%Y-%m-%d")
+        came = db.execute(
+            "SELECT 1 FROM handover WHERE branch_id=? AND date=? AND b2_arrived_at IS NOT NULL LIMIT 1",
+            (bid, d)).fetchone()
+        return came is None
+    except Exception as e:
+        logger.warning(f"ho_solo_can: {e}")
+        return False
+
+
 def ho_solo_set(db, branch_id, on, when_dt=None):
     k = ho_solo_key(branch_id, when_dt)
     if on:
@@ -4574,6 +4599,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     _ho_out["ln_me"] = {"id": _lm["id"], "at": (_lm["expected_at"] or "")[11:16], "status": _lm["status"]}
             _ho_out["solo"] = [int(b["id"]) for b in get_branches(db, only_active=True)
                                if ho_solo(db, int(b["id"]), _now_ho)]
+            # Baristaya dugmeyi YALNIZ anlamliysa goster (owner'da hep durur).
+            _ho_out["solo_can"] = 1 if (_act_ho and ho_solo_can(db, user_id, int(_act_ho["branch_id"] or 0), _now_ho)) else 0
             if role == "owner":
                 _ho_out["reqs"] = [ho_view(db, r, _now_ho) for r in db.execute(
                     "SELECT * FROM handover WHERE finalized=0 AND early_status='requested' ORDER BY id DESC LIMIT 10").fetchall()]
@@ -7053,6 +7080,34 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Kullanıcı client'ta seçti (shift_mode=takeover|parallel) → "занята" engeli
             # bypass edilir; her ikisi de BAĞIMSIZ yeni vardiya başlatır (kayıt birleşmez,
             # kimse kapanmaya zorlanmaz). «Нет позиции» (asistan pozisyonu yok) bypass EDİLMEZ.
+            # «Один за двоих» acikken BASKA biri vardiya acarsa mod anlamini
+            # yitirir → kendiliginden kapanir; 1. vardiyanin devir satiri o anda
+            # acilir ki gelen kisi «pozisyon dolu» engeline takilmasin.
+            _solo_bypass = False
+            try:
+                _scfg = op_cfg(db)
+                if ho_enabled(_scfg) and ho_solo(db, _bid_chk):
+                    _other_open = db.execute(
+                        "SELECT * FROM shifts WHERE COALESCE(branch_id,1)=? AND end_time IS NULL "
+                        "AND start_time IS NOT NULL AND user_id!=? ORDER BY id DESC LIMIT 1",
+                        (int(_bid_chk or 0), user.id)).fetchone()
+                    if _other_open:
+                        ho_solo_set(db, int(_bid_chk or 0), False)
+                        _solo_bypass = True     # mod yuzunden devir satiri yoktu → pozisyon engeli gecilir
+                        log_action(db, "ho_solo", 0, "Nero", user.id, shown,
+                                   {"branch_id": int(_bid_chk or 0), "on": False, "auto": "second_arrived"})
+                        try:
+                            ho_get_or_create(db, _scfg, _other_open)
+                        except Exception as _e_so2:
+                            logger.warning(f"solo auto-off row: {_e_so2}")
+                        try:
+                            await context.bot.send_message(
+                                int(_other_open["user_id"]),
+                                "ℹ️ Сменщик всё-таки вышел — режим «один за двоих» снят, передача смены включена.")
+                        except Exception:
+                            pass
+            except Exception as _e_so:
+                logger.warning(f"solo auto-off: {_e_so}")
             _mode = (data.get("shift_mode") or "").strip()
             _blk = slot_block_reason(db, user.id, _bid_chk)
             # ПЕРЕДАЧА СМЕНЫ (2026-09-21, canli: 2. barista 1. kapatmadan acamadi):
@@ -7071,7 +7126,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception as _e_hb:
                 logger.warning(f"handover slot bypass: {_e_hb}")
             if _blk:
-                _bypass = (_mode in ("takeover", "parallel")) and ("Нет позиции" not in _blk)
+                _bypass = (_mode in ("takeover", "parallel") or _solo_bypass) and ("Нет позиции" not in _blk)
                 if not _bypass:
                     await update.message.reply_text(_blk)
                     await refresh_webapp_keyboard(update, context, db, user,
@@ -10805,12 +10860,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _sb = 0
             if not _sb or not get_branch(db, _sb):
                 await update.message.reply_text("❌ Филиал не найден."); return
+            _on = bool(int(data.get("on") or 0))
             if get_role(db, user.id) != "owner":
                 _my_sb = get_active_shift(db, user.id)
                 if not _my_sb or int(_my_sb["branch_id"] or 0) != _sb:
                     await update.message.reply_text(
                         "❌ Включить можно только на своём филиале и только в свою смену."); return
-            _on = bool(int(data.get("on") or 0))
+                # ACMA: yalniz gercekten tek basinaysa. KAPATMA: her zaman serbest.
+                if _on and not ho_solo_can(db, user.id, _sb):
+                    await update.message.reply_text(
+                        "ℹ️ Сменщик уже на смене (или уже приходил сегодня) — режим «один за двоих» не нужен.\n"
+                        "Если что-то изменилось, включить может владелец."); return
             ho_solo_set(db, _sb, _on)
             _bn_s = (get_branch(db, _sb) or {}).get("name") or str(_sb)
             # Acilirken: bugunun ACIK devir satirlari kapatilir (sверхурочно
