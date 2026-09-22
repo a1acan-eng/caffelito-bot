@@ -2662,6 +2662,10 @@ def ho_pass(db, row):
         return None, "Смена уже закрыта."
     if not row["draft"]:
         return None, "Сначала сохраните черновик."
+    # Sменщик GELMEDEN devretme yok (owner 2026-09-22: «ikinci barista ise
+    # baslamadan birincisi nasil devrediyor»). Gelis = onun vardiyasi acik.
+    if not row["b2_arrived_at"]:
+        return None, "Сменщик ещё не начал смену — передавать некому."
     if row["pass_at"]:
         return None, "Смена уже передана — ждём подтверждения сменщика."
     db.execute("UPDATE handover SET pass_at=? WHERE id=?",
