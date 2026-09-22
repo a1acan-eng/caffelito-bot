@@ -295,6 +295,17 @@ def get_db():
         b2_uid INTEGER, b2_name TEXT, b2_arrived_at TEXT,
         ho_started_at TEXT, ho_ended_at TEXT, ho_end_reason TEXT,
         nodraft_noted INTEGER DEFAULT 0, created_at TEXT)""")
+    # Devir RITUELI (owner 2026-09-22): once 1. barista «Передаю смену», sonra
+    # 2. barista «Принял смену» (stakanlar/kasa/temizlik/ekipman). Erken cikis
+    # talebi ancak ikisi bittikten sonra acilir. `cover_*`: izinli devirde 2.
+    # baristanin KENDI planindan onceki, TEK BASINA calistigi dakikalar ×1.5.
+    for _hc, _ht in (("pass_at", "TEXT"), ("accept_at", "TEXT"), ("accept_uid", "INTEGER"),
+                     ("cover_min", "INTEGER"), ("cover_amount", "INTEGER"), ("cover_adj_id", "INTEGER"),
+                     ("b2_real_at", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE handover ADD COLUMN {_hc} {_ht}")
+        except sqlite3.OperationalError:
+            pass
     # 2. baristanin «gec gelecegim» haberi; 1. barista kabul/ret eder.
     db.execute("""CREATE TABLE IF NOT EXISTS late_notices (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2242,7 +2253,26 @@ def op_register(db, shift_row, why=None):
         if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
             _why.append("филиал выключен в настройках штрафа"); return None
         # PLAN: şube pencereleri öncelikli (owner 2026-09-17), yoksa eski yol.
-        sched, _pend, _src = op_planned(db, cfg, int(sh.get("user_id") or 0), bid, actual)
+        # ПЕРЕДАЧА СМЕНЫ: bu kisi 2. VARDIYA olarak geliyorsa (subede acik bir
+        # devir satiri var) plani o satirin `b2_start`idir. Yoksa motor «gelise
+        # en yakin baslamis pencere»ye bakar ve anlasip ERKEN gelen kisi 1.
+        # vardiyaya saatlerce «gec kalmis» sayilirdi (owner 2026-09-22).
+        sched = _pend = _src = None
+        try:
+            if ho_enabled(cfg):
+                _hr2 = db.execute(
+                    "SELECT b2_start, sched_end FROM handover WHERE branch_id=? AND finalized=0 "
+                    "AND user_id!=? ORDER BY id DESC LIMIT 1",
+                    (bid, int(sh.get("user_id") or 0))).fetchone()
+                if _hr2:
+                    sched = datetime.fromisoformat(_hr2["b2_start"])
+                    _pend = datetime.fromisoformat(_hr2["sched_end"])
+                    _src = "handover"
+        except Exception as _e_hs:
+            logger.warning(f"op_register handover plan: {_e_hs}")
+            sched = None
+        if sched is None:
+            sched, _pend, _src = op_planned(db, cfg, int(sh.get("user_id") or 0), bid, actual)
         if not sched:
             _haswin = bool((cfg.get("windows") or {}).get(str(bid)))
             _why.append("смены филиала не заданы в настройках (нажмите Сохранить в «Смены по филиалам»)"
@@ -2554,6 +2584,10 @@ def ho_early_request(db, row):
         return None, "Смена уже закрыта."
     if not row["draft"]:
         return None, "Сначала сохраните черновик."
+    if not row["pass_at"]:
+        return None, "Сначала передайте смену сменщику («Передаю смену»)."
+    if not row["accept_at"]:
+        return None, "Сменщик ещё не подтвердил приём смены."
     if row["early_status"] in ("requested", "approved"):
         return None, "Заявка уже отправлена."
     db.execute("UPDATE handover SET early_status='requested', early_req_at=? WHERE id=?",
@@ -2578,7 +2612,11 @@ def ho_early_decide(db, row, ok, actor_id):
                ("approved" if ok else "rejected", datetime.now(TZ).isoformat(), int(actor_id or 0),
                 early_min if ok else None, int(row["id"])))
     db.commit()
-    return ho_row_for_shift(db, row["shift_id"]), ""
+    row = ho_row_for_shift(db, row["shift_id"])
+    if ok:
+        # Izinli devir: 2. baristanin plan oncesi TEK BASINA dakikalari ×1.5.
+        row = ho_cover_pay(db, row, now)
+    return row, ""
 
 
 def ho_extra_close(db, row, at_dt):
@@ -2618,6 +2656,79 @@ def ho_extra_close(db, row, at_dt):
     return ho_row_for_shift(db, row["shift_id"])
 
 
+def ho_pass(db, row):
+    """1. barista: «Передаю смену». Taslak KILITLI olmali (rapor hazir olsun)."""
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if not row["draft"]:
+        return None, "Сначала сохраните черновик."
+    if row["pass_at"]:
+        return None, "Смена уже передана — ждём подтверждения сменщика."
+    db.execute("UPDATE handover SET pass_at=? WHERE id=?",
+               (datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_accept(db, row, uid):
+    """2. barista: «Принял смену» — teslim alma onayi. 1. barista devretmeden
+    kabul edilemez (owner: «once birinci devrediyorum desin»)."""
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if not row["pass_at"]:
+        return None, "Сменщик ещё не передал смену."
+    if row["accept_at"]:
+        return None, "Смена уже принята."
+    db.execute("UPDATE handover SET accept_at=?, accept_uid=? WHERE id=?",
+               (datetime.now(TZ).isoformat(), int(uid), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_cover_pay(db, row, left_at):
+    """Izinli erken cikis: 2. barista KENDI planindan once ve TEK BASINA
+    calisiyor → o dakikalar ×(k−1) ek odeme (taban saat zaten vardiyasinda).
+    Pencere: 1. baristanin cikisi → 2. baristanin plan basi. Idempotent."""
+    try:
+        if row["cover_adj_id"] or not row["b2_uid"]:
+            return row
+        b2s = datetime.fromisoformat(row["b2_start"])
+        if left_at >= b2s:
+            return row                      # plan basindan sonra cikti — kapsama yok
+        mins = int((b2s - left_at).total_seconds() // 60)
+        if mins <= 0:
+            return row
+        cfg = op_cfg(db)
+        k = float(cfg.get("extra_k") or 1.5)
+        _b2sh = db.execute("SELECT rate FROM shifts WHERE user_id=? AND end_time IS NULL "
+                           "ORDER BY id DESC LIMIT 1", (int(row["b2_uid"]),)).fetchone()
+        rate = 0
+        try:
+            rate = int(_b2sh["rate"] or 0) if _b2sh else 0
+        except Exception:
+            rate = 0
+        if rate <= 0:
+            rate = int(barista_pay_info(db, int(row["b2_uid"]), branch_id=int(row["branch_id"] or 0))["rate"])
+        amt = int(round(mins / 60.0 * rate * max(0.0, k - 1.0)))
+        adj_id = None
+        if amt > 0:
+            tag = f"[hocover:{int(row['shift_id'])}]"
+            if not db.execute("SELECT 1 FROM adjustments WHERE note LIKE ? LIMIT 1", (f"%{tag}%",)).fetchone():
+                cur = db.execute(
+                    "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (int(row["b2_uid"]), amt, f"Подмена · принял смену раньше · {mins} мин ×{k:g} {tag}",
+                     row["period"], int(row["branch_id"] or 0), 0, "Nero", datetime.now(TZ).isoformat()))
+                adj_id = cur.lastrowid
+        db.execute("UPDATE handover SET cover_min=?, cover_amount=?, cover_adj_id=? WHERE id=?",
+                   (mins, amt, adj_id, int(row["id"])))
+        db.commit()
+        return ho_row_for_shift(db, row["shift_id"])
+    except Exception as e:
+        logger.warning(f"ho_cover_pay {row['shift_id']}: {e}")
+        return row
+
+
 def ho_on_b2_arrival(db, cfg, b2_sh):
     """2. barista vardiya basladi → ayni subede ACIK devir satirini isaretle.
     Doner: kapanis gereken satir (17:30 sonrasi gelis + taslak) ya da None."""
@@ -2640,8 +2751,10 @@ def ho_on_b2_arrival(db, cfg, b2_sh):
         return None
     nm = display_name_for(db, int(b2.get("user_id") or 0), fallback="?")
     ho_started = at.isoformat() if at < en else None
-    db.execute("UPDATE handover SET b2_uid=?, b2_name=?, b2_arrived_at=?, ho_started_at=COALESCE(ho_started_at, ?) WHERE id=?",
-               (int(b2.get("user_id") or 0), nm, at.isoformat(), ho_started, int(row["id"])))
+    _real = b2.get("_real_start") or at.isoformat()
+    db.execute("UPDATE handover SET b2_uid=?, b2_name=?, b2_arrived_at=?, b2_real_at=?, "
+               "ho_started_at=COALESCE(ho_started_at, ?) WHERE id=?",
+               (int(b2.get("user_id") or 0), nm, at.isoformat(), _real, ho_started, int(row["id"])))
     db.commit()
     row = ho_row_for_shift(db, row["shift_id"])
     if at >= en:
@@ -2799,6 +2912,9 @@ def ho_view(db, row, now):
             "finalized": int(r.get("finalized") or 0), "reason": r.get("finalize_reason") or "",
             "unauth": int(r.get("unauth") or 0),
             "b2_name": r.get("b2_name") or "", "b2_at": _hm(r.get("b2_arrived_at") or ""),
+            "pass_at": _hm(r.get("pass_at") or ""), "accept_at": _hm(r.get("accept_at") or ""),
+            "accept_uid": r.get("accept_uid") or 0,
+            "cover_min": r.get("cover_min") or 0, "cover_amount": r.get("cover_amount") or 0,
             "ho_active": 1 if active else 0, "left": left,
             "extra_on": 1 if (r.get("extra_from") and not r.get("extra_to")) else 0,
             "extra_min": ex_min or 0, "extra_amount": r.get("extra_amount") or 0}
@@ -4394,7 +4510,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         # haberleri; ln_me: benim bugunku haberim; b2: bugun 2. vardiya
         # penceresi olan sube (haber dugmesi icin).
         _ho_out = {"on": 1 if ho_enabled(_opc) else 0, "me": None, "reqs": [], "ln": [], "ln_me": None, "b2": None,
-                   "extra_k": float(_opc.get("extra_k") or 1.5)}
+                   "pass_to": None, "extra_k": float(_opc.get("extra_k") or 1.5)}
         if _ho_out["on"]:
             _now_ho = datetime.now(TZ).replace(tzinfo=None)
             _act_ho = get_active_shift(db, user_id)
@@ -4405,6 +4521,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     _ho_out["ln"] = [{"id": r["id"], "nm": r["user_name"], "at": (r["expected_at"] or "")[11:16]}
                                      for r in db.execute("SELECT * FROM late_notices WHERE branch_id=? AND status='pending' AND user_id!=? ORDER BY id DESC LIMIT 5",
                                                          (int(_act_ho["branch_id"] or 0), user_id)).fetchall()]
+                # Bana devredilen smena var mi (2. barista, kendi vardiyasinda)?
+                _pt = db.execute(
+                    "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
+                    "AND pass_at IS NOT NULL AND accept_at IS NULL ORDER BY id DESC LIMIT 1",
+                    (int(_act_ho["branch_id"] or 0), user_id)).fetchone()
+                if _pt:
+                    _ho_out["pass_to"] = {"sid": _pt["shift_id"], "nm": _pt["user_name"],
+                                          "pass_at": (_pt["pass_at"] or "")[11:16]}
             else:
                 _hb = user_branch_id(db, user_id)
                 _st0, _en0, _b20 = ho_windows_for_shift(_opc, _hb, _now_ho.replace(hour=7, minute=0, second=0, microsecond=0))
@@ -4421,7 +4545,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "SELECT * FROM handover WHERE finalized=0 ORDER BY id DESC LIMIT 10").fetchall()]
     except Exception:
         _opc, op_rows = dict(OP_DEFAULTS), []
-        _ho_out = {"on": 0, "me": None, "reqs": [], "ln": [], "ln_me": None, "b2": None}
+        _ho_out = {"on": 0, "me": None, "reqs": [], "ln": [], "ln_me": None, "b2": None, "pass_to": None}
 
     # ── Rapor DIZINI: «bu vardiyanin raporu var mi?» ──
     # Vardiya penceresi 150, rapor penceresi 15'ti. Aradaki her vardiya
@@ -6358,6 +6482,54 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _decide_loan(context, db, query.from_user, loan_id, decision, "", _reply)
         return
 
+    # ─── ПЕРЕДАЧА СМЕНЫ: erken cikis karari (inline, owner) ───
+    if data.startswith("hoe_ok:") or data.startswith("hoe_no:"):
+        try:
+            _sid_cb = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        db = get_db()
+        if get_role(db, query.from_user.id) != "owner":
+            try: await query.edit_message_text("❌ Только владелец может решать.")
+            except Exception: pass
+            return
+        _row_cb = ho_row_for_shift(db, _sid_cb)
+        if not _row_cb:
+            try: await query.edit_message_text("❌ Запись не найдена.")
+            except Exception: pass
+            return
+        _ok_cb = data.startswith("hoe_ok:")
+        _row_cb, _err_cb = ho_early_decide(db, _row_cb, _ok_cb, query.from_user.id)
+        if _err_cb:
+            try: await query.edit_message_text("❌ " + _err_cb)
+            except Exception: pass
+            return
+        log_action(db, "ho_early_decide", query.from_user.id, query.from_user.first_name,
+                   int(_row_cb["user_id"]), _row_cb["user_name"],
+                   {"shift_id": _sid_cb, "ok": _ok_cb, "via": "inline",
+                    "early_min": _row_cb["early_min"] or 0, "cover_min": _row_cb["cover_min"] or 0})
+        if _ok_cb:
+            await ho_finalize(context.bot, context.bot_data, db, _row_cb, "early_exit_approved")
+            _txt_cb = (f"✅ {_row_cb['user_name']}: уход разрешён на {_row_cb['early_min'] or 0} мин раньше.\n"
+                       "Смена закрыта, отчёт ушёл в группу.")
+            if _row_cb["cover_amount"]:
+                _txt_cb += f"\n💸 Сменщику подмена: {_row_cb['cover_min']} мин · {fmt_sum(_row_cb['cover_amount'])} сум"
+            try:
+                await context.bot.send_message(int(_row_cb["user_id"]),
+                                               "✅ Владелец разрешил уйти раньше. Смена закрыта, отчёт отправлен.")
+            except Exception: pass
+        else:
+            _txt_cb = f"❌ {_row_cb['user_name']}: отказано. Работает до {_row_cb['sched_end'][11:16]}."
+            try:
+                await context.bot.send_message(int(_row_cb["user_id"]),
+                                               f"❌ Владелец не разрешил. Работаем до {_row_cb['sched_end'][11:16]}; отчёт уйдёт сам.")
+            except Exception: pass
+        try: await query.edit_message_text(_txt_cb)
+        except Exception:
+            try: await context.bot.send_message(query.message.chat_id, _txt_cb)
+            except Exception: pass
+        return
+
     # ─── /setgroup şube seçimi (inline) ───
     if data.startswith("setgrp:"):
         try:
@@ -6869,7 +7041,52 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await refresh_webapp_keyboard(update, context, db, user,
                         "🔄 Обновите приложение — смена не была начата 👇")
                     return
+            # ── ERKEN GELIS (owner 2026-09-22): «kimse cagirmadiysa erken
+            # gelmek ucret dogurmasin». Devir akisi acikken, subede acik bir 1.
+            # vardiya varsa ve kisi o satirin `b2_start`indan ONCE geliyorsa:
+            # vardiya acilir ama UCRET plan saatinden sayilir. Istisna: owner
+            # erken cikisa izin verdiyse (gercek devir) gercek saat kalir ve
+            # plan oncesi dakikalar ×1.5 ile ayrica odenir (ho_cover_pay).
+            _early_real = _early_plan = None
+            try:
+                _ecfg = op_cfg(db)
+                if ho_enabled(_ecfg):
+                    _erow = db.execute(
+                        "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
+                        "AND b2_arrived_at IS NULL ORDER BY id DESC LIMIT 1",
+                        (int(_bid_chk or 0), user.id)).fetchone()
+                    if _erow and str(_erow["early_status"] or "none") != "approved":
+                        _b2s = datetime.fromisoformat(_erow["b2_start"])
+                        _want = _parse_user_time(custom_start) or datetime.now(TZ).replace(tzinfo=None)
+                        if _want < _b2s:
+                            _early_real = _want
+                            _early_plan = _b2s
+            except Exception as _e_er:
+                logger.warning(f"handover early arrival: {_e_er}")
             sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch)
+            if _early_real is not None:
+                # Vardiya GERCEK saatte acilir, sonra baslangic PLANA cekilir.
+                # (start_shift gelecek saati kabul etmez — «erken geldim, ucret
+                # plandan» kurali bu yuzden kayitta duzeltilir.)
+                try:
+                    db.execute("UPDATE shifts SET start_time=?, date=?, period=? WHERE id=?",
+                               (_early_plan.isoformat(), _early_plan.strftime("%Y-%m-%d"),
+                                _early_plan.strftime("%Y-%m"), int(sh["id"])))
+                    db.commit()
+                    sh = db.execute("SELECT * FROM shifts WHERE id=?", (int(sh["id"]),)).fetchone()
+                except Exception as _e_er0:
+                    logger.warning(f"early arrival clamp: {_e_er0}")
+                try:
+                    log_action(db, "ho_early_arrival", user.id, user.first_name, None, None,
+                               {"shift_id": int(sh["id"]), "real": _early_real.isoformat(),
+                                "paid_from": sh["start_time"], "branch_id": int(sh["branch_id"] or 0)})
+                    await update.message.reply_text(
+                        f"ℹ️ Вы пришли в {_early_real.strftime('%H:%M')}, смена открыта — "
+                        f"но оплата считается с {datetime.fromisoformat(sh['start_time']).strftime('%H:%M')} (по плану).\n"
+                        "Раньше оплачивается только согласованная подмена: 1-й бариста передаёт смену "
+                        "и владелец разрешает уйти раньше.")
+                except Exception as _e_er2:
+                    logger.warning(f"early arrival note: {_e_er2}")
             if _mode in ("takeover", "parallel"):
                 try:
                     db.execute("UPDATE shifts SET note=? WHERE id=?",
@@ -6929,7 +7146,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _hocfg = op_cfg(db)
                 if ho_enabled(_hocfg):
                     ho_get_or_create(db, _hocfg, sh)
-                    _ho_close = ho_on_b2_arrival(db, _hocfg, sh)
+                    _sh_ho = dict(sh)
+                    if _early_real is not None:
+                        _sh_ho["_real_start"] = _early_real.isoformat()
+                    _ho_close = ho_on_b2_arrival(db, _hocfg, _sh_ho)
             except Exception as _e_ho:
                 logger.warning(f"handover on start: {_e_ho}")
             # 2. barista planli bitisten SONRA geldi → 1. vardiya taslakla simdi
@@ -10510,15 +10730,79 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if err:
                 await update.message.reply_text("❌ " + err); return
             log_action(db, "ho_early_request", user.id, user.first_name, None, None, {"shift_id": int(row["shift_id"])})
-            await update.message.reply_text("🙋 Заявка отправлена владельцу. До решения смена продолжается.")
+            await update.message.reply_text("🙋 Вопрос отправлен владельцу. До ответа смена продолжается.")
             try:
+                from html import escape as esc_html
                 _oid = _primary_owner(db)
                 if _oid:
+                    _acc = display_name_for(db, int(row["accept_uid"] or 0), fallback="сменщик")
+                    _cov = ""
+                    try:
+                        _b2s_t = datetime.fromisoformat(row["b2_start"])
+                        _mm_c = int((_b2s_t - datetime.now(TZ).replace(tzinfo=None)).total_seconds() // 60)
+                        if _mm_c > 0:
+                            _cov = f"\n💸 Подмена {_mm_c} мин ×{float(op_cfg(db).get('extra_k') or 1.5):g} — сменщику"
+                    except Exception:
+                        _cov = ""
                     await context.bot.send_message(
-                        int(_oid), f"🙋 {row['user_name']} просит уйти раньше (план до {row['sched_end'][11:16]}). "
-                                   f"Решение — в Nero → Смена → «Заявки на ранний уход».")
+                        int(_oid),
+                        f"🙋 <b>{esc_html(row['user_name'])}</b> просит уйти раньше\n"
+                        f"План до {row['sched_end'][11:16]} · сейчас {datetime.now(TZ).strftime('%H:%M')}\n"
+                        f"🤝 {esc_html(_acc)} принял смену в {(row['accept_at'] or '')[11:16]}\n"
+                        f"🔒 Черновик заблокирован в {(row['draft_at'] or '')[11:16]}{_cov}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("✅ Разрешить", callback_data=f"hoe_ok:{int(row['shift_id'])}"),
+                            InlineKeyboardButton("❌ Отказать", callback_data=f"hoe_no:{int(row['shift_id'])}")]]))
             except Exception as _e:
                 logger.warning(f"ho early DM: {_e}")
+
+        elif action == "ho_pass":
+            # 1. barista: «Передаю смену» (taslak kilitli olmali).
+            db = get_db()
+            active = get_active_shift(db, user.id)
+            row = ho_row_for_shift(db, active["id"]) if active else None
+            if not row:
+                await update.message.reply_text("❌ Нет смены с передачей."); return
+            row, err = ho_pass(db, row)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_pass", user.id, user.first_name, None, None, {"shift_id": int(row["shift_id"])})
+            await update.message.reply_text(
+                "🤝 Смена передана. Сменщик должен подтвердить приём: стаканы, касса, чистота, оборудование.")
+            try:
+                if row["b2_uid"]:
+                    await context.bot.send_message(
+                        int(row["b2_uid"]),
+                        f"🤝 {row['user_name']} передаёт вам смену. Откройте Nero → Смена → «Принять смену» "
+                        "и проверьте: стаканы, касса, чистота, оборудование.")
+            except Exception as _e:
+                logger.warning(f"ho_pass DM: {_e}")
+
+        elif action == "ho_accept":
+            # 2. barista: «Принял смену» — teslim alma onayi.
+            db = get_db()
+            _me_sh = get_active_shift(db, user.id)
+            _bid_a = int((_me_sh["branch_id"] if _me_sh else 0) or acting_branch_id(db, user.id))
+            row = db.execute("SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
+                             "ORDER BY id DESC LIMIT 1", (_bid_a, user.id)).fetchone()
+            if not row:
+                await update.message.reply_text("❌ Нет смены к приёму."); return
+            if not _me_sh:
+                await update.message.reply_text("❌ Сначала начните свою смену."); return
+            row, err = ho_accept(db, row, user.id)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_accept", user.id, user.first_name, int(row["user_id"]), row["user_name"],
+                       {"shift_id": int(row["shift_id"])})
+            await update.message.reply_text("✅ Смена принята. Вы отвечаете за точку с этой минуты.")
+            try:
+                await context.bot.send_message(
+                    int(row["user_id"]),
+                    f"✅ {display_name_for(db, user.id, fallback='Сменщик')} принял смену. "
+                    "Теперь можно спросить владельца об уходе раньше.")
+            except Exception as _e:
+                logger.warning(f"ho_accept DM: {_e}")
 
         elif action == "ho_early_decide":
             # YALNIZ OWNER (owner 2026-09-21: «sadece ben onaylayacagim»).
