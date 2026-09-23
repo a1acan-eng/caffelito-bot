@@ -2514,6 +2514,39 @@ def ho_windows_for_shift(cfg, branch_id, start_dt):
     return st, en, b2
 
 
+HO_B2_CARD_H = 4          # kart plan saatinin +-4 saatinde gorunur
+
+
+def ho_b2_card(db, cfg, user_id, now_dt):
+    """2. baristanin vardiya disi ekranindaki «Опаздываете?» karti icin plan
+    saati (yoksa None).
+
+    Kart eskiden gun boyu duruyordu: owner 2026-09-24'te Hasanbey'in ekraninda
+    gece 04:34'te de gorulduğünu bildirdi. Artik yalniz ise anlamliyken:
+    · plan saatinin +-4 saati icindeysek,
+    · ve kisi o gun henuz calismadiysa (vardiyasini yapip gitmisse kart yok).
+    """
+    try:
+        bid = user_branch_id(db, user_id)
+        _st, _en, b2 = ho_windows_for_shift(
+            cfg, bid, now_dt.replace(hour=7, minute=0, second=0, microsecond=0))
+        if not b2 or abs((now_dt - b2).total_seconds()) > HO_B2_CARD_H * 3600:
+            return None
+        if db.execute("SELECT 1 FROM shifts WHERE user_id=? AND date(start_time)=? LIMIT 1",
+                      (int(user_id), now_dt.strftime("%Y-%m-%d"))).fetchone():
+            return None
+        # 1. BARISTA ISE BASLAMADAN kart cikmaz (owner 2026-09-24): haber
+        # verilecek kisi ortada yoksa satirin anlami da yok.
+        if not db.execute(
+                "SELECT 1 FROM shifts WHERE branch_id=? AND user_id!=? AND end_time IS NULL "
+                "AND date(start_time)=? LIMIT 1",
+                (int(bid or 0), int(user_id), now_dt.strftime("%Y-%m-%d"))).fetchone():
+            return None
+        return {"bid": bid, "start": b2.strftime("%H:%M")}
+    except Exception:
+        return None
+
+
 def ho_is_second_window(cfg, branch_id, when_dt):
     """Bu baslangic subenin IKINCI vardiya penceresine mi dusuyor (penceresi
     baska bir pencerenin icinde basliyor: 16:30, 07:00–17:30'un icinde)?
@@ -4693,10 +4726,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     _ho_out["pass_to"] = {"sid": _pt["shift_id"], "nm": _pt["user_name"],
                                           "pass_at": (_pt["pass_at"] or "")[11:16]}
             else:
-                _hb = user_branch_id(db, user_id)
-                _st0, _en0, _b20 = ho_windows_for_shift(_opc, _hb, _now_ho.replace(hour=7, minute=0, second=0, microsecond=0))
-                if _b20:
-                    _ho_out["b2"] = {"bid": _hb, "start": _b20.strftime("%H:%M")}
+                _ho_out["b2"] = ho_b2_card(db, _opc, user_id, _now_ho)
                 _lm = db.execute("SELECT * FROM late_notices WHERE user_id=? AND date=? AND status IN ('pending','accepted','declined') ORDER BY id DESC LIMIT 1",
                                  (user_id, _now_ho.strftime("%Y-%m-%d"))).fetchone()
                 if _lm:
