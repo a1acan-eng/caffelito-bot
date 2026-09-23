@@ -3086,6 +3086,15 @@ def invite_redeem(db, token, user_id, tg_name, username=None, chat_id=None):
     ok, err = invite_valid(row)
     if not ok:
         return None, err
+    # ZATEN ICERIDE OLANA DOKUNMA. Owner 2026-09-24'te yanlislikla kendi davet
+    # linkine basti: rolu, subesi ve PIN'i davetinkiyle degisti. Davet YALNIZ
+    # yeni kisi icindir; mevcut uyede davet harcanmaz, hicbir alan yazilmaz.
+    _cur = db.execute("SELECT role, approved, archived FROM users WHERE user_id=?",
+                      (int(user_id),)).fetchone()
+    if _cur and (_cur["role"] or "") == "owner":
+        return None, "Вы владелец — приглашение вам не нужно."
+    if _cur and int(_cur["approved"] or 0) == 1 and not int(_cur["archived"] or 0):
+        return None, "Вы уже в системе — приглашение не нужно."
     upsert_user(db, user_id, tg_name, username, chat_id)
     nm = (row["name"] or "").strip() or (tg_name or "")
     db.execute(
@@ -5984,8 +5993,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
         elif _ierr:
-            await update.message.reply_text("❌ " + _ierr + "\nПопросите владельца прислать новое приглашение.")
-            return
+            # Zaten iceride olan (ya da owner) linke basmissa bu HATA degil:
+            # hesabina dokunulmadi, davet de harcanmadi — normal acilisa devam.
+            if ("уже в системе" in _ierr
+                    or "владелец" in _ierr):
+                await update.message.reply_text(
+                    "ℹ️ " + _ierr + " Открываю приложение.")
+            else:
+                await update.message.reply_text("❌ " + _ierr + "\nПопросите владельца прислать новое приглашение.")
+                return
 
     # 👑 İlk yetkili kullanıcı otomatik owner olur
     auto_owner = False
@@ -9960,6 +9976,32 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"password DM to {target_id} failed: {e}")
                 await update.message.reply_text(
                     "⚠️ Не удалось отправить пароль бариста в личку (возможно, он(а) не запускал(а) бота). Передайте вручную.")
+
+        elif action == "my_pin_lock":
+            # Owner kendi giris PIN'ini acar/kapatir (owner 2026-09-24). Nero
+            # kilidi `pwh` (PIN'in SHA-256'si) payload'da doluysa acilir; PIN
+            # silinince payload bos gelir ve uygulama dogrudan acilir. Erisim
+            # yine korunur: Mini App yalniz kisinin kendi Telegram hesabindan
+            # acilir ve owner sunucuda her zaman yetkilidir.
+            # BARISTADA KAPATILAMAZ: onlarin PIN'i owner'in verdigi kapidir.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            _pl_on = bool(int(data.get("on") or 0))
+            if _pl_on:
+                _pl_pin = "".join(ch for ch in str(data.get("pin") or "") if ch.isdigit())[:8]
+                if len(_pl_pin) < 4:
+                    await update.message.reply_text("❌ PIN — четыре цифры."); return
+                db.execute("UPDATE users SET password=?, authorized=1 WHERE user_id=?",
+                           (_pl_pin, user.id))
+            else:
+                db.execute("UPDATE users SET password=NULL, authorized=1 WHERE user_id=?",
+                           (user.id,))
+            db.commit()
+            log_action(db, "my_pin_lock", user.id, user.first_name, None, None, {"on": _pl_on})
+            await update.message.reply_text(
+                f"🔐 Вход по PIN включён. Ваш код: {_pl_pin}" if _pl_on
+                else "🔓 Вход по PIN выключен — приложение открывается сразу.")
 
         elif action == "clear_password":
             db = get_db()
