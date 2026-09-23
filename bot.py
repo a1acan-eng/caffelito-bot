@@ -312,6 +312,17 @@ def get_db():
         user_id INTEGER, user_name TEXT, branch_id INTEGER, date TEXT,
         expected_at TEXT, status TEXT DEFAULT 'pending',
         decided_by INTEGER, decided_by_name TEXT, decided_at TEXT, created_at TEXT)""")
+    # ─── DAVET BAGLANTILARI (owner 2026-09-24) ───────────────────────────
+    # Telegram bir botun kisi eklemesine ya da rehberi okumasina IZIN VERMEZ:
+    # kisi botu kendisi baslatmali. Bu yuzden «ekleme» tek kullanimlik davet
+    # baglantisiyla olur: owner subeyi/kategoriyi secer, linki Telegram'dan
+    # istedigi kisiye gonderir; kisi acinca HAZIR ayarlarla iceri girer.
+    db.execute("""CREATE TABLE IF NOT EXISTS invites (
+        token TEXT PRIMARY KEY,
+        branch_id INTEGER, cat_id INTEGER, role TEXT DEFAULT 'barista',
+        name TEXT, pin TEXT,
+        created_by INTEGER, created_at TEXT, expires_at TEXT,
+        used_by INTEGER, used_name TEXT, used_at TEXT, revoked INTEGER DEFAULT 0)""")
     db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
     # Owner aktarımları tek seferlik temizlik (bkz. purge_owner_fine_transfers).
     try:
@@ -3023,6 +3034,90 @@ async def handover_loop(app):
         await asyncio.sleep(30)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  DAVET (приглашение) — owner sisteme kisi «ekler»
+# ═══════════════════════════════════════════════════════════════════════
+INVITE_TTL_H = 48
+
+
+def invite_create(db, owner_id, branch_id, cat_id=None, role="barista", name=""):
+    """Tek kullanimlik davet. Doner: satir."""
+    import secrets
+    tok = secrets.token_urlsafe(9).replace("-", "x").replace("_", "y")[:12]
+    pin = "".join(secrets.choice("0123456789") for _ in range(4))
+    now = datetime.now(TZ)
+    db.execute(
+        "INSERT INTO invites (token,branch_id,cat_id,role,name,pin,created_by,created_at,expires_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (tok, int(branch_id or 0), (int(cat_id) if cat_id else None), role or "barista",
+         (name or "").strip(), pin, int(owner_id or 0), now.isoformat(),
+         (now + timedelta(hours=INVITE_TTL_H)).isoformat()))
+    db.commit()
+    return db.execute("SELECT * FROM invites WHERE token=?", (tok,)).fetchone()
+
+
+def invite_get(db, token):
+    try:
+        return db.execute("SELECT * FROM invites WHERE token=?", (str(token or "").strip(),)).fetchone()
+    except Exception:
+        return None
+
+
+def invite_valid(row):
+    """(gecerli_mi, sebep)."""
+    if not row:
+        return False, "Приглашение не найдено."
+    if row["revoked"]:
+        return False, "Приглашение отозвано."
+    if row["used_by"]:
+        return False, "Приглашение уже использовано."
+    try:
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now(TZ).replace(tzinfo=None):
+            return False, "Срок приглашения истёк."
+    except Exception:
+        pass
+    return True, ""
+
+
+def invite_redeem(db, token, user_id, tg_name, username=None, chat_id=None):
+    """Kisi daveti kullanir: kullanici ONAYLI olarak acilir, sube+kategori+PIN
+    hazir gelir. Doner: (satir, hata)."""
+    row = invite_get(db, token)
+    ok, err = invite_valid(row)
+    if not ok:
+        return None, err
+    upsert_user(db, user_id, tg_name, username, chat_id)
+    nm = (row["name"] or "").strip() or (tg_name or "")
+    db.execute(
+        "UPDATE users SET approved=1, archived=0, authorized=0, role=?, branch_id=?, "
+        "salary_cat_id=COALESCE(?, salary_cat_id), display_name=COALESCE(NULLIF(display_name,''), ?), "
+        "password=? WHERE user_id=?",
+        (row["role"] or "barista", int(row["branch_id"] or 0) or None,
+         (int(row["cat_id"]) if row["cat_id"] else None), nm, row["pin"], int(user_id)))
+    db.execute("UPDATE invites SET used_by=?, used_name=?, used_at=? WHERE token=?",
+               (int(user_id), nm, datetime.now(TZ).isoformat(), row["token"]))
+    db.commit()
+    return db.execute("SELECT * FROM invites WHERE token=?", (row["token"],)).fetchone(), ""
+
+
+def invite_view(db, row, bot_username=""):
+    r = dict(row)
+    _bn = (get_branch(db, r.get("branch_id")) or {}).get("name") or ""
+    _cn = ""
+    try:
+        _c = db.execute("SELECT name FROM salary_categories WHERE id=?", (r.get("cat_id") or 0,)).fetchone()
+        _cn = (_c["name"] if _c else "") or ""
+    except Exception:
+        _cn = ""
+    ok, _ = invite_valid(row)
+    return {"tok": r["token"], "nm": r.get("name") or "", "branch": _bn, "bid": r.get("branch_id") or 0,
+            "cat": _cn, "role": r.get("role") or "barista", "pin": r.get("pin") or "",
+            "link": (f"https://t.me/{bot_username}?start=inv{r['token']}" if bot_username else ""),
+            "at": (r.get("created_at") or "")[11:16], "used": r.get("used_name") or "",
+            "used_at": (r.get("used_at") or "")[11:16], "ok": 1 if ok else 0,
+            "exp": (r.get("expires_at") or "")[:16].replace("T", " ")}
+
+
 def current_period():
     return datetime.now(TZ).strftime("%Y-%m")
 
@@ -4758,6 +4853,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                             for b in get_branches(db, only_active=True)]
     except Exception:
         branches_out = []
+    # ── Aktif davetler (yalniz owner) ───────────────────────────────────
+    _inv_out = []
+    try:
+        if role == "owner":
+            _bu_row = db.execute("SELECT val FROM meta WHERE k='bot_username'").fetchone()
+            _bu_p = (_bu_row["val"] if _bu_row else "") or ""
+            _inv_out = [invite_view(db, r, _bu_p) for r in db.execute(
+                "SELECT * FROM invites WHERE used_by IS NULL AND revoked=0 AND expires_at>? "
+                "ORDER BY rowid DESC LIMIT 10", (datetime.now(TZ).replace(tzinfo=None).isoformat(),)).fetchall()]
+    except Exception as _e_inv:
+        logger.warning(f"invites payload: {_e_inv}")
+        _inv_out = []
     my_branch = user_branch_id(db, user_id)
     # ── Zamanlı siparişler (bekleyen): barista kendininki, owner hepsi ──
     try:
@@ -4828,6 +4935,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"kasa_index={quote(json.dumps(kasa_index))}",
         f"op_cfg={quote(json.dumps(_opc, ensure_ascii=False))}",
         f"ho={quote(json.dumps(_ho_out, ensure_ascii=False))}",
+        f"invites={quote(json.dumps(_inv_out, ensure_ascii=False))}",
         f"op_rows={quote(json.dumps(op_rows, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
@@ -5838,6 +5946,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.commit()
     user = update.effective_user
     upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+
+    # ── DAVET BAGLANTISI: /start invABC123 ───────────────────────────────
+    # Owner'in gonderdigi tek kullanimlik link. Kisi onayli olarak acilir;
+    # sube, kategori ve PIN hazir gelir — ayri bir onay adimi YOK.
+    try:
+        _arg0 = (context.args[0] if getattr(context, "args", None) else "") or ""
+    except Exception:
+        _arg0 = ""
+    if _arg0.startswith("inv") and update.effective_chat.type == "private":
+        _inv, _ierr = invite_redeem(db, _arg0[3:], user.id, user.first_name,
+                                    user.username, update.effective_chat.id)
+        if _inv:
+            _iv = invite_view(db, _inv)
+            log_action(db, "invite_used", user.id, user.first_name,
+                       int(_inv["created_by"] or 0), "owner",
+                       {"token": _inv["token"], "branch_id": _inv["branch_id"], "role": _inv["role"]})
+            await sync_user_ui(context.bot, db, user.id)
+            try:
+                await update.message.reply_text(
+                    "☕ Добро пожаловать в Caffelito!\n"
+                    f"Филиал: {_iv['branch'] or '—'}" + (f" · {_iv['cat']}" if _iv['cat'] else "") + "\n"
+                    f"PIN для входа: {_iv['pin']}\n\n"
+                    "Откройте приложение кнопкой ниже (☰ → Nero) и введите PIN.",
+                    reply_markup=ReplyKeyboardRemove())
+            except Exception as _e:
+                logger.warning(f"invite welcome: {_e}")
+            try:
+                _oid_i = int(_inv["created_by"] or 0) or _primary_owner(db)
+                if _oid_i:
+                    await context.bot.send_message(
+                        int(_oid_i),
+                        f"✅ {_iv['nm'] or user.first_name} присоединился(ась) по приглашению.\n"
+                        f"{_iv['branch'] or '—'}" + (f" · {_iv['cat']}" if _iv['cat'] else "")
+                        + f" · PIN {_iv['pin']}")
+            except Exception:
+                pass
+            return
+        elif _ierr:
+            await update.message.reply_text("❌ " + _ierr + "\nПопросите владельца прислать новое приглашение.")
+            return
 
     # 👑 İlk yetkili kullanıcı otomatik owner olur
     auto_owner = False
@@ -9837,6 +9985,57 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # ─── Kullanıcı arşivleme (owner-only) ───
         # Arşivlenince: kullanıcı bottan giriş yapamaz, aktif listede gözükmez
         # ama TÜM geçmişi (vardiya/ceza/ödeme/bahşiş/loglar) korunur.
+        elif action == "invite_create":
+            # Owner: «+ Добавить сотрудника» → tek kullanimlik davet linki.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            try:
+                _ib = int(data.get("branch_id") or data.get("branch") or 0)
+            except (TypeError, ValueError):
+                _ib = 0
+            if not _ib or not get_branch(db, _ib):
+                await update.message.reply_text("❌ Выберите филиал."); return
+            try:
+                _ic = int(data.get("cat_id") or 0) or None
+            except (TypeError, ValueError):
+                _ic = None
+            _ir = "barista"
+            _inm = str(data.get("name") or "").strip()[:40]
+            _inv = invite_create(db, user.id, _ib, _ic, _ir, _inm)
+            try:
+                _bu = (await context.bot.get_me()).username or ""
+            except Exception:
+                _bu = ""
+            if _bu:
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('bot_username', ?)", (_bu,))
+                db.commit()
+            _iv = invite_view(db, _inv, _bu)
+            log_action(db, "invite_create", user.id, user.first_name, None, None,
+                       {"token": _inv["token"], "branch_id": _ib, "cat_id": _ic, "name": _inm})
+            await update.message.reply_text(
+                "🔗 <b>Приглашение готово</b>\n"
+                f"{_iv['branch']}" + (f" · {_iv['cat']}" if _iv['cat'] else "") + "\n"
+                f"PIN: <code>{_iv['pin']}</code> · действует {INVITE_TTL_H} ч, один раз\n\n"
+                f"{_iv['link']}\n\n"
+                "Нажмите «Отправить» и выберите человека в Telegram.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                    "📨 Отправить сотруднику",
+                    switch_inline_query=f"Приглашение в Caffelito: {_iv['link']}")]]))
+
+        elif action == "invite_revoke":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            _tok = str(data.get("token") or "").strip()
+            _row_i = invite_get(db, _tok)
+            if not _row_i:
+                await update.message.reply_text("❌ Приглашение не найдено."); return
+            db.execute("UPDATE invites SET revoked=1 WHERE token=?", (_tok,)); db.commit()
+            log_action(db, "invite_revoke", user.id, user.first_name, None, None, {"token": _tok})
+            await update.message.reply_text("🚫 Приглашение отозвано — ссылка больше не работает.")
+
         elif action == "approve_user":
             db = get_db()
             if get_role(db, user.id) != "owner":
