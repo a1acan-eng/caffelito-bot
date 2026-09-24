@@ -17,6 +17,8 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ContextTypes, MessageHandler, ChatMemberHandler, filters
 )
+from telegram.ext import ExtBot
+from telegram.request import HTTPXRequest
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "")
@@ -323,6 +325,16 @@ def get_db():
         name TEXT, pin TEXT,
         created_by INTEGER, created_at TEXT, expires_at TEXT,
         used_by INTEGER, used_name TEXT, used_at TEXT, revoked INTEGER DEFAULT 0)""")
+    # Gruba giden bot mesajlari (owner 2026-09-24: «botun gonderdigi mesajlari
+    # duzeltebileyim, grupta da duzelsin»). Kimlik (chat_id+message_id) olmadan
+    # Telegram'da duzenleme yapilamaz; `NeroBot.send_message` her grup mesajini
+    # buraya yazar. `ents`: kalin/italik parcalar (duzeltmede korunur), `kb`:
+    # satir ici dugmeler (duzeltmede SILINMESIN diye geri gonderilir).
+    db.execute("""CREATE TABLE IF NOT EXISTS sent_msgs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, message_id INTEGER, text TEXT, ents TEXT, kb TEXT,
+        created_at TEXT, edited_at TEXT, edited_by TEXT, orig_text TEXT,
+        UNIQUE(chat_id, message_id))""")
     db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
     # Owner aktarımları tek seferlik temizlik (bkz. purge_owner_fine_transfers).
     try:
@@ -5001,6 +5013,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                             for b in get_branches(db, only_active=True)]
     except Exception:
         branches_out = []
+    # ── Grup mesajlari dizini (yalniz owner; tam metin /api/gmsg ile) ────
+    _gm_out = gmsg_list(db) if role == "owner" else []
+    parts_gm = f"gmsgs={quote(json.dumps(_gm_out, ensure_ascii=False))}"
     # ── Aktif davetler (yalniz owner) ───────────────────────────────────
     _inv_out = []
     try:
@@ -5084,6 +5099,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"op_cfg={quote(json.dumps(_opc, ensure_ascii=False))}",
         f"ho={quote(json.dumps(_ho_out, ensure_ascii=False))}",
         f"invites={quote(json.dumps(_inv_out, ensure_ascii=False))}",
+        parts_gm,
         f"op_rows={quote(json.dumps(op_rows, ensure_ascii=False))}",
         f"audit={quote(json.dumps(audit_logs, ensure_ascii=False))}",
         f"devices={quote(json.dumps(devices_out, ensure_ascii=False))}",
@@ -10238,6 +10254,55 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "📨 Отправить сотруднику",
                     switch_inline_query=f"Приглашение в Caffelito: {_iv['link']}")]]))
 
+        elif action == "gmsg_edit":
+            # Owner: bot'un gruba gonderdigi mesaji Telegram'da duzelt.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            try:
+                _gid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _gid = 0
+            _gr = db.execute("SELECT * FROM sent_msgs WHERE id=?", (_gid,)).fetchone() if _gid else None
+            if not _gr:
+                await update.message.reply_text("❌ Сообщение не найдено."); return
+            _new = str(data.get("text") or "").strip()
+            if not _new:
+                await update.message.reply_text("❌ Текст не может быть пустым."); return
+            if len(_new) > 4000:
+                await update.message.reply_text("❌ Слишком длинно (до 4000 знаков)."); return
+            try:
+                _ents = json.loads(_gr["ents"] or "[]")
+            except Exception:
+                _ents = []
+            _kb = None
+            try:
+                if _gr["kb"]:
+                    _kb = InlineKeyboardMarkup.de_json(json.loads(_gr["kb"]), context.bot)
+            except Exception:
+                _kb = None
+            _bn = gmsg_branch_name(db, _gr["chat_id"])
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=int(_gr["chat_id"]), message_id=int(_gr["message_id"]),
+                    text=gmsg_html(_new, _ents), parse_mode="HTML", reply_markup=_kb)
+            except Exception as _e_ed:
+                _em = str(_e_ed)
+                if "not modified" in _em.lower():
+                    await update.message.reply_text("ℹ️ Текст не изменился."); return
+                logger.warning(f"gmsg_edit {_gid}: {_em}")
+                await update.message.reply_text(
+                    "❌ Telegram не дал исправить сообщение"
+                    + (" — его уже удалили в группе." if "not found" in _em.lower() else f": {_em[:120]}"))
+                return
+            db.execute("UPDATE sent_msgs SET text=?, edited_at=?, edited_by=? WHERE id=?",
+                       (_new, datetime.now(TZ).isoformat(), user.first_name or "", _gid))
+            db.commit()
+            log_action(db, "gmsg_edit", user.id, user.first_name, None, _bn,
+                       {"id": _gid, "chat_id": _gr["chat_id"], "message_id": _gr["message_id"],
+                        "old": (_gr["text"] or "")[:500], "new": _new[:500]})
+            await update.message.reply_text(f"✅ Сообщение исправлено в группе · {_bn}")
+
         elif action == "invite_revoke":
             db = get_db()
             if get_role(db, user.id) != "owner":
@@ -14012,6 +14077,213 @@ async def api_state(request):
     return _nocache(_cors(web.Response(text=payload, content_type="text/plain")))
 
 
+# ── GRUP MESAJLARINI DUZELTME (owner 2026-09-24) ──────────────────────────
+GMSG_KEEP_DAYS = 30
+GMSG_ENT_TAGS = {"bold": "b", "italic": "i", "code": "code", "underline": "u"}
+
+
+def sent_msg_record(db, msg):
+    """Gruba giden METIN mesajini kaydet. Ozel sohbetler (chat_id > 0) kaydedilmez."""
+    try:
+        if msg is None or not getattr(msg, "text", None):
+            return None
+        cid = int(msg.chat_id)
+        if cid >= 0:
+            return None
+        ents = []
+        try:
+            for e, t in (msg.parse_entities() or {}).items():
+                if e.type in GMSG_ENT_TAGS and t:
+                    ents.append([e.type, t])
+        except Exception:
+            ents = []
+        kb = ""
+        try:
+            if msg.reply_markup is not None:
+                kb = json.dumps(msg.reply_markup.to_dict(), ensure_ascii=False)
+        except Exception:
+            kb = ""
+        now = datetime.now(TZ).replace(tzinfo=None)
+        db.execute("INSERT OR IGNORE INTO sent_msgs (chat_id,message_id,text,ents,kb,created_at,orig_text) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (cid, int(msg.message_id), msg.text, json.dumps(ents, ensure_ascii=False), kb,
+                    now.isoformat(), msg.text))
+        db.execute("DELETE FROM sent_msgs WHERE created_at < ?",
+                   ((now - timedelta(days=GMSG_KEEP_DAYS)).isoformat(),))
+        db.commit()
+        return True
+    except Exception as _e:
+        logger.warning(f"sent_msg_record: {_e}")
+        return None
+
+
+def gmsg_branch_name(db, chat_id):
+    try:
+        for b in get_branches(db, only_active=False):
+            if str(b["group_chat_id"] or "").strip() == str(chat_id):
+                return b["name"]
+    except Exception:
+        pass
+    return "группа"
+
+
+def gmsg_html(new_text, ents):
+    """Duzeltilmis duz metin → HTML. Eski kalin/italik parcalar metinde AYNEN
+    duruyorsa yine bicimlenir; degismis parcalar duz kalir."""
+    from html import escape as _esc
+    out = _esc(new_text or "")
+    for typ, frag in (ents or []):
+        tag = GMSG_ENT_TAGS.get(typ)
+        f = _esc(frag or "")
+        if not tag or not f.strip():
+            continue
+        i = out.find(f)
+        if i >= 0:
+            out = out[:i] + "<%s>%s</%s>" % (tag, f, tag) + out[i + len(f):]
+    return out
+
+
+def gmsg_list(db, limit=40):
+    """Owner listesi (hafif dizin): [id, sube, 'dd.mm HH:MM', duzeltildi, ilk satir]."""
+    out = []
+    try:
+        for r in db.execute("SELECT id,chat_id,text,created_at,edited_at FROM sent_msgs "
+                            "ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall():
+            _first = (r["text"] or "").strip().split("\n")[0][:90]
+            try:
+                _at = datetime.fromisoformat(r["created_at"]).strftime("%d.%m %H:%M")
+            except Exception:
+                _at = ""
+            out.append([int(r["id"]), gmsg_branch_name(db, r["chat_id"]), _at,
+                        1 if r["edited_at"] else 0, _first])
+    except Exception as _e:
+        logger.warning(f"gmsg_list: {_e}")
+    return out
+
+
+class NeroBot(ExtBot):
+    """ExtBot + gruba giden metin mesajlarinin kaydi. Davranis AYNI; yalniz
+    donen Message'in kimligi `sent_msgs`e yazilir (hata olursa sessiz)."""
+    __slots__ = ()
+
+    async def send_message(self, *args, **kwargs):
+        msg = await super().send_message(*args, **kwargs)
+        try:
+            sent_msg_record(get_db(), msg)
+        except Exception:
+            pass
+        return msg
+
+
+async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/fix <yeni metin> — grupta Nero'nun mesajina YANIT olarak (yalniz owner).
+
+    Owner 2026-09-24: kimligi saklanmamis ESKI mesajlar da duzeltilebilsin.
+    Yanit, Telegram'in kendisinden mesajin kimligini ve metnini getirir;
+    bot o mesaji edit_message_text ile degistirir (kalin parcalar ve dugmeler
+    korunur). Owner'in /fix mesaji grup temiz kalsin diye silinmeye calisilir;
+    onay ozelden gider."""
+    msg = update.message
+    if msg is None:
+        return
+    db = get_db()
+    uid = update.effective_user.id if update.effective_user else 0
+    if get_role(db, uid) != "owner":
+        return                      # baskasi yazarsa sessiz: grupta gurultu yok
+    raw = msg.text or ""
+    parts = raw.split(None, 1)
+    new = parts[1].strip() if len(parts) > 1 else ""
+    tgt = msg.reply_to_message
+    bot_id = getattr(context.bot, "id", None)
+    if tgt is None or not getattr(tgt, "from_user", None) or tgt.from_user.id != bot_id:
+        await msg.reply_text("✏️ Ответьте командой /fix на сообщение Nero:\n/fix новый текст")
+        return
+    if not new:
+        await msg.reply_text("✏️ После /fix напишите новый текст.")
+        return
+    if len(new) > 4000:
+        await msg.reply_text("❌ Слишком длинно (до 4000 знаков).")
+        return
+    ents = []
+    try:
+        for e, t in (tgt.parse_entities() or {}).items():
+            if e.type in GMSG_ENT_TAGS and t:
+                ents.append([e.type, t])
+    except Exception:
+        ents = []
+    old = tgt.text or tgt.caption or ""
+    if not tgt.text:
+        await msg.reply_text("❌ Можно исправить только текстовое сообщение.")
+        return
+    try:
+        await context.bot.edit_message_text(
+            chat_id=int(tgt.chat_id), message_id=int(tgt.message_id),
+            text=gmsg_html(new, ents), parse_mode="HTML", reply_markup=tgt.reply_markup)
+    except Exception as _e:
+        _em = str(_e)
+        if "not modified" in _em.lower():
+            await msg.reply_text("ℹ️ Текст не изменился.")
+        else:
+            logger.warning(f"/fix: {_em}")
+            await msg.reply_text(f"❌ Telegram не дал исправить: {_em[:120]}")
+        return
+    # Kayit: Nero listesinde de «изменено» gorunsun (eski mesaj ilk kez girer).
+    try:
+        _now = datetime.now(TZ).replace(tzinfo=None).isoformat()
+        db.execute("INSERT OR IGNORE INTO sent_msgs (chat_id,message_id,text,ents,kb,created_at,orig_text) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (int(tgt.chat_id), int(tgt.message_id), old, json.dumps(ents, ensure_ascii=False), "",
+                    _now, old))
+        db.execute("UPDATE sent_msgs SET text=?, edited_at=?, edited_by=? WHERE chat_id=? AND message_id=?",
+                   (new, _now, update.effective_user.first_name or "", int(tgt.chat_id), int(tgt.message_id)))
+        db.commit()
+    except Exception as _e2:
+        logger.warning(f"/fix kayit: {_e2}")
+    _bn = gmsg_branch_name(db, tgt.chat_id)
+    log_action(db, "gmsg_edit", uid, update.effective_user.first_name, None, _bn,
+               {"via": "/fix", "chat_id": tgt.chat_id, "message_id": tgt.message_id,
+                "old": old[:500], "new": new[:500]})
+    try:
+        await msg.delete()          # grupta /fix izi kalmasin (yetki yoksa kalir)
+    except Exception:
+        pass
+    try:
+        await context.bot.send_message(uid, f"✅ Исправлено в группе · {_bn}")
+    except Exception:
+        pass
+
+
+async def api_gmsg(request):
+    """POST {initData|token, device, id} → bir grup mesajinin TAM metni (owner).
+    Liste payload'da hafif dizin olarak gider; metin dokununca buradan gelir."""
+    body = await _read_json(request)
+    if body is None:
+        return _cors(web.json_response({"error": "bad json"}, status=400))
+    db = get_db()
+    user = web_auth_user(body, db)
+    if not user or not nero_access_ok(db, user["id"]):
+        return _cors(web.json_response({"error": "unauthorized"}, status=403))
+    _dst = device_gate(db, user["id"], str(body.get("device") or "")[:64],
+                       platform=str(body.get("dev_platform") or "")[:32])
+    if _dst in ("new", "pending", "revoked") or get_role(db, user["id"]) != "owner":
+        return _cors(web.json_response({"error": "forbidden"}, status=403))
+    try:
+        _gid = int(body.get("id") or 0)
+    except (TypeError, ValueError):
+        _gid = 0
+    r = db.execute("SELECT * FROM sent_msgs WHERE id=?", (_gid,)).fetchone() if _gid else None
+    if not r:
+        return _nocache(_cors(web.json_response({"error": "not found"}, status=404)))
+    try:
+        _at = datetime.fromisoformat(r["created_at"]).strftime("%d.%m %H:%M")
+    except Exception:
+        _at = ""
+    return _nocache(_cors(web.json_response({
+        "id": int(r["id"]), "text": r["text"] or "", "branch": gmsg_branch_name(db, r["chat_id"]),
+        "at": _at, "edited": 1 if r["edited_at"] else 0, "edited_by": r["edited_by"] or "",
+        "orig": r["orig_text"] or ""})))
+
+
 async def api_action(request):
     """POST {initData|token, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
     Kimlik: initData imzası VEYA imzalı jeton (#t=); sonra handle_webapp_data
@@ -14082,9 +14354,11 @@ async def start_web_server(app):
         web.get("/{fname:.+\\.png}", web_image),
         web.post("/api/state", api_state),
         web.post("/api/action", api_action),
+        web.post("/api/gmsg", api_gmsg),
         web.post("/api/admin", api_admin),
         web.options("/api/state", web_options),
         web.options("/api/action", web_options),
+        web.options("/api/gmsg", web_options),
         web.options("/api/admin", web_options),
     ])
     runner = web.AppRunner(web_app)
@@ -14097,7 +14371,13 @@ async def start_web_server(app):
 
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(setup_commands).build()
+    # NeroBot: ExtBot'un kendisi + gruba giden mesaj kaydi (duzeltilebilsin).
+    # Istek havuzlari ApplicationBuilder varsayilanlariyla AYNI: bot 256,
+    # getUpdates 1 baglanti.
+    _nbot = NeroBot(token=BOT_TOKEN,
+                    request=HTTPXRequest(connection_pool_size=256),
+                    get_updates_request=HTTPXRequest(connection_pool_size=1))
+    app = Application.builder().bot(_nbot).post_init(setup_commands).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("zakaz", cmd_order))
     app.add_handler(CommandHandler("zadachi", cmd_gorev))
@@ -14109,6 +14389,7 @@ def main():
     app.add_handler(CommandHandler("app", cmd_app))
     app.add_handler(CommandHandler("login", cmd_login))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
+    app.add_handler(CommandHandler("fix", cmd_fix))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("test", cmd_test))
     # ─── Зарплата (Salary) команды ───
