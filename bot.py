@@ -335,6 +335,13 @@ def get_db():
         chat_id INTEGER, message_id INTEGER, text TEXT, ents TEXT, kb TEXT,
         created_at TEXT, edited_at TEXT, edited_by TEXT, orig_text TEXT,
         UNIQUE(chat_id, message_id))""")
+    # Vardiya mesajlari vardiyaya baglanir (saat duzeltilince grup mesaji da
+    # kendiliginden duzelsin — owner 2026-09-24).
+    for _gc, _gd in (("shift_id", "INTEGER"), ("kind", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE sent_msgs ADD COLUMN {_gc} {_gd}")
+        except Exception:
+            pass
     db.execute("""CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, val TEXT)""")
     # Owner aktarımları tek seferlik temizlik (bkz. purge_owner_fine_transfers).
     try:
@@ -7657,7 +7664,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     from html import escape as esc_html
                     gtext = (f"🟢 <b>{esc_html(shown)}</b> начал(а) смену\n"
                              f"⏰ {start_dt.strftime('%d.%m.%Y %H:%M')}")
-                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                    _gm = await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                    sent_msg_tag(db, _gm, "shift_start", sh["id"])
                 except Exception as e:
                     logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
 
@@ -7835,7 +7843,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
                     if note:
                         gtext += f"\n📝 {esc_html(note)}"
-                    await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                    _gm = await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
+                    sent_msg_tag(db, _gm, "shift_end", sh["id"])
                 except Exception as e:
                     logger.exception(f"GROUP FORWARD FAILED (group_id={group_id}): {e}")
                 # Сменный отчёт artik `cash_report` tarafindan DOGRUDAN gonderiliyor.
@@ -9735,7 +9744,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                               f"⏰ {_gst.strftime('%H:%M')} → {_get.strftime('%H:%M')}  "
                               f"({fmt_hm(sh['hours'] or 0)})\n"
                               f"👤 Закрыто владельцем")
-                    await context.bot.send_message(chat_id=int(_gid), text=_gtext, parse_mode="HTML")
+                    _gm = await context.bot.send_message(chat_id=int(_gid), text=_gtext, parse_mode="HTML")
+                    sent_msg_tag(db, _gm, "shift_end", sh["id"])
             except Exception as e:
                 logger.exception(f"FORCE_END GROUP FORWARD FAILED: {e}")
 
@@ -9851,6 +9861,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Неверное время начала.")
                 return
             _existing_end = datetime.fromisoformat(sh["end_time"]) if sh["end_time"] else None
+            # Grup mesajlarindaki ESKI saat parcasini bulmak icin (gmsg_sync_shift).
+            try:
+                _old_st = datetime.fromisoformat(sh["start_time"]) if sh["start_time"] else None
+            except Exception:
+                _old_st = None
+            _old_en, _old_h = _existing_end, float(sh["hours"] or 0)
             end_dt = _ne or _existing_end  # yeni çıkış verilmezse mevcut çıkışı koru
             if end_dt and end_dt < start_dt:
                 await update.message.reply_text("❌ Уход не может быть раньше прихода.")
@@ -9920,6 +9936,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception as _e2:
                 logger.warning(f"op_recalc(edit_shift) {sid}: {_e2}")
             _sh2 = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone()
+            # GRUP MESAJI DA DUZELSIN (owner 2026-09-24): «начал(а) смену» ve
+            # «закрыл(а) смену» mesajlarinda yalniz saat parcasi yenilenir.
+            try:
+                _gfix = await gmsg_sync_shift(
+                    context.bot, db, sid, _old_st, _old_en, _old_h, start_dt,
+                    (datetime.fromisoformat(_sh2["end_time"]) if _sh2["end_time"] else None),
+                    float(_sh2["hours"] or 0))
+            except Exception as _e_gs:
+                logger.warning(f"edit_shift gmsg sync {sid}: {_e_gs}")
+                _gfix = 0
+            if _gfix:
+                _opmsg += "\n📝 Сообщение в группе тоже исправлено" + (f" ({_gfix})" if _gfix > 1 else "")
             _nm = display_name_for(db, sh["user_id"], fallback="?")
             log_action(db, "edit_shift", user.id, user.first_name, sh["user_id"], _nm,
                        {"shift_id": sid, "start": _sh2["start_time"], "end": _sh2["end_time"],
@@ -10285,7 +10313,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 await context.bot.edit_message_text(
                     chat_id=int(_gr["chat_id"]), message_id=int(_gr["message_id"]),
-                    text=gmsg_html(_new, _ents), parse_mode="HTML", reply_markup=_kb)
+                    text=gmsg_render(_gr["text"] or "", _new, _ents)[0], parse_mode="HTML", reply_markup=_kb)
             except Exception as _e_ed:
                 _em = str(_e_ed)
                 if "not modified" in _em.lower():
@@ -10295,8 +10323,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "❌ Telegram не дал исправить сообщение"
                     + (" — его уже удалили в группе." if "not found" in _em.lower() else f": {_em[:120]}"))
                 return
-            db.execute("UPDATE sent_msgs SET text=?, edited_at=?, edited_by=? WHERE id=?",
-                       (_new, datetime.now(TZ).isoformat(), user.first_name or "", _gid))
+            db.execute("UPDATE sent_msgs SET text=?, ents=?, edited_at=?, edited_by=? WHERE id=?",
+                       (_new, json.dumps(gmsg_render(_gr["text"] or "", _new, _ents)[1], ensure_ascii=False),
+                        datetime.now(TZ).isoformat(), user.first_name or "", _gid))
             db.commit()
             log_action(db, "gmsg_edit", user.id, user.first_name, None, _bn,
                        {"id": _gid, "chat_id": _gr["chat_id"], "message_id": _gr["message_id"],
@@ -14090,13 +14119,7 @@ def sent_msg_record(db, msg):
         cid = int(msg.chat_id)
         if cid >= 0:
             return None
-        ents = []
-        try:
-            for e, t in (msg.parse_entities() or {}).items():
-                if e.type in GMSG_ENT_TAGS and t:
-                    ents.append([e.type, t])
-        except Exception:
-            ents = []
+        ents = gmsg_ents_of(msg)
         kb = ""
         try:
             if msg.reply_markup is not None:
@@ -14117,6 +14140,86 @@ def sent_msg_record(db, msg):
         return None
 
 
+def sent_msg_tag(db, msg, kind, shift_id):
+    """Gonderilmis grup mesajini vardiyaya bagla. `msg` gercek Message degilse
+    (test sahtesi, hata) sessizce hicbir sey yapmaz."""
+    try:
+        cid, mid = int(msg.chat_id), int(msg.message_id)
+    except Exception:
+        return False
+    try:
+        db.execute("UPDATE sent_msgs SET kind=?, shift_id=? WHERE chat_id=? AND message_id=?",
+                   (kind, int(shift_id), cid, mid))
+        db.commit()
+        return True
+    except Exception as _e:
+        logger.warning(f"sent_msg_tag: {_e}")
+        return False
+
+
+def gmsg_shift_fix_text(text, kind, old_st, old_en, old_h, new_st, new_en, new_h):
+    """Vardiya mesajinda YALNIZ saat parcasini degistir. Eski parca metinde
+    yoksa (ör. owner /fix ile elle degistirmis) None — o mesaja dokunulmaz."""
+    if not text or not old_st or not new_st:
+        return None
+    if kind == "shift_start":
+        a = "⏰ " + old_st.strftime("%d.%m.%Y %H:%M")
+        b = "⏰ " + new_st.strftime("%d.%m.%Y %H:%M")
+    elif kind == "shift_end":
+        if not (old_en and new_en):
+            return None
+        a = f"⏰ {old_st.strftime('%H:%M')} → {old_en.strftime('%H:%M')}  ({fmt_hm(old_h or 0)})"
+        b = f"⏰ {new_st.strftime('%H:%M')} → {new_en.strftime('%H:%M')}  ({fmt_hm(new_h or 0)})"
+    else:
+        return None
+    if a == b or a not in text:
+        return None
+    return text.replace(a, b, 1)
+
+
+async def gmsg_sync_shift(bot, db, sid, old_st, old_en, old_h, new_st, new_en, new_h):
+    """Owner vardiya saatini duzeltti → o vardiyanin grup mesajlari da duzelir
+    (yeni mesaj ATILMAZ; ayni mesaj edit edilir). Doner: duzeltilen sayisi."""
+    n = 0
+    try:
+        rows = db.execute("SELECT * FROM sent_msgs WHERE shift_id=?", (int(sid),)).fetchall()
+    except Exception:
+        return 0
+    for r in rows:
+        new_text = gmsg_shift_fix_text(r["text"], r["kind"], old_st, old_en, old_h, new_st, new_en, new_h)
+        if not new_text:
+            continue
+        try:
+            ents = json.loads(r["ents"] or "[]")
+        except Exception:
+            ents = []
+        kb = None
+        try:
+            if r["kb"]:
+                kb = InlineKeyboardMarkup.de_json(json.loads(r["kb"]), bot)
+        except Exception:
+            kb = None
+        try:
+            _html, _nents = gmsg_render(r["text"] or "", new_text, ents)
+            await bot.edit_message_text(chat_id=int(r["chat_id"]), message_id=int(r["message_id"]),
+                                        text=_html, parse_mode="HTML", reply_markup=kb)
+        except Exception as _e:
+            if "not modified" not in str(_e).lower():
+                logger.warning(f"gmsg_sync_shift {sid}/{r['id']}: {_e}")
+                continue
+        try:
+            _nents = gmsg_render(r["text"] or "", new_text, ents)[1]
+        except Exception:
+            _nents = ents
+        db.execute("UPDATE sent_msgs SET text=?, ents=?, edited_at=?, edited_by=? WHERE id=?",
+                   (new_text, json.dumps(_nents, ensure_ascii=False), datetime.now(TZ).isoformat(),
+                    "Nero · правка смены", int(r["id"])))
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
 def gmsg_branch_name(db, chat_id):
     try:
         for b in get_branches(db, only_active=False):
@@ -14127,20 +14230,85 @@ def gmsg_branch_name(db, chat_id):
     return "группа"
 
 
-def gmsg_html(new_text, ents):
-    """Duzeltilmis duz metin → HTML. Eski kalin/italik parcalar metinde AYNEN
-    duruyorsa yine bicimlenir; degismis parcalar duz kalir."""
-    from html import escape as _esc
-    out = _esc(new_text or "")
-    for typ, frag in (ents or []):
-        tag = GMSG_ENT_TAGS.get(typ)
-        f = _esc(frag or "")
-        if not tag or not f.strip():
-            continue
-        i = out.find(f)
-        if i >= 0:
-            out = out[:i] + "<%s>%s</%s>" % (tag, f, tag) + out[i + len(f):]
+def gmsg_ents_of(msg):
+    """Message'in kalin/italik/kod parcalari: [tur, parca, python_konumu].
+    Telegram ofsetleri UTF-16 birimidir; burada Python dizesi konumuna cevrilir."""
+    out = []
+    try:
+        txt = msg.text or ""
+        b16 = txt.encode("utf-16-le")
+        for e, t in (msg.parse_entities() or {}).items():
+            if e.type in GMSG_ENT_TAGS and t:
+                pos = len(b16[:int(e.offset) * 2].decode("utf-16-le", errors="ignore"))
+                out.append([e.type, t, pos])
+    except Exception:
+        return []
     return out
+
+
+def _gmsg_free(text, i, frag):
+    """frag, text'te i konumunda bir KELIME/SAYI parcasinin icinde degil mi
+    (ör. «3» → «16:30»un icindeki 3 SAYILMAZ)."""
+    a = text[i - 1] if i > 0 else " "
+    b = text[i + len(frag)] if i + len(frag) < len(text) else " "
+    return not ((frag[:1].isalnum() and a.isalnum()) or (frag[-1:].isalnum() and b.isalnum()))
+
+
+def gmsg_render(old_text, new_text, ents):
+    """Duzeltilmis duz metin → (HTML, yeni_parcalar).
+
+    Konumlu parcalar ([tur, parca, konum]) eski↔yeni metin farkiyla (difflib)
+    TASINIR: parca degismemis bir bolgedeyse yeni konumunda yine bicimlenir,
+    degistiyse duz kalir. Konumsuz eski kayitlar ([tur, parca]) icin yedek:
+    kelime/sayi icine dusmeyen ilk eslesme."""
+    import difflib
+    from html import escape as _esc
+    new_text = new_text or ""
+    old_text = old_text or ""
+    spans = []                                   # (bas, son, tur, parca)
+    ops = None
+    for ent in (ents or []):
+        try:
+            typ, frag = ent[0], ent[1]
+            pos = ent[2] if len(ent) > 2 else None
+        except Exception:
+            continue
+        if typ not in GMSG_ENT_TAGS or not (frag or "").strip():
+            continue
+        ni = None
+        if pos is not None and old_text[pos:pos + len(frag)] == frag:
+            if ops is None:
+                ops = difflib.SequenceMatcher(None, old_text, new_text, autojunk=False).get_opcodes()
+            for tag, i1, i2, j1, j2 in ops:
+                if tag == "equal" and i1 <= pos and pos + len(frag) <= i2:
+                    ni = j1 + (pos - i1)
+                    break
+        elif pos is None:
+            k = new_text.find(frag)
+            while k >= 0 and not _gmsg_free(new_text, k, frag):
+                k = new_text.find(frag, k + 1)
+            ni = k if k >= 0 else None
+        if ni is not None and new_text[ni:ni + len(frag)] == frag:
+            spans.append((ni, ni + len(frag), typ, frag))
+    spans.sort()
+    kept, last = [], -1
+    for sp in spans:                             # cakisan parcalar atlanir
+        if sp[0] >= last:
+            kept.append(sp)
+            last = sp[1]
+    out, cur = [], 0
+    for a, b, typ, frag in kept:
+        t = GMSG_ENT_TAGS[typ]
+        out.append(_esc(new_text[cur:a]))
+        out.append("<%s>%s</%s>" % (t, _esc(new_text[a:b]), t))
+        cur = b
+    out.append(_esc(new_text[cur:]))
+    return "".join(out), [[typ, frag, a] for a, b, typ, frag in kept]
+
+
+def gmsg_html(new_text, ents, old_text=None):
+    """Geriye uyumlu kisa yol: yalniz HTML."""
+    return gmsg_render(old_text or "", new_text, ents)[0]
 
 
 def gmsg_list(db, limit=40):
@@ -14204,13 +14372,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(new) > 4000:
         await msg.reply_text("❌ Слишком длинно (до 4000 знаков).")
         return
-    ents = []
-    try:
-        for e, t in (tgt.parse_entities() or {}).items():
-            if e.type in GMSG_ENT_TAGS and t:
-                ents.append([e.type, t])
-    except Exception:
-        ents = []
+    ents = gmsg_ents_of(tgt)
     old = tgt.text or tgt.caption or ""
     if not tgt.text:
         await msg.reply_text("❌ Можно исправить только текстовое сообщение.")
@@ -14218,7 +14380,7 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.edit_message_text(
             chat_id=int(tgt.chat_id), message_id=int(tgt.message_id),
-            text=gmsg_html(new, ents), parse_mode="HTML", reply_markup=tgt.reply_markup)
+            text=gmsg_render(old, new, ents)[0], parse_mode="HTML", reply_markup=tgt.reply_markup)
     except Exception as _e:
         _em = str(_e)
         if "not modified" in _em.lower():
@@ -14234,8 +14396,9 @@ async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
                    "VALUES (?,?,?,?,?,?,?)",
                    (int(tgt.chat_id), int(tgt.message_id), old, json.dumps(ents, ensure_ascii=False), "",
                     _now, old))
-        db.execute("UPDATE sent_msgs SET text=?, edited_at=?, edited_by=? WHERE chat_id=? AND message_id=?",
-                   (new, _now, update.effective_user.first_name or "", int(tgt.chat_id), int(tgt.message_id)))
+        db.execute("UPDATE sent_msgs SET text=?, ents=?, edited_at=?, edited_by=? WHERE chat_id=? AND message_id=?",
+                   (new, json.dumps(gmsg_render(old, new, ents)[1], ensure_ascii=False), _now,
+                    update.effective_user.first_name or "", int(tgt.chat_id), int(tgt.message_id)))
         db.commit()
     except Exception as _e2:
         logger.warning(f"/fix kayit: {_e2}")
