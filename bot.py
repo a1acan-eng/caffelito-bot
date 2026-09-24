@@ -1841,6 +1841,41 @@ CPS_ADJ_DEDUCT = "cps_deduct"
 CPS_ADJ_BONUS = "cps_bonus"
 
 
+# ── ШЕФ · НАБЛЮДАТЕЛЬ (owner 2026-09-24) ─────────────────────────────────
+# Kategori rolu uc degerden biri: 'barista' | 'assistant' | 'observer'.
+# Gozlemci vardiya acmaz, maasi Nero'dan hesaplanmaz; tum subelerin
+# vardiyalarini, kasa raporlarini ve siparislerini GORUR ama hicbir seyi
+# DEGISTIREMEZ. Kural sunucuda: eylem kapisi (handle_webapp_data) izin
+# listesi disindaki her eylemi reddeder — ekranda bir dugme kalsa bile.
+OBSERVER_SLOT = "observer"
+SLOT_ROLES = ("barista", "assistant", OBSERVER_SLOT)
+# Gozlemcinin yapabilecegi eylemler: yalniz kendi hesabi ve okuma.
+OBSERVER_OK_ACTIONS = {"change_my_pin", "cash_report_pdf", "access_request"}
+
+
+def is_observer(db, user_id):
+    """Kisi gozlemci mi: kategorisi slot_role='observer' ve owner DEGIL."""
+    try:
+        r = db.execute(
+            "SELECT u.role AS role, c.slot_role AS sr FROM users u "
+            "LEFT JOIN salary_categories c ON c.id = u.salary_cat_id WHERE u.user_id=?",
+            (int(user_id),)).fetchone()
+        return bool(r) and (r["role"] or "") != "owner" and (r["sr"] or "") == OBSERVER_SLOT
+    except Exception:
+        return False
+
+
+async def observer_blocked(update, db, user_id):
+    """Gozlemciyse kibarca reddeder ve True doner (cagiran hemen cikar)."""
+    if not is_observer(db, user_id):
+        return False
+    try:
+        await update.message.reply_text("👁 Режим наблюдателя — только просмотр отчётов.")
+    except Exception:
+        pass
+    return True
+
+
 def closer_is_assistant(db, user_id, branch_id=None, shift_row=None):
     """Bu kisi kasa VERMEYEN biri mi (asistan/stajyer).
 
@@ -4639,6 +4674,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     _selp = sel_period if (isinstance(sel_period, str) and re.fullmatch(r"\d{4}-\d{2}", sel_period or "")) else current_period()
     upsert_user(db, user_id, name, None, None)
     role = get_role(db, user_id)
+    # Шеф/наблюдатель: owner'in OKUMA verisinin bir kismi (vardiya · kasa ·
+    # siparis, tum subeler), para alanlari sifirlanmis. Istemciye role=observer.
+    _obs = role != "owner" and is_observer(db, user_id)
+    _see_all = role == "owner" or _obs
     s = calc_summary(db, user_id)
     # Owner tarafından atanan display_name varsa onu kullan
     show_name = display_name_for(db, user_id, fallback=name)
@@ -4724,11 +4763,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _crcols = ("SELECT id,user_id,user_name,date,created_at,cups_total,itogo,click,payme,karta,terminal,"
                    "cashless,schitano,vyshlo,kassa,bylo,restock,ostalos,sold,expenses,daily_pay,hours,"
                    "start_time,end_time,note,branch_id,edits,edited_at,edited_by_name FROM cashreports ")
-        if role == "owner":
+        if _see_all:
             crs = db.execute(_crcols + "ORDER BY id DESC LIMIT 15").fetchall()
         else:
             crs = db.execute(_crcols + "WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)).fetchall()
         kasa_reports = [dict(r) for r in crs]
+        if _obs:
+            for _kr in kasa_reports:
+                _kr["daily_pay"] = 0          # kisisel ucret gozlemciye gitmez
         # `edits` DB'de sınırsız büyür (her düzeltme eski+yeni tam kırılımı taşır).
         # Payload'a yalnızca SON 20 düzeltme gider — geçmişin tamamı DB'de kalır.
         for _kr in kasa_reports:
@@ -4813,7 +4855,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     # calisir; PDF'i zaten sunucu VERITABANINDAN uretiyor, satirin payload'da
     # olmasi gerekmiyor.
     try:
-        if role == "owner":
+        if _see_all:
             _ki = db.execute("SELECT id,user_id,start_time FROM cashreports "
                              "ORDER BY id DESC LIMIT 300").fetchall()
         else:
@@ -5015,7 +5057,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     _my_win = branch_pay_window(db, acting_branch_id(db, user_id))
     parts = [
         f"uid={user_id}",
-        f"role={role}",
+        f"role={'observer' if _obs else role}",
         f"name={quote(show_name or '')}",
         f"pwh={pwh}",
         f"std_ack={1 if std_acked else 0}",
@@ -5228,6 +5270,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     (show_name, user_id), 90)
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders WHERE user_id=? ORDER BY id DESC",
                     (user_id,), 50)
+        _ti = _pa = _fi = _lo = []
+    if _obs:
+        # Tum subelerin vardiyalari ve siparisleri — para alanlari YOK.
+        _sh = [dict(r) for r in _repq(
+            "SELECT s.id AS sid, s.start_time, s.end_time, s.hours, 0 AS total, "
+            "0 AS hourly_pay, 0 AS bonus, 0 AS overtime, s.branch_id AS bid, "
+            "0 AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
+            "s.drinks AS drinks, s.note AS note, 0 AS dessert_bonus, "
+            "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
+            "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
+            "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)]
+        _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _pa = _fi = _lo = []
     rep = {
         "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0} for r in _sh],
@@ -6142,16 +6196,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await observer_blocked(update, get_db(), update.effective_user.id):
+        return
     context.user_data["order"] = {}
     await show_order_categories(update.message, context)
 
 async def cmd_gorev(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await observer_blocked(update, get_db(), update.effective_user.id):
+        return
     await show_task_menu(update.message, "gorev")
 
 async def cmd_temizlik(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await observer_blocked(update, get_db(), update.effective_user.id):
+        return
     await show_task_menu(update.message, "temizlik")
 
 async def cmd_okk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await observer_blocked(update, get_db(), update.effective_user.id):
+        return
     await show_task_menu(update.message, "okk")
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7155,6 +7217,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "📱 Это устройство не подтверждено. Обратитесь к владельцу."
                 if _dg != "revoked" else
                 "📱 Доступ с этого устройства отключён владельцем.")
+            return
+
+        # ГОЗЛЕМЦИ KAPISI (owner 2026-09-24): шеф/наблюдатель yalniz bakar.
+        # Vardiya, siparis, kasa, ceza, odeme… hicbiri — izin listesi disinda
+        # her eylem burada durur. Ekrandan bagimsiz tek kural.
+        if action not in OBSERVER_OK_ACTIONS and is_observer(db, user.id):
+            logger.info(f"gozlemci eylemi reddedildi uid={user.id} action={action}")
+            await update.message.reply_text("👁 Режим наблюдателя — только просмотр отчётов.")
             return
 
         # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
@@ -8401,7 +8471,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             bsys = "caffelito" if (data.get("bonus_system") == "caffelito") else "own"
             pb = 1 if int(data.get("product_bonus", 0) or 0) else 0
             dk = 0 if int(data.get("does_kasa", 1) or 0) == 0 else 1  # varsayılan 1 (kasa sayar)
-            sr = "assistant" if (data.get("slot_role") == "assistant") else "barista"
+            sr = data.get("slot_role") if data.get("slot_role") in SLOT_ROLES else "barista"
+            if sr == OBSERVER_SLOT:
+                dk = 0          # gozlemci kasa vermez, vardiya acmaz
             # KATEGORI BAZLI FAZLA MESAI (owner: her kategoriye ayri norm).
             oton = 1 if int(data.get("ot_on", 0) or 0) else 0
             try:
@@ -11447,7 +11519,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # ERISIM: owner her raporu, barista YALNIZ kendi raporunu alabilir.
             # Baskasinin kasa dokumu kisisel is bilgisi.
             _owner_uid = int((row["user_id"] if row else sh["user_id"]) or 0)
-            if get_role(db, user.id) != "owner" and _owner_uid != int(user.id):
+            if (get_role(db, user.id) != "owner" and _owner_uid != int(user.id)
+                    and not is_observer(db, user.id)):
                 await update.message.reply_text("❌ Нет доступа.")
                 return
             try:
