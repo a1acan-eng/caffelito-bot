@@ -2270,7 +2270,8 @@ def op_register(db, shift_row, why=None):
         # vardiyaya saatlerce «gec kalmis» sayilirdi (owner 2026-09-22).
         sched = _pend = _src = None
         try:
-            if ho_enabled(cfg) and not ho_solo(db, bid, actual):
+            if ho_enabled(cfg) and not ho_solo(db, bid, actual) and ho_shift_is_barista(db, sh):
+                ho_void_non_barista(db)
                 _hr2 = db.execute(
                     "SELECT b2_start, sched_end FROM handover WHERE branch_id=? AND finalized=0 "
                     "AND user_id!=? ORDER BY id DESC LIMIT 1",
@@ -2528,6 +2529,8 @@ def ho_b2_card(db, cfg, user_id, now_dt):
     """
     try:
         bid = user_branch_id(db, user_id)
+        if closer_is_assistant(db, int(user_id), bid or None):
+            return None                  # stajyer/asistan: devir kurallari disinda
         _st, _en, b2 = ho_windows_for_shift(
             cfg, bid, now_dt.replace(hour=7, minute=0, second=0, microsecond=0))
         if not b2 or abs((now_dt - b2).total_seconds()) > HO_B2_CARD_H * 3600:
@@ -2539,7 +2542,7 @@ def ho_b2_card(db, cfg, user_id, now_dt):
         # verilecek kisi ortada yoksa satirin anlami da yok.
         if not db.execute(
                 "SELECT 1 FROM shifts WHERE branch_id=? AND user_id!=? AND end_time IS NULL "
-                "AND date(start_time)=? LIMIT 1",
+                "AND COALESCE(shift_role,'barista')='barista' AND date(start_time)=? LIMIT 1",
                 (int(bid or 0), int(user_id), now_dt.strftime("%Y-%m-%d"))).fetchone():
             return None
         return {"bid": bid, "start": b2.strftime("%H:%M")}
@@ -2630,12 +2633,61 @@ def ho_row_for_shift(db, shift_id):
         return None
 
 
+def ho_shift_is_barista(db, sh):
+    """Devir akisi YALNIZ barista pozisyonu icindir.
+
+    Canli hata 2026-09-24 (C5): stajyer Akmal 07:05:40'ta, Damir 07:05:54'te
+    acti. Akmal'in vardiyasi «1. barista vardiyasi» sayilip devir satiri
+    acildi; Damir «erken gelen 2. barista» sayildi ve ucret baslangici plan
+    saatine (16:30) cekildi. Asistan/stajyer ne devir satiri acar ne de
+    «sменщик» sayilir. Karar `closer_is_assistant` ile ayni: kategori
+    does_kasa / slot_role ya da vardiyanin kendi shift_role'u."""
+    try:
+        sh = dict(sh)
+        return not closer_is_assistant(db, int(sh.get("user_id") or 0),
+                                       int(sh.get("branch_id") or 0) or None, sh)
+    except Exception:
+        return True
+
+
+def ho_void_non_barista(db):
+    """Acik devir satirlarindan barista OLMAYAN vardiyaya ait olanlari kapatir
+    (sebep 'not_barista'); yanlislikla baslamis fazla mesai kaydi da silinir.
+    Duzeltmeden ONCE acilmis satirlari da temizler — owner'in elle bir sey
+    yapmasi gerekmez. Idempotent; hata durumunda hicbir sey yapmaz."""
+    n = 0
+    try:
+        rows = db.execute(
+            "SELECT h.id AS hid, h.extra_adj_id AS adj, s.user_id AS suid, s.branch_id AS sbid, "
+            "s.shift_role AS shift_role FROM handover h JOIN shifts s ON s.id=h.shift_id "
+            "WHERE h.finalized=0").fetchall()
+        for r in rows:
+            if ho_shift_is_barista(db, {"user_id": r["suid"], "branch_id": r["sbid"],
+                                        "shift_role": r["shift_role"]}):
+                continue
+            if r["adj"]:
+                db.execute("DELETE FROM adjustments WHERE id=?", (int(r["adj"]),))
+            db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason='not_barista', "
+                       "extra_from=NULL, extra_to=NULL, extra_min=NULL, extra_amount=NULL, extra_adj_id=NULL "
+                       "WHERE id=?", (datetime.now(TZ).isoformat(), int(r["hid"])))
+            n += 1
+        if n:
+            db.commit()
+            logger.info(f"handover: barista olmayan {n} satir kapatildi (not_barista)")
+    except Exception as _e:
+        logger.warning(f"ho_void_non_barista: {_e}")
+    return n
+
+
 def ho_get_or_create(db, cfg, sh):
     """1. vardiya icin devir satiri (yoksa acar). Akis kapaliysa / pencere
-    yoksa / 2. vardiya penceresi yoksa None — bu vardiya devir akisina girmez."""
+    yoksa / 2. vardiya penceresi yoksa / vardiya barista vardiyasi DEGILSE
+    None — bu vardiya devir akisina girmez."""
     if not ho_enabled(cfg):
         return None
     sh = dict(sh)
+    if not ho_shift_is_barista(db, sh):
+        return None
     row = ho_row_for_shift(db, sh.get("id"))
     if row:
         return row
@@ -2836,6 +2888,8 @@ def ho_on_b2_arrival(db, cfg, b2_sh):
     if not ho_enabled(cfg):
         return None
     b2 = dict(b2_sh)
+    if not ho_shift_is_barista(db, b2):
+        return None                      # stajyer/asistan sменщик sayilmaz
     bid = int(b2.get("branch_id") or 0)
     try:
         at = datetime.fromisoformat(b2["start_time"])
@@ -2873,6 +2927,7 @@ def ho_tick(db, now, cfg=None):
     cfg = cfg if cfg is not None else op_cfg(db)
     if not ho_enabled(cfg):
         return out
+    ho_void_non_barista(db)
     rows = db.execute("SELECT * FROM handover WHERE finalized=0").fetchall()
     for r in rows:
         try:
@@ -7335,7 +7390,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _early_real = _early_plan = None
             try:
                 _ecfg = op_cfg(db)
-                if ho_enabled(_ecfg):
+                if ho_enabled(_ecfg) and not closer_is_assistant(db, user.id, _bid_chk or None):
+                    ho_void_non_barista(db)
                     _erow = db.execute(
                         "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
                         "AND b2_arrived_at IS NULL ORDER BY id DESC LIMIT 1",
@@ -7528,6 +7584,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # (owner: «17:30'dan sonra hicbir sekilde ucret yazilmasin»).
             _now_he = datetime.now(TZ).replace(tzinfo=None)
             _hocfg_e = op_cfg(db)
+            if ho_enabled(_hocfg_e):
+                ho_void_non_barista(db)
             _hrow_e = ho_row_for_shift(db, active["id"]) if ho_enabled(_hocfg_e) else None
             if _hrow_e and not _hrow_e["finalized"]:
                 try:
