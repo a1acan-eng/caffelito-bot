@@ -4436,7 +4436,7 @@ def build_report_pdf(db, rep_row, partial=False, op_row=None):
         line("РАСХОДЫ", 8.5, "B", gap=6, col=(150, 132, 100))
         for _e in _ex:
             if isinstance(_e, dict):
-                row(str(_e.get("n") or ""), _pdf_fmt(_e.get("a")), 9.5)
+                row(str(_e.get("n") or "").strip() or ("Прочее" if _e.get("a") else ""), _pdf_fmt(_e.get("a")), 9.5)
         row("Итого расходы",
             _pdf_fmt(r.get("expenses_total")), 10, "B", gap=7)
 
@@ -10753,6 +10753,36 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as _e:
                     logger.exception(f"raporla kapatma basarisiz uid={user.id}: {_e}")
                     _cr_autoclosed = None
+                # GRUBA «закрыл(а) смену» (owner 2026-09-24: Damir'in devirle kapanan
+                # vardiyasinda yalniz rapor geldi, kapanis mesaji yoktu). Normal
+                # kapanistaki bicim ve SIRA: once bu mesaj, sonra rapor. Vardiyaya
+                # baglanir → saat duzeltilince bu mesaj da duzelir.
+                if _cr_autoclosed:
+                    try:
+                        from html import escape as _esc_ac
+                        _gid_ac = resolve_group_id(db, user.id, context,
+                                                   branch_id=_cr_autoclosed["branch_id"])
+                        if _gid_ac:
+                            _ac_st = datetime.fromisoformat(_cr_autoclosed["start_time"])
+                            _ac_en = datetime.fromisoformat(_cr_autoclosed["end_time"])
+                            _ac_nm = display_name_for(db, user.id, fallback=user.first_name or "?")
+                            _ac_pi = barista_pay_info(db, user.id, branch_id=_cr_autoclosed["branch_id"])
+                            _ac_asst = (int(_ac_pi.get("does_kasa", 1) or 0) == 0
+                                        or (_ac_pi.get("slot_role") or "barista") == "assistant")
+                            _ac_txt = (f"🔴 <b>{_esc_ac(_ac_nm)}</b> закрыл(а) смену\n"
+                                       f"━━━━━━━━━━━━━━━━━━━━\n"
+                                       f"⏰ {_ac_st.strftime('%H:%M')} → {_ac_en.strftime('%H:%M')}  "
+                                       f"({fmt_hm(_cr_autoclosed['hours'] or 0)})")
+                            if _ac_asst:
+                                _ac_txt += "\n👤 Ассистент / стажёр"
+                            else:
+                                _ac_txt += f"\n🥤 Напитки: <b>{sum(_cr_drk.values())}</b> шт"
+                                _ac_txt += f"\n💰 Продажи: <b>{fmt_sum(int(_cr_autoclosed['bonus'] or 0))} сум</b>"
+                            _gm_ac = await context.bot.send_message(chat_id=int(_gid_ac), text=_ac_txt,
+                                                                    parse_mode="HTML")
+                            sent_msg_tag(db, _gm_ac, "shift_end", _cr_autoclosed["id"])
+                    except Exception as _e_acg:
+                        logger.warning(f"raporla kapanis grup mesaji: {_e_acg}")
             _my_act_cr = get_active_shift(db, user.id)
             if not _my_act_cr:
                 _my_act_cr = db.execute(
@@ -10826,6 +10856,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for _e in exps:
                 if isinstance(_e, dict):
                     _e["a"] = _norm_amt(_e.get("a", 0))
+                    # Adsiz harcama «Прочее» (owner 2026-09-24: raporda «: 495.000»
+                    # gorunuyordu). Tutarsiz bos satir adsiz kalir (zaten sayilmaz).
+                    _e["n"] = str(_e.get("n") or "").strip() or ("Прочее" if _e["a"] else "")
+            # Adi da tutari da bos satir raporda «: 0» olarak cikiyordu — atilir
+            # (diger iki yol — sonradan rapor, duzeltme — zaten atiyordu).
+            exps = [_e for _e in exps if isinstance(_e, dict) and (_e.get("n") or _e.get("a"))]
             note = (data.get("note") or "").strip()
             daily_pay = int(data.get("daily_pay", 0) or 0)  # günlük bonus (satılan bardak) — kasadan alınır
             # PARA GÜVENLİĞİ: kasadan alınan bonus, vardiyaya GERÇEKTEN yazılan
@@ -11098,7 +11134,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pay = _norm_amt(data.get("payme", 0)); kar = _norm_amt(data.get("karta", 0))
             term = _norm_amt(data.get("terminal", 0)); vsh = _norm_amt(data.get("vyshlo", 0))
             sdachi = _norm_amt(data.get("na_sdachi", 0))
-            exps = [{"n": str(_e.get("n", "") or "").strip(), "a": _norm_amt(_e.get("a", 0))}
+            exps = [{"n": (str(_e.get("n", "") or "").strip()
+                     or ("Прочее" if _norm_amt(_e.get("a", 0)) else "")), "a": _norm_amt(_e.get("a", 0))}
                     for _e in (data.get("expenses") or []) if isinstance(_e, dict)]
             exps = [_e for _e in exps if _e["n"] or _e["a"]]
             exp_total = sum(int(_e.get("a", 0) or 0) for _e in exps)
@@ -11770,7 +11807,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _recomp_bonus = _e_drinks_bonus + int(_edit_sh["dessert_bonus"] or 0)
             exps_in = data.get("expenses")
             if isinstance(exps_in, list):
-                new_exps = [{"n": str(_e.get("n", "") or "").strip(), "a": _norm_amt(_e.get("a", 0))}
+                new_exps = [{"n": (str(_e.get("n", "") or "").strip()
+                     or ("Прочее" if _norm_amt(_e.get("a", 0)) else "")), "a": _norm_amt(_e.get("a", 0))}
                             for _e in exps_in if isinstance(_e, dict)]
                 new_exps = [_e for _e in new_exps if _e["n"] or _e["a"]]
             else:
