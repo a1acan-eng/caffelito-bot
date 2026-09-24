@@ -4822,6 +4822,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 if _pt:
                     _ho_out["pass_to"] = {"sid": _pt["shift_id"], "nm": _pt["user_name"],
                                           "pass_at": (_pt["pass_at"] or "")[11:16]}
+                # Kapanis ekraninin «Пересменка · <ad>» satiri (owner 2026-09-24:
+                # herkeste «Абдулатиф» cikiyordu — sabit onizleme metniydi). 2.
+                # barista icin: bu vardiyada kimden devraldi (b2_uid = ben).
+                try:
+                    _mf = db.execute(
+                        "SELECT user_name FROM handover WHERE b2_uid=? AND branch_id=? AND date=? "
+                        "ORDER BY id DESC LIMIT 1",
+                        (user_id, int(_act_ho["branch_id"] or 0),
+                         str(_act_ho["start_time"] or "")[:10])).fetchone()
+                    _ho_out["mate_from"] = (_mf["user_name"] if _mf else "") or ""
+                except Exception:
+                    _ho_out["mate_from"] = ""
             else:
                 _ho_out["b2"] = ho_b2_card(db, _opc, user_id, _now_ho)
                 _lm = db.execute("SELECT * FROM late_notices WHERE user_id=? AND date=? AND status IN ('pending','accepted','declined') ORDER BY id DESC LIMIT 1",
