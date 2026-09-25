@@ -4254,6 +4254,7 @@ def adv_view(db, user_id, full=True):
                     upcoming.append({"due": i["due_date"], "amount": int(i["amount"] or 0)})
         lst.append({
             "id": a["id"], "at": a["created_at"], "month": a["month"],
+            "given": a["decided_at"] or "",
             "amount": int(a["amount"] or 0), "pct": a["commission_pct"] or 0,
             "com": int(a["commission"] or 0), "total": int(a["total"] or 0),
             "status": a["status"], "note": a["decision_note"] or "",
