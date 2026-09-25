@@ -3913,35 +3913,22 @@ ADV_MAX_COM_PCT = 30    # limitin tamamı alınırsa komisyon yüzdesi
 ADV_MAX_COUNT = 3       # ayda en fazla avans sayısı
 ADV_INSTALLMENTS = 3    # her avans kaç taksit
 ADV_DAYS = 30           # aylık maaş hesabı gün sayısı
-ADV_DEFAULT_SHIFT_H = 9  # şubede ayar ve şablon yoksa
+ADV_DEFAULT_SHIFT_H = 10  # kategori/şube saati girilmemişse (owner: herkes 10 saat çalışır)
 ADV_LIVE = ("pending", "active", "done")   # limitten düşen durumlar
 
 
 def branch_std_hours(db, branch_id):
-    """Şubenin standart vardiya süresi (saat).
-    1) Owner'ın Филиалы'de girdiği değer → 2) şubenin vardiya şablonlarında en
-    sık görülen süre → 3) ADV_DEFAULT_SHIFT_H."""
+    """Şubenin avans için standart vardiyası (saat): owner'ın Филиалы'de girdiği
+    değer, yoksa ADV_DEFAULT_SHIFT_H.
+
+    Vardiya ŞABLONLARINDAN tahmin KALDIRILDI (owner 2026-09-26): kısa bir şablon
+    (ör. 5 saatlik) en sık görülen olunca çalışanın limiti 5 saatten
+    hesaplanıyordu. Tahmin yok — ya girilen değer ya varsayılan."""
     try:
         r = db.execute("SELECT std_shift_h FROM branches WHERE id=?",
                        (int(branch_id or DEFAULT_BRANCH_ID),)).fetchone()
         if r and r["std_shift_h"] and float(r["std_shift_h"]) > 0:
             return float(r["std_shift_h"])
-    except Exception:
-        pass
-    try:
-        lens = {}
-        for t in grid_templates(db).values():
-            if int(t.get("branch_id") or 0) != int(branch_id or 0):
-                continue
-            a, b = _mins(t.get("start")), _mins(t.get("end"))
-            if a is None or b is None:
-                continue
-            d = (b - a) % (24 * 60)
-            if d > 0:
-                lens[d] = lens.get(d, 0) + 1
-        if lens:
-            best = max(lens.items(), key=lambda kv: (kv[1], kv[0]))[0]
-            return round(best / 60.0, 2)
     except Exception:
         pass
     return float(ADV_DEFAULT_SHIFT_H)
@@ -3961,12 +3948,19 @@ def adv_salary_info(db, user_id):
             hours = float((_r["adv_shift_h"] if _r else 0) or 0)
         except Exception:
             hours = 0.0
+    src = "cat" if hours > 0 else "branch"
     if hours <= 0:
         hours = branch_std_hours(db, bid)
+        try:
+            _br = db.execute("SELECT std_shift_h FROM branches WHERE id=?", (int(bid),)).fetchone()
+            if not (_br and _br["std_shift_h"] and float(_br["std_shift_h"]) > 0):
+                src = "default"
+        except Exception:
+            src = "default"
     salary = int(round(rate * hours * ADV_DAYS))
     br = get_branch(db, bid) or {}
     return {"bid": bid, "branch": br.get("name") or "", "rate": rate,
-            "cat": pi.get("cat_name") or "", "hours": hours, "days": ADV_DAYS,
+            "cat": pi.get("cat_name") or "", "hours": hours, "hours_src": src, "days": ADV_DAYS,
             "salary": salary, "limit": int(round(salary * ADV_LIMIT_PCT / 100.0))}
 
 
