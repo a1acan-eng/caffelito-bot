@@ -3985,8 +3985,17 @@ def _parse_user_time(s):
         # «simdi»ye duserdi; acilista bu DAHA BUYUK gecikme ve DAHA
         # BUYUK para cezasi demek. Artik ISO degilse ALTA dusuyor.
         if "T" in s:
-            return (datetime.fromisoformat(s.replace("Z", "+00:00"))
-                    .astimezone(TZ).replace(tzinfo=None))
+            _dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            # SAAT DILIMSIZ ISO = zaten YEREL (Tashkent) saattir; oldugu gibi.
+            # CANLI HATA 2026-09-25 (Мохир): devir ucret tavani plan bitisini
+            # «2026-09-25T16:30:00» (dilimsiz) olarak geri veriyordu; `.astimezone`
+            # dilimsiz saati SUNUCUNUN saat dilimi (Railway = UTC) sanip +5 saat
+            # ekliyordu → kapanis 21:30 yazildi, 5 saat fazla ucret. Istemci her
+            # zaman «Z»li gonderir (o yol degismedi); dilimsiz saati yalniz bot
+            # kendi icinden uretir ve o hep yereldir.
+            if _dt.tzinfo is None:
+                return _dt
+            return _dt.astimezone(TZ).replace(tzinfo=None)
     except Exception:
         pass
     # HH:MM formatı → bugün
