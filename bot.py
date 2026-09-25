@@ -3852,8 +3852,9 @@ def carry_debt(db, user_id, period=None):
 #   · Ayda en fazla 3 avans; limit ya da hak dolunca yeni avans YOK
 #   · Komisyon %   = (avans / aylık limit) × %30   (limitin tamamı → %30)
 #   · Geri ödeme   = avans + komisyon, HER ZAMAN 3 eşit taksit (tek sefer yok)
-#   · Taksitler 10 günlük maaş dönemlerinde (1–10, 11–20, 21–ay sonu) maaştan
-#     düşer: avansın alındığı dönemden SONRAKİ üç dönemin son günü.
+#   · Taksitler avansın VERİLDİĞİ günden +10, +20, +30 gün sonra, o gün
+#     gelince maaştan otomatik düşer (owner 2026-09-25).
+#   · Owner'ın kapattığı ay günlerinde (ör. 25–30) yeni talep YOK.
 # Talep «pending» başlar ve limitten yer AYIRIR (aynı hak iki kez istenemez);
 # owner nakdi verince «active» olur ve taksit takvimi O GÜNE göre yazılır.
 ADV_LIMIT_PCT = 30      # aylık maaşın yüzdesi
@@ -3935,14 +3936,35 @@ def adv_decade(d):
     return d.replace(day=21), d.replace(day=last)
 
 
+ADV_STEP_DAYS = 10      # taksitler arası gün (ilk taksit alındığı günden 10 gün sonra)
+
+
 def adv_schedule(from_date, n=ADV_INSTALLMENTS):
-    """Alındığı dönemden SONRAKİ n dönemin son günleri (maaş günleri)."""
-    out = []
-    _, end = adv_decade(from_date)
-    for _ in range(n):
-        _, end = adv_decade(end + timedelta(days=1))
-        out.append(end)
-    return out
+    """Avansın verildiği günden +10, +20, +30 gün (taksit günleri)."""
+    return [from_date + timedelta(days=ADV_STEP_DAYS * k) for k in range(1, n + 1)]
+
+
+def adv_closed_days(db):
+    """Owner'ın avans talebine kapattığı ay günleri (1–31), sıralı liste."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='adv_closed_days'").fetchone()
+        days = json.loads(r["val"]) if (r and r["val"]) else []
+        return sorted({int(d) for d in days if 1 <= int(d) <= 31})
+    except Exception:
+        return []
+
+
+def adv_closed_text(days):
+    """[25,26,27,28,29,30,5] → «5, 25–30»."""
+    out, i = [], 0
+    days = sorted(days)
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and days[j + 1] == days[j] + 1:
+            j += 1
+        out.append(str(days[i]) if i == j else f"{days[i]}–{days[j]}")
+        i = j + 1
+    return ", ".join(out)
 
 
 def _adv_today():
@@ -4000,6 +4022,10 @@ def adv_write_schedule(db, adv_row, from_date=None):
 def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
     """Avans kaydı. approve=True → owner doğrudan verdi (active + takvim).
     Döner: (hata | None, advance_id)."""
+    if not approve:
+        _cd = adv_closed_days(db)
+        if _adv_today().day in _cd:
+            return (f"Сегодня аванс не оформляется. Закрытые дни месяца: {adv_closed_text(_cd)}.", None)
     err, info, q = adv_check(db, user_id, amount)
     if err:
         return err, None
@@ -4051,8 +4077,8 @@ def adv_decide(db, adv_id, approve, actor_id, actor_name, note=""):
 
 
 def adv_deduction(db, user_id, period):
-    """Bu aya düşen taksitler: dönemi BAŞLAMIŞ olanlar maaştan düşer.
-    (Ekim'in 3 taksiti 1 Ekim'de birden düşmesin — her biri kendi 10 gününde.)
+    """Bu aya düşen taksitler: günü GELMİŞ olanlar maaştan düşer
+    (3 taksit birden düşmesin — her biri kendi gününde).
     Döner: (toplam, [satırlar])."""
     today = _adv_today()
     rows = db.execute(
@@ -4065,7 +4091,7 @@ def adv_deduction(db, user_id, period):
             due = datetime.strptime(r["due_date"], "%Y-%m-%d").date()
         except Exception:
             continue
-        if adv_decade(due)[0] <= today:
+        if due <= today:
             out.append(r)
     return sum(int(r["amount"] or 0) for r in out), out
 
@@ -4103,8 +4129,8 @@ def adv_decade_pay(db, user_id, today=None):
         fines = 0
     inst = db.execute(
         "SELECT COALESCE(SUM(i.amount),0) AS s FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
-        "WHERE i.user_id=? AND i.due_date=? AND x.status IN ('active','done')",
-        (user_id, b.isoformat())).fetchone()["s"] or 0
+        "WHERE i.user_id=? AND i.due_date>=? AND i.due_date<=? AND x.status IN ('active','done')",
+        (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0
     return {"from": a.isoformat(), "to": b.isoformat(), "gross": gross,
             "adv": int(inst), "fines": fines, "net": gross - int(inst) - fines}
 
@@ -4133,6 +4159,8 @@ def adv_view(db, user_id, full=True):
         "used": use["used"], "count": use["count"],
         "left": max(0, info["limit"] - use["used"]),
         "next_dates": [d.isoformat() for d in nxt],
+        "closed_days": adv_closed_days(db),
+        "closed_today": 1 if today.day in adv_closed_days(db) else 0,
     })
     rows = db.execute("SELECT * FROM advances WHERE user_id=? ORDER BY id DESC LIMIT 60",
                       (user_id,)).fetchall()
@@ -12501,6 +12529,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
                 f"К возврату {fmt_sum(row['total'])} сум · 3 части из зарплаты.",
                 parse_mode="Markdown")
+
+        # ─── Avans: owner'ın kapattığı ay günleri (ör. 25–30) ───
+        elif action == "adv_closed_days":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _days = sorted({int(d) for d in (data.get("days") or []) if 1 <= int(d) <= 31})
+            except Exception:
+                await update.message.reply_text("❌ Неверные дни.")
+                return
+            db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('adv_closed_days', ?)", (json.dumps(_days),))
+            db.commit()
+            log_action(db, "adv_closed_days", user.id, user.first_name, None, "", {"days": _days})
 
         # ─── Şube standart vardiya süresi (avans limiti için aylık maaş) ───
         elif action == "branch_std_hours":
