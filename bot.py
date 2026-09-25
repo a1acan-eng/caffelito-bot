@@ -3797,7 +3797,8 @@ def carry_debt(db, user_id, period=None):
         return 0
     pers = set()
     try:
-        for _t in ("shifts", "fines", "payments", "adjustments"):
+        # advance_inst: yalnız avans taksiti olan ay (vardiya yok) da devre girsin.
+        for _t in ("shifts", "fines", "payments", "adjustments", "advance_inst"):
             for r in db.execute(
                     f"SELECT DISTINCT period AS p FROM {_t} WHERE user_id=?", (user_id,)).fetchall():
                 _p = str(r["p"] or "")
