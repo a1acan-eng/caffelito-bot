@@ -752,6 +752,12 @@ def get_db():
     # `ot_on`: bu kategori icin fazla mesai sayilsin mi (1=evet).
     # `ot_hours`: VARDIYA basina norm · `ot_month`: AYLIK norm · type/value = ek odeme.
     # Kategorisi OLMAYAN kisi icin genel (meta) ayar yedek olarak kalir.
+    # Avans limiti için kategorinin standart vardiyası (saat). Boş/0 → şubenin
+    # vardiyası kullanılır (ör. Magic 9 saat ama 26.000'likler 10 saat çalışır).
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN adv_shift_h REAL")
+    except sqlite3.OperationalError:
+        pass
     for _oc, _ot_ in (("ot_on", "INTEGER DEFAULT 0"), ("ot_hours", "INTEGER DEFAULT 0"),
                       ("ot_month", "INTEGER DEFAULT 0"), ("ot_type", "TEXT DEFAULT 'fixed'"),
                       ("ot_value", "INTEGER DEFAULT 0")):
@@ -983,6 +989,7 @@ def get_salary_categories(db, only_active=False):
          "COALESCE(ot_on,0) AS ot_on,COALESCE(ot_hours,0) AS ot_hours,"
          "COALESCE(ot_month,0) AS ot_month,COALESCE(ot_type,'fixed') AS ot_type,"
          "COALESCE(ot_value,0) AS ot_value,"
+         "COALESCE(adv_shift_h,0) AS adv_shift_h,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -3906,14 +3913,31 @@ ADV_MAX_COM_PCT = 30    # limitin tamamı alınırsa komisyon yüzdesi
 ADV_MAX_COUNT = 3       # ayda en fazla avans sayısı
 ADV_INSTALLMENTS = 3    # her avans kaç taksit
 ADV_DAYS = 30           # aylık maaş hesabı gün sayısı
-ADV_DEFAULT_SHIFT_H = 9  # şubede ayar ve şablon yoksa
+ADV_DEFAULT_SHIFT_H = 10  # kategori/şube saati girilmemişse (owner: herkes 10 saat çalışır)
 ADV_LIVE = ("pending", "active", "done")   # limitten düşen durumlar
 
 
 def branch_std_hours(db, branch_id):
-    """Şubenin standart vardiya süresi (saat).
-    1) Owner'ın Филиалы'de girdiği değer → 2) şubenin vardiya şablonlarında en
-    sık görülen süre → 3) ADV_DEFAULT_SHIFT_H."""
+    """Şubenin vardiya süresi (saat) — aylık maaş = ставка × bu × 30.
+
+    KAYNAK: Филиалы'deki şube vardiyaları (`opening_penalty.windows`; açılış
+    cezasıyla AYNI kayıt, owner 2026-09-26: «oradaki vardiyaya bakarak aylık
+    maaşı hesaplıyoruz»). Birden çok vardiya varsa en sık görülen süre, eşitse
+    uzun olan. Vardiya yoksa: eski elle girilen değer → ADV_DEFAULT_SHIFT_H."""
+    try:
+        wins = (op_cfg(db).get("windows") or {}).get(str(int(branch_id or DEFAULT_BRANCH_ID))) or []
+        lens = {}
+        for w in wins:
+            a, b = _mins(w.get("s")), _mins(w.get("e"))
+            if a is None or b is None:
+                continue
+            d = (b - a) % (24 * 60) or 24 * 60
+            lens[d] = lens.get(d, 0) + 1
+        if lens:
+            best = max(lens.items(), key=lambda kv: (kv[1], kv[0]))[0]
+            return round(best / 60.0, 2)
+    except Exception as e:
+        logger.warning(f"branch_std_hours windows {branch_id}: {e}")
     try:
         r = db.execute("SELECT std_shift_h FROM branches WHERE id=?",
                        (int(branch_id or DEFAULT_BRANCH_ID),)).fetchone()
@@ -3921,35 +3945,37 @@ def branch_std_hours(db, branch_id):
             return float(r["std_shift_h"])
     except Exception:
         pass
-    try:
-        lens = {}
-        for t in grid_templates(db).values():
-            if int(t.get("branch_id") or 0) != int(branch_id or 0):
-                continue
-            a, b = _mins(t.get("start")), _mins(t.get("end"))
-            if a is None or b is None:
-                continue
-            d = (b - a) % (24 * 60)
-            if d > 0:
-                lens[d] = lens.get(d, 0) + 1
-        if lens:
-            best = max(lens.items(), key=lambda kv: (kv[1], kv[0]))[0]
-            return round(best / 60.0, 2)
-    except Exception:
-        pass
     return float(ADV_DEFAULT_SHIFT_H)
 
 
 def adv_salary_info(db, user_id):
-    """{bid, branch, rate, cat, hours, salary, limit} — tamamen otomatik."""
+    """{bid, branch, rate, cat, hours, salary, limit} — tamamen otomatik.
+    Vardiya saati: kategorinin avans vardiyası (girilmişse) > şubenin vardiyası."""
     bid = user_branch_id(db, user_id)
     pi = barista_pay_info(db, user_id, bid)
     rate = int(pi.get("rate") or 0)
-    hours = branch_std_hours(db, bid)
+    hours = 0.0
+    if pi.get("cat_id"):
+        try:
+            _r = db.execute("SELECT adv_shift_h FROM salary_categories WHERE id=?",
+                            (int(pi["cat_id"]),)).fetchone()
+            hours = float((_r["adv_shift_h"] if _r else 0) or 0)
+        except Exception:
+            hours = 0.0
+    src = "cat" if hours > 0 else "branch"
+    if hours <= 0:
+        hours = branch_std_hours(db, bid)
+        try:
+            _has_w = bool((op_cfg(db).get("windows") or {}).get(str(int(bid))))
+            _br = db.execute("SELECT std_shift_h FROM branches WHERE id=?", (int(bid),)).fetchone()
+            if not _has_w and not (_br and _br["std_shift_h"] and float(_br["std_shift_h"]) > 0):
+                src = "default"
+        except Exception:
+            src = "default"
     salary = int(round(rate * hours * ADV_DAYS))
     br = get_branch(db, bid) or {}
     return {"bid": bid, "branch": br.get("name") or "", "rate": rate,
-            "cat": pi.get("cat_name") or "", "hours": hours, "days": ADV_DAYS,
+            "cat": pi.get("cat_name") or "", "hours": hours, "hours_src": src, "days": ADV_DAYS,
             "salary": salary, "limit": int(round(salary * ADV_LIMIT_PCT / 100.0))}
 
 
@@ -12695,6 +12721,46 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('adv_closed_days', ?)", (json.dumps(_days),))
             db.commit()
             log_action(db, "adv_closed_days", user.id, user.first_name, None, "", {"days": _days})
+
+        # ─── Kategori avans vardiyası (saat; 0 = şubeninki) ───
+        elif action == "salcat_adv_hours":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _cid = int(data.get("id") or 0)
+                _h = float(str(data.get("hours") or 0).replace(",", "."))
+            except Exception:
+                _cid, _h = 0, -1
+            if not _cid or not (_h == 0 or 1 <= _h <= 24):
+                await update.message.reply_text("❌ Часы смены: от 1 до 24 (0 — как у филиала).")
+                return
+            db.execute("UPDATE salary_categories SET adv_shift_h=? WHERE id=?", (_h or None, _cid))
+            db.commit()
+            log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
+
+        # ─── Şube vardiyaları (Филиалы) — açılış cezası + aylık maaş aynı kayıt ───
+        elif action == "branch_windows":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _bid = int(data.get("branch_id") or 0)
+            except Exception:
+                _bid = 0
+            _lst = data.get("windows")
+            if not _bid or not isinstance(_lst, list) or not get_branch(db, _bid):
+                await update.message.reply_text("❌ Неверные смены.")
+                return
+            _cfg = op_cfg(db)
+            _w = dict(_cfg.get("windows") or {})
+            _w[str(_bid)] = [{"s": str(x.get("s") or "")[:5], "e": str(x.get("e") or "")[:5]}
+                             for x in _lst if isinstance(x, dict)]
+            _cfg = op_cfg_save(db, {"windows": _w})      # op_cfg temizler/sıralar
+            log_action(db, "branch_windows", user.id, user.first_name, None, "",
+                       {"branch_id": _bid, "windows": _cfg["windows"].get(str(_bid), [])})
 
         # ─── Şube standart vardiya süresi (avans limiti için aylık maaş) ───
         elif action == "branch_std_hours":
