@@ -2348,27 +2348,37 @@ def op_register(db, shift_row, why=None):
         delay = int((actual - sched).total_seconds() // 60)
         if delay <= 0:
             _why.append(f"пришёл вовремя или раньше плана {sched.strftime('%H:%M')}"); return None
-        # ── GRACE = EŞİK, İNDİRİM DEĞİL (owner kuralı 2026-09-02) ───────────
-        # «10 dakika gecikse uygulanmayacak; 10 dakikadan geçse o 10 dakika da
-        # hesaba katılacak.» Yani grace aşılmadıysa ceza YOK; aşıldıysa TÜM
-        # gecikme ücretlendirilir — ilk dakikalar düşülmez.
-        # (Eskiden `charge = delay - grace` idi: 30 dk gecikme 20 dk sayılıyordu.)
         _g = int(cfg["grace"])
-        if delay <= _g:
-            _why.append(f"опоздание {delay} мин — в пределах льготы {_g} мин"); return None
-        # ── ONCEDEN HABER + 1. BARISTA KABULU (Передача смены, 2026-09-21) ──
-        # 2. barista gec gelecegini bildirdi ve 1. barista devir duzeni icin
-        # kabul ettiyse ceza YOK (LATE_ARRIVAL_APPROVED). Kabul edilmemis
-        # haber hicbir sey degistirmez — mevcut dakika kurali isler.
+        # ── ONCEDEN HABER + 1. BARISTA KABULU — KESIN KURAL (owner 2026-09-25) ──
+        # «17:00'de gelecegim dedi; 17:00'de gelirse ceza yok. 17:00'den bir
+        # dakika bile gecse O ANDAN itibaren ceza yazilsin.» Kabul edilmis haber
+        # varsa gecikme YAZILAN saatten olculur, esik (льгота) uygulanmaz, devir
+        # muafiyeti de affetmez. Haber plan saatinden once verilmek zorunda
+        # (late_notice_open). Kabul edilmemis haber hicbir sey degistirmez.
+        _by_notice = False
         try:
             _ln = db.execute(
                 "SELECT expected_at FROM late_notices WHERE user_id=? AND branch_id=? AND date=? "
                 "AND status='accepted' ORDER BY id DESC LIMIT 1",
                 (int(sh.get("user_id") or 0), bid, actual.strftime("%Y-%m-%d"))).fetchone()
-            if _ln:
-                _why.append("поздний приход согласован с 1-м баристой"); return None
+            _exp_ln = datetime.fromisoformat(_ln["expected_at"]) if _ln else None
         except Exception as _e_ln:
             logger.warning(f"late_notice waiver: {_e_ln}")
+            _exp_ln = None
+        if _exp_ln is not None:
+            _d2 = int((actual - _exp_ln).total_seconds() // 60)
+            if _d2 <= 0:
+                _why.append("поздний приход согласован с 1-м баристой"); return None
+            _why.append(f"предупредил о приходе к {_exp_ln.strftime('%H:%M')}, пришёл в "
+                        f"{actual.strftime('%H:%M')} — штраф с {_exp_ln.strftime('%H:%M')}")
+            sched, delay, code, _by_notice = _exp_ln, _d2, "late_notice", True
+        # ── GRACE = EŞİK, İNDİRİM DEĞİL (owner kuralı 2026-09-02) ───────────
+        # «10 dakika gecikse uygulanmayacak; 10 dakikadan geçse o 10 dakika da
+        # hesaba katılacak.» Yani grace aşılmadıysa ceza YOK; aşıldıysa TÜM
+        # gecikme ücretlendirilir — ilk dakikalar düşülmez.
+        # (Eskiden `charge = delay - grace` idi: 30 dk gecikme 20 dk sayılıyordu.)
+        if not _by_notice and delay <= _g:
+            _why.append(f"опоздание {delay} мин — в пределах льготы {_g} мин"); return None
         # ── DEVİR MUAFİYETİ (owner kuralı 2026-09-16) ───────────────────────
         # «1. vardiyadaki eleman 16:00'da kapatır ve diğerini bekler; gelmezse
         #  ceza başlar. Eğer 1. vardiya açık kalırsa iki eleman anlaşmış
@@ -2385,7 +2395,12 @@ def op_register(db, shift_row, why=None):
                     "AND extra_to IS NULL AND user_id!=? LIMIT 1", (bid, int(sh.get("user_id") or 0))).fetchone() is not None
         except Exception:
             _ho_extra_open = False
-        if int(cfg.get("handover_waiver") or 0) and not _ho_extra_open:
+        # 2026-09-25 (owner): «2. barista gec gelirse neden kesilmesin?» — devir
+        # akisinda 1. barista 17:30'a kadar zaten KILITLI, yani «onceki vardiya
+        # hala acik» her zaman dogru olurdu ve 2. baristayi hep affederdi. Plan
+        # devir satirindan geliyorsa (ya da bildirimle olculuyorsa) muafiyet YOK.
+        if (int(cfg.get("handover_waiver") or 0) and not _ho_extra_open
+                and not _by_notice and _src != "handover"):
             try:
                 _cut = sched + timedelta(minutes=_g)
                 _prole = str(sh.get("shift_role") or "barista")
@@ -2430,7 +2445,7 @@ def op_register(db, shift_row, why=None):
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
             (int(sh.get("user_id") or 0), (_u["nm"] if _u else "") or "", bid, sid, code,
              actual.strftime("%Y-%m-%d"), sh.get("period") or actual.strftime("%Y-%m"),
-             sched.isoformat(), actual.isoformat(), delay, int(cfg["grace"]), charge,
+             sched.isoformat(), actual.isoformat(), delay, (0 if _by_notice else int(cfg["grace"])), charge,
              int(_rate), amt, amt, datetime.now(TZ).isoformat()))
         db.commit()
         return db.execute("SELECT * FROM opening_delays WHERE id=?",
@@ -2445,6 +2460,9 @@ def op_reason(row):
     r = dict(row)
     _s = str(r.get("scheduled") or "")[11:16]
     _a = str(r.get("actual") or "")[11:16]
+    if str(r.get("code") or "") == "late_notice":
+        return (f"Опоздание после предупреждения · обещал прийти к {_s} → пришёл {_a} · "
+                f"{int(r.get('delay_min') or 0)} мин (штраф с обещанного времени)")
     return (f"Опоздание с открытием · план {_s} → факт {_a} · "
             f"{int(r.get('delay_min') or 0)} мин "
             f"(льгота {int(r.get('grace_min') or 0)} мин превышена — "
@@ -2572,6 +2590,25 @@ def ho_windows_for_shift(cfg, branch_id, start_dt):
 HO_B2_CARD_H = 4          # kart plan saatinin +-4 saatinde gorunur
 
 
+def late_notice_open(db, cfg, branch_id, now_dt):
+    """«Gec kalacagim» bildirimi YALNIZ plan saatinden ONCE (owner 2026-09-25).
+
+    Saha: Хасанбей plan 16:30, bildirimi 16:48'de (zaten gec kalmisken)
+    gonderdi, 1. barista 17:36'da kabul etti → 67 dk gecikme affedildi.
+    Doner: (izin, plan_saati|None). Plan bilinmiyorsa (akis kapali / pencere
+    yok) eski davranis: izin var."""
+    if not ho_enabled(cfg):
+        return True, None
+    try:
+        _st, _en, b2 = ho_windows_for_shift(
+            cfg, int(branch_id or 0), now_dt.replace(hour=7, minute=0, second=0, microsecond=0))
+    except Exception:
+        b2 = None
+    if not b2:
+        return True, None
+    return now_dt < b2, b2
+
+
 def ho_b2_card(db, cfg, user_id, now_dt):
     """2. baristanin vardiya disi ekranindaki «Опаздываете?» karti icin plan
     saati (yoksa None).
@@ -2588,6 +2625,12 @@ def ho_b2_card(db, cfg, user_id, now_dt):
         _st, _en, b2 = ho_windows_for_shift(
             cfg, bid, now_dt.replace(hour=7, minute=0, second=0, microsecond=0))
         if not b2 or abs((now_dt - b2).total_seconds()) > HO_B2_CARD_H * 3600:
+            return None
+        # Plan saati gectiyse yeni bildirim gonderilemez → satir yalniz zaten
+        # gonderilmis bir bildirimin DURUMUNU gostermek icin kalir.
+        if now_dt >= b2 and not db.execute(
+                "SELECT 1 FROM late_notices WHERE user_id=? AND date=? LIMIT 1",
+                (int(user_id), now_dt.strftime("%Y-%m-%d"))).fetchone():
             return None
         if db.execute("SELECT 1 FROM shifts WHERE user_id=? AND date(start_time)=? LIMIT 1",
                       (int(user_id), now_dt.strftime("%Y-%m-%d"))).fetchone():
@@ -11537,6 +11580,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except Exception:
                 _bid = acting_branch_id(db, user.id)
             _nm = display_name_for(db, user.id, fallback=user.first_name or "?")
+            _ln_ok, _ln_plan = late_notice_open(db, op_cfg(db), _bid, datetime.now(TZ).replace(tzinfo=None))
+            if not _ln_ok:
+                await update.message.reply_text(
+                    f"⏰ Предупреждать нужно заранее — до {_ln_plan.strftime('%H:%M')}. "
+                    "Смена уже должна была начаться: опоздание считается по обычным правилам.")
+                return
             _today = datetime.now(TZ).strftime("%Y-%m-%d")
             db.execute("UPDATE late_notices SET status='superseded' WHERE user_id=? AND date=? AND status='pending'", (user.id, _today))
             cur = db.execute("INSERT INTO late_notices (user_id,user_name,branch_id,date,expected_at,status,created_at) "
@@ -11544,7 +11593,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                              (user.id, _nm, _bid, _today, _exp.isoformat(), datetime.now(TZ).isoformat()))
             db.commit()
             log_action(db, "late_notice", user.id, user.first_name, None, None, {"id": cur.lastrowid, "expected": _exp.isoformat(), "branch_id": _bid})
-            await update.message.reply_text(f"📨 Передано 1-му баристе: придёте к {_exp.strftime('%H:%M')}. Штрафа не будет, если он примет.")
+            await update.message.reply_text(f"📨 Передано 1-му баристе: придёте к {_exp.strftime('%H:%M')}. Если он примет и вы придёте к "
+                f"{_exp.strftime('%H:%M')} — штрафа не будет. Каждая минута позже — штраф с {_exp.strftime('%H:%M')}.")
             try:
                 _b1 = db.execute("SELECT user_id FROM shifts WHERE branch_id=? AND end_time IS NULL AND start_time IS NOT NULL AND user_id!=? ORDER BY id DESC LIMIT 1",
                                  (_bid, user.id)).fetchone()
