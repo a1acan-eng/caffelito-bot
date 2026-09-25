@@ -752,6 +752,12 @@ def get_db():
     # `ot_on`: bu kategori icin fazla mesai sayilsin mi (1=evet).
     # `ot_hours`: VARDIYA basina norm · `ot_month`: AYLIK norm · type/value = ek odeme.
     # Kategorisi OLMAYAN kisi icin genel (meta) ayar yedek olarak kalir.
+    # Avans limiti için kategorinin standart vardiyası (saat). Boş/0 → şubenin
+    # vardiyası kullanılır (ör. Magic 9 saat ama 26.000'likler 10 saat çalışır).
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN adv_shift_h REAL")
+    except sqlite3.OperationalError:
+        pass
     for _oc, _ot_ in (("ot_on", "INTEGER DEFAULT 0"), ("ot_hours", "INTEGER DEFAULT 0"),
                       ("ot_month", "INTEGER DEFAULT 0"), ("ot_type", "TEXT DEFAULT 'fixed'"),
                       ("ot_value", "INTEGER DEFAULT 0")):
@@ -983,6 +989,7 @@ def get_salary_categories(db, only_active=False):
          "COALESCE(ot_on,0) AS ot_on,COALESCE(ot_hours,0) AS ot_hours,"
          "COALESCE(ot_month,0) AS ot_month,COALESCE(ot_type,'fixed') AS ot_type,"
          "COALESCE(ot_value,0) AS ot_value,"
+         "COALESCE(adv_shift_h,0) AS adv_shift_h,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -3941,11 +3948,21 @@ def branch_std_hours(db, branch_id):
 
 
 def adv_salary_info(db, user_id):
-    """{bid, branch, rate, cat, hours, salary, limit} — tamamen otomatik."""
+    """{bid, branch, rate, cat, hours, salary, limit} — tamamen otomatik.
+    Vardiya saati: kategorinin avans vardiyası (girilmişse) > şubenin vardiyası."""
     bid = user_branch_id(db, user_id)
     pi = barista_pay_info(db, user_id, bid)
     rate = int(pi.get("rate") or 0)
-    hours = branch_std_hours(db, bid)
+    hours = 0.0
+    if pi.get("cat_id"):
+        try:
+            _r = db.execute("SELECT adv_shift_h FROM salary_categories WHERE id=?",
+                            (int(pi["cat_id"]),)).fetchone()
+            hours = float((_r["adv_shift_h"] if _r else 0) or 0)
+        except Exception:
+            hours = 0.0
+    if hours <= 0:
+        hours = branch_std_hours(db, bid)
     salary = int(round(rate * hours * ADV_DAYS))
     br = get_branch(db, bid) or {}
     return {"bid": bid, "branch": br.get("name") or "", "rate": rate,
@@ -12695,6 +12712,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('adv_closed_days', ?)", (json.dumps(_days),))
             db.commit()
             log_action(db, "adv_closed_days", user.id, user.first_name, None, "", {"days": _days})
+
+        # ─── Kategori avans vardiyası (saat; 0 = şubeninki) ───
+        elif action == "salcat_adv_hours":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _cid = int(data.get("id") or 0)
+                _h = float(str(data.get("hours") or 0).replace(",", "."))
+            except Exception:
+                _cid, _h = 0, -1
+            if not _cid or not (_h == 0 or 1 <= _h <= 24):
+                await update.message.reply_text("❌ Часы смены: от 1 до 24 (0 — как у филиала).")
+                return
+            db.execute("UPDATE salary_categories SET adv_shift_h=? WHERE id=?", (_h or None, _cid))
+            db.commit()
+            log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
 
         # ─── Şube standart vardiya süresi (avans limiti için aylık maaş) ───
         elif action == "branch_std_hours":
