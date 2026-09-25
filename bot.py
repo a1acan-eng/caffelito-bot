@@ -30,11 +30,10 @@ if _RW_DOMAIN and (not WEBAPP_URL or "github.io" in WEBAPP_URL):
     WEBAPP_URL = f"https://{_RW_DOMAIN}/"
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "")  # Grup ID — /setgroup komutuyla alınır
 MINIAPP_SHORT_NAME = os.getenv("MINIAPP_SHORT_NAME", "app")  # BotFather'a verdiğin Short name
-# ─── Nero kademeli açılış (flags.json ile yönlendirme) ───
-# NERO_WEBAPP_URL artık SÜRÜM SEÇMEZ (bkz. nero_app_url): Nero hep /app.
-NERO_FLAGS_URL  = os.getenv("NERO_FLAGS_URL", "")
+# ─── Nero — tek uygulama ───
+# Eski uygulama ve flags.json yönlendirmesi kaldırıldı: herkes Nero'da (/app).
+# NERO_WEBAPP_URL yalnızca Nero'yu başka bir yerden servis etmek gerekirse.
 NERO_WEBAPP_URL = os.getenv("NERO_WEBAPP_URL", "")
-_nero_cache = {"cfg": None, "at": 0.0}
 ACCESS_CODE = os.getenv("ACCESS_CODE", "")  # Boşsa giriş kodu kapalı; doluysa /login KOD gerekiyor (eski sistem — fallback)
 # 🗂  DB yolu — Railway Volume için: env DB_PATH=/data/caffelito.db
 # Boş bırakılırsa current dir'de "caffelito.db" kullanılır (LOCAL test için).
@@ -3474,7 +3473,7 @@ async def send_reopen_button(update, context, db, user):
 async def refresh_webapp_keyboard(update, context, db, user, text="🔄 Приложение обновлено 👇"):
     """
     ARTIK NO-OP. Eskiden her aksiyondan sonra "🔄 ... 👇" mesajı + reply klavye
-    gönderiyordu (DM kalabalığı). Tazelik artık /api/ver oto-yenileme ile sağlanıyor;
+    gönderiyordu (DM kalabalığı). Tazelik uygulama açılışındaki ?v= ile sağlanıyor;
     kullanıcı sade DM istedi → hiçbir şey gönderme.
     """
     return
@@ -5632,37 +5631,6 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     return "&".join(parts)
 
 
-def _nero_flags():
-    """flags.json'u 60 sn cache ile getir.
-
-    ÖNCE YEREL DOSYA (nero/flags.json). Kendi sunucumuza HTTP atmak YASAK:
-    bot ile aiohttp aynı event loop'ta çalışıyor; urlopen bloklayıcı olduğu için
-    loop kilitlenir, sunucu kendi isteğine cevap veremez → her seferinde timeout
-    → config None → herkes eski uygulamada kalır. Diskten okumak anında ve güvenli.
-    Yerel dosya yoksa (ör. Gist'te barındırılıyorsa) URL'den çekilir."""
-    import time, urllib.request
-    now = time.time()
-    if _nero_cache["cfg"] is not None and now - _nero_cache["at"] <= 60:
-        return _nero_cache["cfg"]
-    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "flags.json")
-    try:
-        if os.path.isfile(local):
-            with open(local, "r", encoding="utf-8") as fh:
-                _nero_cache["cfg"] = json.load(fh)
-                _nero_cache["at"] = now
-                return _nero_cache["cfg"]
-    except Exception as e:
-        logger.warning(f"nero flags local read failed: {e}")
-    if NERO_FLAGS_URL:
-        try:
-            with urllib.request.urlopen(NERO_FLAGS_URL, timeout=3) as r:
-                _nero_cache["cfg"] = json.loads(r.read().decode("utf-8"))
-                _nero_cache["at"] = now
-        except Exception as e:
-            logger.warning(f"nero flags fetch failed: {e}")
-    return _nero_cache["cfg"]
-
-
 def nero_app_url():
     """Nero'nun SABİT adresi: `<domain>/app` → her zaman `nero/index.html`.
 
@@ -5680,63 +5648,13 @@ def nero_app_url():
     return (WEBAPP_URL or "").rstrip("/") + "/app"
 
 
-def nero_base_url(user_id, db=None):
-    """Bu kullanıcı Nero'yu mu görecek? Evet → Nero adresi, hayır/şüphe → None.
-    Öncelik: kill > deny.user > deny.branch > allow.user > allow.branch > yüzde > None.
-    HER hata yolu None döner (fail-closed) → eski uygulama."""
-    cfg = _nero_flags()
-    if not cfg:
-        logger.info("NERO kapali: flags.json okunamadi")
-        return None
-    try:
-        uid = int(user_id)
-        allow = cfg.get("allow") or {}
-        deny = cfg.get("deny") or {}
-        allow_u = [int(x) for x in (allow.get("users") or [])]
-        deny_u = [int(x) for x in (deny.get("users") or [])]
-
-        bid = None
-        if db is not None:
-            try:
-                bid = int(acting_branch_id(db, uid))
-            except Exception:
-                bid = None
-
-        # Tek karar noktası + TEK log satırı: hangi uid geldi, hangi listede var, sonuç ne.
-        if cfg.get("kill") is True:
-            res, why = None, "kill-switch"
-        elif uid in deny_u:
-            res, why = None, "deny.user"
-        elif bid is not None and bid in [int(x) for x in (deny.get("branches") or [])]:
-            res, why = None, "deny.branch"
-        elif uid in allow_u:
-            res, why = nero_app_url(), "allow.user"
-        elif bid is not None and bid in [int(x) for x in (allow.get("branches") or [])]:
-            res, why = nero_app_url(), "allow.branch"
-        else:
-            pct = int((cfg.get("rollout") or {}).get("percent") or 0)
-            res, why = None, "listede-yok"
-            if pct > 0:
-                # nero-flags.js ile AYNI FNV-1a bucket — pult ile bot aynı kararı vermeli
-                h = 2166136261
-                for ch in str(uid):
-                    h ^= ord(ch)
-                    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
-                if (h % 100) < min(100, pct):
-                    res, why = nero_app_url(), f"rollout-{pct}%"
-        logger.info(f"NERO uid={uid} bid={bid} allow={allow_u} sonuc={'NERO' if res else 'ESKI'} ({why})")
-        return res
-    except Exception as e:
-        logger.warning(f"nero_base_url failed: {e}")
-        return None
-
-
 def build_webapp_url(base_url, user_id, name, db):
     """Yol B: URL'e DEV hash GÖMÜLMEZ. State artık HTTP /api/state'ten geliyor.
     Hash'i gömmek owner'da (çok barista) Telegram buton-URL limitini aşıyordu
     ('Слишком много данных' hatası) ve URL kırpılınca aktif vardiya kayboluyordu.
-    Sadece cache-buster ?v= ekliyoruz ki her açılışta TAZE HTML yüklensin."""
-    base_url = nero_base_url(user_id, db) or base_url
+    Sadece cache-buster ?v= ekliyoruz ki her açılışta TAZE HTML yüklensin.
+    Tek uygulama Nero: `base_url` ne olursa olsun adres /app'tir."""
+    base_url = nero_app_url()
     ts = int(datetime.now(TZ).timestamp())
     sep = "&" if "?" in base_url else "?"
     url = base_url + f"{sep}v={ts}"
@@ -12375,7 +12293,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
 
         # ═══════════════════════════════════════════════════════════════════
-        # НЕРО (yeni uygulama) — eski index.html'de OLMAYAN 7 action.
+        # НЕРО — eski uygulamada OLMAYAN action'lar (eski uygulama silindi).
         # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
         # ═══════════════════════════════════════════════════════════════════
         elif action == "shift_grid_set":
@@ -13952,30 +13870,14 @@ def _nocache(resp):
 
 
 async def web_index(request):
-    """Kök adres → GÜNCEL NERO (`nero/index.html`).
-
-    Eskiden burası eski uygulamayı (kökteki index.html) sunuyordu ve Nero ayrı bir
-    sürüm klasöründeydi. Eski uygulamaya dönülmeyeceği için kök artık Nero'yu
-    sunar; eski uygulama `legacy.html` olarak duruyor (flags.json «kill» yolu ve
-    olası acil dönüş için silinmedi)."""
+    """Kök adres → Nero (`nero/index.html`). Eski uygulama silindi; tek uygulama Nero."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "index.html")
-    if not os.path.isfile(path):
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     try:
         with open(path, "r", encoding="utf-8") as f:
             html = f.read()
         return _nocache(_cors(web.Response(text=html, content_type="text/html")))
     except Exception as e:
-        return web.Response(text=f"index.html bulunamadı: {e}", status=500)
-
-
-async def web_legacy(request):
-    """Eski uygulama — SADECE acil dönüş yolu (flags.json «kill»/legacyUrl).
-    Kök adres artık Nero'yu sunduğu için eski uygulamanın kendi adresi bu."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-    if not os.path.isfile(path):
-        return _cors(web.Response(text="404: legacy index.html yok", status=404))
-    return _nocache(_cors(web.FileResponse(path)))
+        return web.Response(text=f"nero/index.html bulunamadı: {e}", status=500)
 
 
 async def web_image(request):
@@ -13993,22 +13895,8 @@ async def web_health(request):
     return web.Response(text="ok")
 
 
-def _app_build():
-    """index.html'deki APP_BUILD sayısını oku (tek kaynak — client kendi sürümüyle karşılaştırır)."""
-    try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-        with open(path, "r", encoding="utf-8") as f:
-            txt = f.read()
-        m = re.search(r"APP_BUILD\s*=\s*(\d+)", txt)
-        if m:
-            return m.group(1)
-    except Exception as e:
-        logger.warning(f"_app_build failed: {e}")
-    return "0"
-
-
 async def web_nero(request):
-    """Nero sürümlerini /nero/<...> altından servis eder (flags.json dahil).
+    """/nero/<...> altındaki dosyaları servis eder (eski menü linkleri için).
     Dizin dışına çıkma engelli — /nero/../bot.py ile kaynak indirilemez."""
     rel = request.match_info.get("path", "")
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero")
@@ -14034,11 +13922,6 @@ async def web_app_current(request):
     if not os.path.isfile(full):
         return _cors(web.Response(text="404: nero/index.html yok", status=404))
     return _nocache(_cors(web.FileResponse(full)))
-
-
-async def web_ver(request):
-    """Güncel build sürümünü döndür — client cache'li eskiyse kendini yeniler."""
-    return _nocache(_cors(web.Response(text=_app_build(), content_type="text/plain")))
 
 
 async def web_options(request):
@@ -14545,12 +14428,10 @@ async def start_web_server(app):
     web_app["tg_app"] = app
     web_app.add_routes([
         web.get("/", web_index),
-        web.get("/legacy", web_legacy),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
         web.get("/app", web_app_current),
         web.get("/nero/{path:.+}", web_nero),
-        web.get("/api/ver", web_ver),
         web.get("/{fname:.+\\.jpg}", web_image),
         web.get("/{fname:.+\\.png}", web_image),
         web.post("/api/state", api_state),
