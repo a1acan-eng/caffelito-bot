@@ -3954,6 +3954,75 @@ def adv_closed_days(db):
         return []
 
 
+def adv_live(db):
+    """Sistem çalışanlara açık mı? Owner «Запустить» diyene kadar KAPALI:
+    çalışan «скоро» görür, kimse avans veremez/alamaz (owner yalnız önizler)."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='adv_live'").fetchone()
+        return bool(r and str(r["val"]) == "1")
+    except Exception:
+        return False
+
+
+ADV_SOON_MSG = "Новая система авансов скоро заработает. Пока аванс не выдаётся."
+
+
+def adv_gate(db):
+    """Bugün avans işlemi (talep, onay, doğrudan veriş) yapılabilir mi? hata | None.
+    Kapalı günler owner dahil HERKES için geçerli (owner 2026-09-26)."""
+    if not adv_live(db):
+        return ADV_SOON_MSG
+    _cd = adv_closed_days(db)
+    if _adv_today().day in _cd:
+        return f"Сегодня аванс не оформляется. Закрытые дни месяца: {adv_closed_text(_cd)}."
+    return None
+
+
+def adv_inst_com(adv_row, inst_rows):
+    """Her taksitteki komisyon payı (orantılı; kuruş farkı son taksitte).
+    Döner: {inst_id: pay}."""
+    com, total = int(adv_row["commission"] or 0), int(adv_row["total"] or 0)
+    out, acc = {}, 0
+    rows = sorted(inst_rows, key=lambda r: r["n"])
+    for k, r in enumerate(rows):
+        if k == len(rows) - 1:
+            part = com - acc
+        else:
+            part = int(com * int(r["amount"] or 0) / total + 0.5) if total else 0
+        acc += part
+        out[r["id"]] = part
+    return out
+
+
+def adv_owner_view(db, period=None):
+    """Owner'ın komisyon defteri (Штрафы sekmesinde, cezalardan AYRI).
+    Komisyon, taksit maaştan kesildiği gün «получено» sayılır; maaş bakiyesine
+    EKLENMEZ (cezalardaki owner kararıyla aynı: ayrı defter)."""
+    period = period or current_period()
+    today = _adv_today().isoformat()
+    got_month, got_total, upcoming, debt, rows = 0, 0, 0, 0, []
+    for a in db.execute("SELECT * FROM advances WHERE status IN ('active','done')").fetchall():
+        inst = db.execute("SELECT * FROM advance_inst WHERE advance_id=?", (a["id"],)).fetchall()
+        parts = adv_inst_com(a, inst)
+        nm = display_name_for(db, a["user_id"], fallback="?")
+        for i in inst:
+            c = parts.get(i["id"], 0)
+            if i["due_date"] <= today:
+                got_total += c
+                if i["period"] == period:
+                    got_month += c
+                    rows.append({"n": nm, "part": i["n"], "at": i["due_date"], "com": c,
+                                 "inst": int(i["amount"] or 0)})
+            else:
+                upcoming += c
+                debt += int(i["amount"] or 0)
+    rows.sort(key=lambda r: r["at"], reverse=True)
+    pend = db.execute("SELECT COUNT(*) AS c FROM advances WHERE status='pending'").fetchone()["c"] or 0
+    return {"period": period, "got_month": got_month, "got_total": got_total,
+            "com_upcoming": upcoming, "debt": debt, "pend": int(pend), "rows": rows[:40],
+            "live": 1 if adv_live(db) else 0, "closed_days": adv_closed_days(db)}
+
+
 def adv_closed_text(days):
     """[25,26,27,28,29,30,5] → «5, 25–30»."""
     out, i = [], 0
@@ -4022,10 +4091,9 @@ def adv_write_schedule(db, adv_row, from_date=None):
 def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
     """Avans kaydı. approve=True → owner doğrudan verdi (active + takvim).
     Döner: (hata | None, advance_id)."""
-    if not approve:
-        _cd = adv_closed_days(db)
-        if _adv_today().day in _cd:
-            return (f"Сегодня аванс не оформляется. Закрытые дни месяца: {adv_closed_text(_cd)}.", None)
+    _g = adv_gate(db)
+    if _g:
+        return _g, None
     err, info, q = adv_check(db, user_id, amount)
     if err:
         return err, None
@@ -4057,6 +4125,10 @@ def adv_decide(db, adv_id, approve, actor_id, actor_name, note=""):
         return "Этот запрос уже рассмотрен.", row
     now = datetime.now(TZ).isoformat()
     if approve:
+        # Kapalı günde / sistem kapalıyken onay da YOK (owner 2026-09-26).
+        _g = adv_gate(db)
+        if _g:
+            return _g, row
         # Talepten beri ay değiştiyse bu ayın limitine göre yeniden hesaplanır.
         err, info, q = adv_check(db, row["user_id"], row["amount"], exclude_id=adv_id)
         if err:
@@ -4160,6 +4232,7 @@ def adv_view(db, user_id, full=True):
         "left": max(0, info["limit"] - use["used"]),
         "next_dates": [d.isoformat() for d in nxt],
         "closed_days": adv_closed_days(db),
+        "live": 1 if adv_live(db) else 0,
         "closed_today": 1 if today.day in adv_closed_days(db) else 0,
     })
     rows = db.execute("SELECT * FROM advances WHERE user_id=? ORDER BY id DESC LIMIT 60",
@@ -4168,15 +4241,14 @@ def adv_view(db, user_id, full=True):
     for a in rows:
         inst = db.execute("SELECT * FROM advance_inst WHERE advance_id=? ORDER BY n",
                           (a["id"],)).fetchall()
+        _parts = adv_inst_com(a, inst)
         paid = [i for i in inst if i["due_date"] <= today.isoformat()]
         left_sum = sum(int(i["amount"] or 0) for i in inst if i["due_date"] > today.isoformat())
         if a["status"] in ("active", "done"):
             debt += left_sum
             repay_total += int(a["total"] or 0)
-            # Komisyon taksitlerle orantılı ödenir.
-            if a["total"]:
-                com_paid += int(round(int(a["commission"] or 0) *
-                                      sum(int(i["amount"] or 0) for i in paid) / int(a["total"])))
+            # Komisyon taksitlerle orantılı ödenir (owner defteriyle aynı pay).
+            com_paid += sum(_parts.get(i["id"], 0) for i in paid)
             for i in inst:
                 if i["due_date"] > today.isoformat():
                     upcoming.append({"due": i["due_date"], "amount": int(i["amount"] or 0)})
@@ -4188,6 +4260,7 @@ def adv_view(db, user_id, full=True):
             "paid_n": len(paid), "left_n": len(inst) - len(paid) if inst else ADV_INSTALLMENTS,
             "left_sum": left_sum if inst else int(a["total"] or 0),
             "inst": [{"n": i["n"], "due": i["due_date"], "amount": int(i["amount"] or 0),
+                      "com": _parts.get(i["id"], 0),
                       "paid": 1 if i["due_date"] <= today.isoformat() else 0} for i in inst],
         })
     # Aynı maaş gününe düşen parçalar tek satır (birden çok avans varsa).
@@ -5129,7 +5202,12 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         logger.warning(f"adv_view({user_id}): {e}")
         adv_self = None
     adv_pend = []
+    adv_own = None
     if role == "owner":
+        try:
+            adv_own = adv_owner_view(db)
+        except Exception as e:
+            logger.warning(f"adv_owner_view: {e}")
         try:
             for r in db.execute("SELECT * FROM advances WHERE status='pending' ORDER BY id").fetchall():
                 _q = adv_quote(r["amount"], r["adv_limit"])
@@ -5530,6 +5608,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"adv={quote(json.dumps(adv_self, ensure_ascii=False) if adv_self else '')}",
         f"adv_pend={quote(json.dumps(adv_pend, ensure_ascii=False))}",
+        f"adv_own={quote(json.dumps(adv_own, ensure_ascii=False) if adv_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"kasa_index={quote(json.dumps(kasa_index))}",
@@ -12529,6 +12608,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
                 f"К возврату {fmt_sum(row['total'])} сум · 3 части из зарплаты.",
                 parse_mode="Markdown")
+
+        # ─── Avans sistemini çalışanlara aç / kapat (owner) ───
+        elif action == "adv_live":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _on = 1 if str(data.get("on") or "0") in ("1", "true", "True") else 0
+            db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('adv_live', ?)", (str(_on),))
+            db.commit()
+            log_action(db, "adv_live", user.id, user.first_name, None, "", {"on": _on})
 
         # ─── Avans: owner'ın kapattığı ay günleri (ör. 25–30) ───
         elif action == "adv_closed_days":
