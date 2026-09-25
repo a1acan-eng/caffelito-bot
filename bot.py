@@ -461,6 +461,35 @@ def get_db():
         decision_note TEXT,
         created_at TEXT,
         repaid INTEGER DEFAULT 0)""")
+    # ─── AVANS SİSTEMİ (2026-09) — limitli, komisyonlu, 3 taksitli ───
+    # Eski `loans` tablosu geçmiş kayıtlar için duruyor; yeni avanslar burada.
+    # Hesap değerleri (maaş, limit, komisyon) KAYIT ANINDA dondurulur: ставка
+    # sonradan değişse eski avansın borcu değişmez.
+    db.execute("""CREATE TABLE IF NOT EXISTS advances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        month TEXT,
+        amount INTEGER,
+        commission_pct REAL,
+        commission INTEGER,
+        total INTEGER,
+        salary INTEGER,
+        adv_limit INTEGER,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        created_by INTEGER,
+        decided_by INTEGER,
+        decided_by_name TEXT,
+        decided_at TEXT,
+        decision_note TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS advance_inst (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        advance_id INTEGER,
+        user_id INTEGER,
+        n INTEGER,
+        due_date TEXT,
+        period TEXT,
+        amount INTEGER)""")
     # Resmi sınav daveti (owner → barista)
     db.execute("""CREATE TABLE IF NOT EXISTS rt_exam_invites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -612,7 +641,8 @@ def get_db():
         created_at TEXT)""")
     # Şube-bazlı çalışma saatleri (kapalı pencere): open_hour, close_hour, unpaid_win
     for _bc2, _bd2 in (("open_hour", "INTEGER"), ("close_hour", "INTEGER"), ("unpaid_win", "INTEGER"),
-                       ("product_pct", "INTEGER")):  # ürün bonusu yüzdesi (toplam выручка × %) — şube başı
+                       ("product_pct", "INTEGER"),
+                       ("std_shift_h", "REAL")):  # standart vardiya süresi (saat) — avans limiti için aylık maaş  # ürün bonusu yüzdesi (toplam выручка × %) — şube başı
         try:
             db.execute(f"ALTER TABLE branches ADD COLUMN {_bc2} {_bd2}")
         except sqlite3.OperationalError:
@@ -851,7 +881,7 @@ def get_branches(db, only_active=True):
     """Şubeler listesi (saatlerle + işgücü ayarı)."""
     q = ("SELECT id, name, group_chat_id, sort_order, active, open_hour, close_hour, unpaid_win, "
          "COALESCE(product_pct,5) AS product_pct, "
-         "COALESCE(trainee_enabled,0) AS trainee_enabled FROM branches")
+         "COALESCE(trainee_enabled,0) AS trainee_enabled, std_shift_h FROM branches")
     if only_active:
         q += " WHERE COALESCE(active,1)=1"
     q += " ORDER BY sort_order, id"
@@ -3706,7 +3736,13 @@ def calc_summary(db, user_id, period=None):
         ot_month_h, ot_month_bonus = 0.0, 0
 
     gross = hourly + tips_total + ot_bonus + ot_month_bonus + prod_bonus
-    net = gross - fine_total - paid_total + adj_total
+    # Avans taksitleri: dönemi başlamış olanlar maaştan düşer (bkz. adv_deduction).
+    try:
+        adv_ded, _adv_rows = adv_deduction(db, user_id, period)
+    except Exception as e:
+        logger.warning(f"adv_deduction {user_id} {period}: {e}")
+        adv_ded, _adv_rows = 0, []
+    net = gross - fine_total - paid_total + adj_total - adv_ded
 
     return {
         "period": period,
@@ -3726,6 +3762,8 @@ def calc_summary(db, user_id, period=None):
         "tips_list": [dict(t) for t in tips],
         "adjustments": adj_total,
         "adjustments_list": [dict(a) for a in _adj_rows],
+        "adv_ded": adv_ded,
+        "adv_ded_list": [dict(r) for r in _adv_rows],
         "gross": gross,
         "net": net,
         "shifts_count": len(shifts),
@@ -3803,6 +3841,336 @@ def carry_debt(db, user_id, period=None):
         except Exception:
             pass
     return total
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  AVANS SİSTEMİ (owner 2026-09-25)
+# ═══════════════════════════════════════════════════════════════════════════
+# Kurallar (owner'ın yazdığı şartname — hiçbiri elle değiştirilemez):
+#   · Aylık maaş   = saatlik ücret × şubenin standart vardiya saati × 30 gün
+#   · Aylık limit  = aylık maaşın %30'u — ay içinde istenildiği gibi bölünür
+#   · Ayda en fazla 3 avans; limit ya da hak dolunca yeni avans YOK
+#   · Komisyon %   = (avans / aylık limit) × %30   (limitin tamamı → %30)
+#   · Geri ödeme   = avans + komisyon, HER ZAMAN 3 eşit taksit (tek sefer yok)
+#   · Taksitler 10 günlük maaş dönemlerinde (1–10, 11–20, 21–ay sonu) maaştan
+#     düşer: avansın alındığı dönemden SONRAKİ üç dönemin son günü.
+# Talep «pending» başlar ve limitten yer AYIRIR (aynı hak iki kez istenemez);
+# owner nakdi verince «active» olur ve taksit takvimi O GÜNE göre yazılır.
+ADV_LIMIT_PCT = 30      # aylık maaşın yüzdesi
+ADV_MAX_COM_PCT = 30    # limitin tamamı alınırsa komisyon yüzdesi
+ADV_MAX_COUNT = 3       # ayda en fazla avans sayısı
+ADV_INSTALLMENTS = 3    # her avans kaç taksit
+ADV_DAYS = 30           # aylık maaş hesabı gün sayısı
+ADV_DEFAULT_SHIFT_H = 9  # şubede ayar ve şablon yoksa
+ADV_LIVE = ("pending", "active", "done")   # limitten düşen durumlar
+
+
+def branch_std_hours(db, branch_id):
+    """Şubenin standart vardiya süresi (saat).
+    1) Owner'ın Филиалы'de girdiği değer → 2) şubenin vardiya şablonlarında en
+    sık görülen süre → 3) ADV_DEFAULT_SHIFT_H."""
+    try:
+        r = db.execute("SELECT std_shift_h FROM branches WHERE id=?",
+                       (int(branch_id or DEFAULT_BRANCH_ID),)).fetchone()
+        if r and r["std_shift_h"] and float(r["std_shift_h"]) > 0:
+            return float(r["std_shift_h"])
+    except Exception:
+        pass
+    try:
+        lens = {}
+        for t in grid_templates(db).values():
+            if int(t.get("branch_id") or 0) != int(branch_id or 0):
+                continue
+            a, b = _mins(t.get("start")), _mins(t.get("end"))
+            if a is None or b is None:
+                continue
+            d = (b - a) % (24 * 60)
+            if d > 0:
+                lens[d] = lens.get(d, 0) + 1
+        if lens:
+            best = max(lens.items(), key=lambda kv: (kv[1], kv[0]))[0]
+            return round(best / 60.0, 2)
+    except Exception:
+        pass
+    return float(ADV_DEFAULT_SHIFT_H)
+
+
+def adv_salary_info(db, user_id):
+    """{bid, branch, rate, cat, hours, salary, limit} — tamamen otomatik."""
+    bid = user_branch_id(db, user_id)
+    pi = barista_pay_info(db, user_id, bid)
+    rate = int(pi.get("rate") or 0)
+    hours = branch_std_hours(db, bid)
+    salary = int(round(rate * hours * ADV_DAYS))
+    br = get_branch(db, bid) or {}
+    return {"bid": bid, "branch": br.get("name") or "", "rate": rate,
+            "cat": pi.get("cat_name") or "", "hours": hours, "days": ADV_DAYS,
+            "salary": salary, "limit": int(round(salary * ADV_LIMIT_PCT / 100.0))}
+
+
+def adv_quote(amount, limit):
+    """Tek avansın hesabı. Komisyon % = avans / limit × %30."""
+    amount = int(amount or 0)
+    limit = int(limit or 0)
+    pct = min(float(ADV_MAX_COM_PCT), (amount / limit * ADV_MAX_COM_PCT)) if limit > 0 else 0.0
+    pct = max(0.0, pct)
+    # Yarım yukarı yuvarlanır (Nero'daki Math.round ile aynı sonuç).
+    com = int(amount * pct / 100.0 + 0.5)   # tam oranla; ekranda % yuvarlanır
+    pct = round(pct, 2)
+    total = amount + com
+    base = total // ADV_INSTALLMENTS
+    inst = [base] * ADV_INSTALLMENTS
+    inst[-1] = total - base * (ADV_INSTALLMENTS - 1)   # kuruş farkı son taksitte
+    return {"amount": amount, "pct": pct, "commission": com, "total": total, "inst": inst}
+
+
+def adv_decade(d):
+    """d tarihinin 10 günlük maaş dönemi → (başlangıç, bitiş) date."""
+    import calendar
+    if d.day <= 10:
+        return d.replace(day=1), d.replace(day=10)
+    if d.day <= 20:
+        return d.replace(day=11), d.replace(day=20)
+    last = calendar.monthrange(d.year, d.month)[1]
+    return d.replace(day=21), d.replace(day=last)
+
+
+def adv_schedule(from_date, n=ADV_INSTALLMENTS):
+    """Alındığı dönemden SONRAKİ n dönemin son günleri (maaş günleri)."""
+    out = []
+    _, end = adv_decade(from_date)
+    for _ in range(n):
+        _, end = adv_decade(end + timedelta(days=1))
+        out.append(end)
+    return out
+
+
+def _adv_today():
+    return datetime.now(TZ).date()
+
+
+def adv_month_usage(db, user_id, month=None, exclude_id=None):
+    """Bu ay limitten düşen avanslar: {used, count}."""
+    month = month or current_period()
+    q = ("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM advances "
+         f"WHERE user_id=? AND month=? AND status IN ({','.join('?' * len(ADV_LIVE))})")
+    args = [user_id, month, *ADV_LIVE]
+    if exclude_id:
+        q += " AND id<>?"
+        args.append(int(exclude_id))
+    r = db.execute(q, args).fetchone()
+    return {"used": int(r["s"] or 0), "count": int(r["c"] or 0)}
+
+
+def adv_check(db, user_id, amount, exclude_id=None):
+    """Yeni avans verilebilir mi? (hata_metni | None, info, quote).
+    Bütün güvenlik kuralları TEK yerde: talep, onay ve doğrudan veriş aynı kontrolden geçer."""
+    info = adv_salary_info(db, user_id)
+    use = adv_month_usage(db, user_id, exclude_id=exclude_id)
+    left = max(0, info["limit"] - use["used"])
+    amount = int(amount or 0)
+    if info["limit"] <= 0:
+        return ("Лимит не рассчитан: не задана ставка или смена филиала.", info, None)
+    if left <= 0:
+        return ("Месячный лимит аванса исчерпан.", info, None)
+    if use["count"] >= ADV_MAX_COUNT:
+        return (f"Использованы все {ADV_MAX_COUNT} аванса этого месяца.", info, None)
+    if amount <= 0:
+        return ("Укажите сумму.", info, None)
+    if amount > left:
+        return (f"Доступно только {fmt_sum(left)} сум.", info, None)
+    return (None, info, adv_quote(amount, info["limit"]))
+
+
+def adv_write_schedule(db, adv_row, from_date=None):
+    """Onaylanan avansın 3 taksitini yaz (varsa önce siler — tek sefer)."""
+    # Tutarlar kayıttaki (dondurulmuş) toplamdan bölünür.
+    total = int(adv_row["total"] or 0)
+    base = total // ADV_INSTALLMENTS
+    q_inst = [base] * ADV_INSTALLMENTS
+    q_inst[-1] = total - base * (ADV_INSTALLMENTS - 1)
+    db.execute("DELETE FROM advance_inst WHERE advance_id=?", (adv_row["id"],))
+    for i, due in enumerate(adv_schedule(from_date or _adv_today()), start=1):
+        db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) "
+                   "VALUES (?,?,?,?,?,?)",
+                   (adv_row["id"], adv_row["user_id"], i, due.isoformat(),
+                    due.strftime("%Y-%m"), q_inst[i - 1]))
+
+
+def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
+    """Avans kaydı. approve=True → owner doğrudan verdi (active + takvim).
+    Döner: (hata | None, advance_id)."""
+    err, info, q = adv_check(db, user_id, amount)
+    if err:
+        return err, None
+    if not approve and db.execute(
+            "SELECT 1 FROM advances WHERE user_id=? AND status='pending'", (user_id,)).fetchone():
+        return "Уже есть запрос в ожидании.", None
+    now = datetime.now(TZ).isoformat()
+    cur = db.execute(
+        "INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,salary,adv_limit,"
+        "status,created_at,created_by,decided_by,decided_by_name,decided_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (user_id, current_period(), q["amount"], q["pct"], q["commission"], q["total"],
+         info["salary"], info["limit"], "active" if approve else "pending", now, actor_id,
+         actor_id if approve else None, actor_name if approve else None, now if approve else None))
+    aid = cur.lastrowid
+    if approve:
+        adv_write_schedule(db, db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone())
+    db.commit()
+    return None, aid
+
+
+def adv_decide(db, adv_id, approve, actor_id, actor_name, note=""):
+    """Owner kararı. Onayda kurallar YENİDEN denetlenir (bu kayıt hariç).
+    Döner: (hata | None, satır)."""
+    row = db.execute("SELECT * FROM advances WHERE id=?", (adv_id,)).fetchone()
+    if not row:
+        return "Запрос не найден.", None
+    if row["status"] != "pending":
+        return "Этот запрос уже рассмотрен.", row
+    now = datetime.now(TZ).isoformat()
+    if approve:
+        # Talepten beri ay değiştiyse bu ayın limitine göre yeniden hesaplanır.
+        err, info, q = adv_check(db, row["user_id"], row["amount"], exclude_id=adv_id)
+        if err:
+            return err, row
+        db.execute(
+            "UPDATE advances SET status='active', month=?, commission_pct=?, commission=?, total=?, "
+            "salary=?, adv_limit=?, decided_by=?, decided_by_name=?, decided_at=?, decision_note=? "
+            "WHERE id=?",
+            (current_period(), q["pct"], q["commission"], q["total"], info["salary"], info["limit"],
+             actor_id, actor_name, now, note or None, adv_id))
+        adv_write_schedule(db, db.execute("SELECT * FROM advances WHERE id=?", (adv_id,)).fetchone())
+    else:
+        db.execute("UPDATE advances SET status='rejected', decided_by=?, decided_by_name=?, "
+                   "decided_at=?, decision_note=? WHERE id=?",
+                   (actor_id, actor_name, now, note or None, adv_id))
+    db.commit()
+    return None, db.execute("SELECT * FROM advances WHERE id=?", (adv_id,)).fetchone()
+
+
+def adv_deduction(db, user_id, period):
+    """Bu aya düşen taksitler: dönemi BAŞLAMIŞ olanlar maaştan düşer.
+    (Ekim'in 3 taksiti 1 Ekim'de birden düşmesin — her biri kendi 10 gününde.)
+    Döner: (toplam, [satırlar])."""
+    today = _adv_today()
+    rows = db.execute(
+        "SELECT i.* FROM advance_inst i JOIN advances a ON a.id=i.advance_id "
+        "WHERE i.user_id=? AND i.period=? AND a.status IN ('active','done') ORDER BY i.due_date",
+        (user_id, period)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            due = datetime.strptime(r["due_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if adv_decade(due)[0] <= today:
+            out.append(r)
+    return sum(int(r["amount"] or 0) for r in out), out
+
+
+def adv_refresh_status(db, user_id):
+    """Bütün taksitleri geçmiş avansları «done» yap."""
+    today = _adv_today().isoformat()
+    for a in db.execute("SELECT id FROM advances WHERE user_id=? AND status='active'", (user_id,)).fetchall():
+        r = db.execute("SELECT COUNT(*) AS c, SUM(CASE WHEN due_date<=? THEN 1 ELSE 0 END) AS p "
+                       "FROM advance_inst WHERE advance_id=?", (today, a["id"])).fetchone()
+        if r["c"] and r["p"] == r["c"]:
+            db.execute("UPDATE advances SET status='done' WHERE id=?", (a["id"],))
+    db.commit()
+
+
+def adv_decade_pay(db, user_id, today=None):
+    """İçinde bulunulan 10 günlük dönemin maaş dökümü:
+    brüt hak ediş − avans taksiti − cezalar = net."""
+    today = today or _adv_today()
+    a, b = adv_decade(today)
+    lo, hi = a.isoformat(), (b + timedelta(days=1)).isoformat()
+    gross = 0
+    try:
+        r = db.execute(
+            "SELECT COALESCE(SUM(hourly_pay),0)+COALESCE(SUM(overtime),0) AS g FROM shifts "
+            "WHERE user_id=? AND end_time IS NOT NULL AND COALESCE(start_time,created_at)>=? "
+            "AND COALESCE(start_time,created_at)<?", (user_id, lo, hi)).fetchone()
+        gross += int(r["g"] or 0)
+        r = db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM tips WHERE user_id=? "
+                       "AND created_at>=? AND created_at<?", (user_id, lo, hi)).fetchone()
+        gross += int(r["t"] or 0)
+        fines = int(db.execute("SELECT COALESCE(SUM(amount),0) AS f FROM fines WHERE user_id=? "
+                               "AND created_at>=? AND created_at<?", (user_id, lo, hi)).fetchone()["f"] or 0)
+    except Exception:
+        fines = 0
+    inst = db.execute(
+        "SELECT COALESCE(SUM(i.amount),0) AS s FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+        "WHERE i.user_id=? AND i.due_date=? AND x.status IN ('active','done')",
+        (user_id, b.isoformat())).fetchone()["s"] or 0
+    return {"from": a.isoformat(), "to": b.isoformat(), "gross": gross,
+            "adv": int(inst), "fines": fines, "net": gross - int(inst) - fines}
+
+
+def _adv_card(db, user_id):
+    """Yönetici kartı için kısa avans özeti (hata kartı bozmasın)."""
+    try:
+        v = adv_view(db, user_id, full=True)
+        v.pop("decade", None)
+        return v
+    except Exception as e:
+        logger.warning(f"_adv_card({user_id}): {e}")
+        return None
+
+
+def adv_view(db, user_id, full=True):
+    """Nero için tam avans görünümü (çalışan ekranı ve yönetici kartı aynı veriyi kullanır)."""
+    adv_refresh_status(db, user_id)
+    info = adv_salary_info(db, user_id)
+    use = adv_month_usage(db, user_id)
+    today = _adv_today()
+    nxt = adv_schedule(today)
+    out = dict(info)
+    out.update({
+        "limit_pct": ADV_LIMIT_PCT, "com_max": ADV_MAX_COM_PCT, "max_count": ADV_MAX_COUNT,
+        "used": use["used"], "count": use["count"],
+        "left": max(0, info["limit"] - use["used"]),
+        "next_dates": [d.isoformat() for d in nxt],
+    })
+    rows = db.execute("SELECT * FROM advances WHERE user_id=? ORDER BY id DESC LIMIT 60",
+                      (user_id,)).fetchall()
+    lst, debt, com_paid, repay_total, upcoming = [], 0, 0, 0, []
+    for a in rows:
+        inst = db.execute("SELECT * FROM advance_inst WHERE advance_id=? ORDER BY n",
+                          (a["id"],)).fetchall()
+        paid = [i for i in inst if i["due_date"] <= today.isoformat()]
+        left_sum = sum(int(i["amount"] or 0) for i in inst if i["due_date"] > today.isoformat())
+        if a["status"] in ("active", "done"):
+            debt += left_sum
+            repay_total += int(a["total"] or 0)
+            # Komisyon taksitlerle orantılı ödenir.
+            if a["total"]:
+                com_paid += int(round(int(a["commission"] or 0) *
+                                      sum(int(i["amount"] or 0) for i in paid) / int(a["total"])))
+            for i in inst:
+                if i["due_date"] > today.isoformat():
+                    upcoming.append({"due": i["due_date"], "amount": int(i["amount"] or 0)})
+        lst.append({
+            "id": a["id"], "at": a["created_at"], "month": a["month"],
+            "amount": int(a["amount"] or 0), "pct": a["commission_pct"] or 0,
+            "com": int(a["commission"] or 0), "total": int(a["total"] or 0),
+            "status": a["status"], "note": a["decision_note"] or "",
+            "paid_n": len(paid), "left_n": len(inst) - len(paid) if inst else ADV_INSTALLMENTS,
+            "left_sum": left_sum if inst else int(a["total"] or 0),
+            "inst": [{"n": i["n"], "due": i["due_date"], "amount": int(i["amount"] or 0),
+                      "paid": 1 if i["due_date"] <= today.isoformat() else 0} for i in inst],
+        })
+    # Aynı maaş gününe düşen parçalar tek satır (birden çok avans varsa).
+    _by = {}
+    for u in upcoming:
+        _by[u["due"]] = _by.get(u["due"], 0) + u["amount"]
+    upcoming = [{"due": d, "amount": _by[d]} for d in sorted(_by)]
+    out.update({"debt": debt, "com_paid": com_paid, "repay_total": repay_total,
+                "upcoming": upcoming[:9], "list": lst if full else lst[:5],
+                "decade": adv_decade_pay(db, user_id, today)})
+    return out
 
 
 # ─── TOPLANAN CEZA OWNER'IN BAKİYESİNE GEÇER ──────────────────────────────
@@ -4583,6 +4951,18 @@ def build_payroll_pdf(db, user_id, period, name=""):
                 ("+" if _v >= 0 else "−") + _pdf_fmt(abs(_v)), 9.5)
         row("Итого корректировки", _pdf_fmt(su.get("adjustments")), 10, "B", gap=7)
 
+    # ── Avans parçaları (bu ay maaştan düşen taksitler) ──────────────────
+    _advl = su.get("adv_ded_list") or []
+    if _advl:
+        rule()
+        head("АВАНС · ЧАСТИ ИЗ ЗАРПЛАТЫ")
+        for _i in _advl:
+            _dd = str(_i.get("due_date") or "")
+            _d = (_dd[8:10] + "." + _dd[5:7]) if len(_dd) >= 10 else ""
+            row(_d + "   Аванс #" + str(_i.get("advance_id") or "") + " · часть " + str(_i.get("n") or ""),
+                "−" + _pdf_fmt(_i.get("amount")), 9.5)
+        row("Итого по авансам", "−" + _pdf_fmt(su.get("adv_ded")), 10, "B", gap=7)
+
     # ── Yapilan odemeler ────────────────────────────────────────────────
     try:
         _pays = db.execute(
@@ -4712,7 +5092,25 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "shifts": s["shifts"][-5:],
         "fines_list": s["fines_list"][-5:],
         "active": s["active"],
+        "adv_ded": s.get("adv_ded", 0),
     }
+    # Yeni avans sistemi — herkesin kendi görünümü; owner'a bekleyen talepler.
+    try:
+        adv_self = adv_view(db, user_id)
+    except Exception as e:
+        logger.warning(f"adv_view({user_id}): {e}")
+        adv_self = None
+    adv_pend = []
+    if role == "owner":
+        try:
+            for r in db.execute("SELECT * FROM advances WHERE status='pending' ORDER BY id").fetchall():
+                _q = adv_quote(r["amount"], r["adv_limit"])
+                adv_pend.append({"id": r["id"], "uid": r["user_id"],
+                                 "name": display_name_for(db, r["user_id"], fallback="?"),
+                                 "amount": r["amount"], "pct": _q["pct"], "com": _q["commission"],
+                                 "total": _q["total"], "at": r["created_at"]})
+        except Exception as e:
+            logger.warning(f"adv_pend: {e}")
     # Avans talepleri — barista kendisininkiler, owner pending olanların hepsi
     if role == "owner":
         loan_rows = db.execute(
@@ -5001,7 +5399,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
                              "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
                              "pct": int(b["product_pct"] if b["product_pct"] is not None else 5),
-                             "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0)}
+                             "trainee": int((b["trainee_enabled"] if "trainee_enabled" in b.keys() else 0) or 0),
+                             # Avans limiti için standart vardiya (girilmemişse otomatik tahmin)
+                             "stdh": branch_std_hours(db, b["id"]),
+                             "stdh_set": 1 if (b.get("std_shift_h") or 0) else 0}
                             for b in get_branches(db, only_active=False)]
         else:
             # BARISTA'YA DA ÇALIŞMA SAATLERİ GİDER. Eskiden sadece {id, name}
@@ -5099,6 +5500,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
         f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
+        f"adv={quote(json.dumps(adv_self, ensure_ascii=False) if adv_self else '')}",
+        f"adv_pend={quote(json.dumps(adv_pend, ensure_ascii=False))}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"kasa_index={quote(json.dumps(kasa_index))}",
@@ -5417,6 +5820,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "paid": bs["paid"], "net": bs["net"],
                 "tips": bs["tips"],
                 "adj": bs["adjustments"],
+                # Avans: bu ay maaştan düşen taksitler + yönetici kartı özeti
+                "advd": bs.get("adv_ded", 0),
+                "adv": _adv_card(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
@@ -6208,6 +6614,8 @@ async def cmd_maosh(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 Брутто: *{fmt_sum(s['gross'])}* сум\n"
             f"⚠️ Штрафы ({s['fines_count']}): *-{fmt_sum(s['fines'])}* сум\n")
+    if s.get('adv_ded'):
+        text += f"💸 Аванс (части): *-{fmt_sum(s['adv_ded'])}* сум\n"
     if s['paid'] > 0:
         text += f"✅ Уже выплачено: *-{fmt_sum(s['paid'])}* сум\n"
     text += (f"━━━━━━━━━━━━━━━━━━\n"
@@ -6736,6 +7144,11 @@ async def _decide_loan(context, db, actor, loan_id, decision, note, reply_fn):
         return
     if decision not in ("approve", "reject"):
         return
+    if decision == "approve":
+        # Eski talepler limit kontrolünden geçmez → yalnız reddedilebilir.
+        await reply_fn("⚠️ Это запрос из старой системы. Отклоните его — сотрудник оформит "
+                       "аванс заново в Nero (с лимитом и расчётом).")
+        return
     new_status = "approved" if decision == "approve" else "rejected"
     now = datetime.now(TZ).isoformat()
     db.execute(
@@ -6778,6 +7191,65 @@ async def _decide_loan(context, db, actor, loan_id, decision, note, reply_fn):
         f"\n\nКому: {md_safe(shown)}\nСумма: {fmt_sum(row['amount'])} сум")
 
 
+def _adv_date(iso):
+    try:
+        return datetime.strptime(str(iso)[:10], "%Y-%m-%d").strftime("%d.%m")
+    except Exception:
+        return str(iso or "")
+
+
+def adv_msg_active(db, row):
+    inst = db.execute("SELECT * FROM advance_inst WHERE advance_id=? ORDER BY n", (row["id"],)).fetchall()
+    lines = "\n".join(f"{i['n']}) {_adv_date(i['due_date'])} — {fmt_sum(i['amount'])} сум" for i in inst)
+    return (f"💸 *Аванс выдан*\n\nСумма: *{fmt_sum(row['amount'])}* сум\n"
+            f"Комиссия: {fmt_sum(row['commission'])} сум ({row['commission_pct']:g}%)\n"
+            f"К возврату: *{fmt_sum(row['total'])}* сум\n\nУдержится из зарплаты:\n{lines}")
+
+
+async def adv_notify_owners(context, db, row, shown):
+    for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        if o["user_id"] == row["user_id"]:
+            continue
+        try:
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Выдать", callback_data=f"adv_ok:{row['id']}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"adv_no:{row['id']}")]])
+            await context.bot.send_message(
+                o["user_id"],
+                f"💸 *Запрос аванса*\n\nОт: *{md_safe(shown)}*\n"
+                f"Сумма: *{fmt_sum(row['amount'])}* сум\n"
+                f"Комиссия: {fmt_sum(row['commission'])} сум ({row['commission_pct']:g}%)\n"
+                f"К возврату: {fmt_sum(row['total'])} сум · 3 части из зарплаты\n"
+                f"Лимит месяца: {fmt_sum(row['adv_limit'])} сум\n\n"
+                "_Всё посчитано автоматически. «Выдать» — когда передадите деньги._",
+                parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            pass
+
+
+async def adv_decide_and_notify(context, db, actor, adv_id, approve, note, reply_fn):
+    err, row = adv_decide(db, adv_id, approve, actor.id, actor.first_name, note)
+    if err:
+        await reply_fn("❌ " + err)
+        return
+    shown = display_name_for(db, row["user_id"], fallback="?")
+    log_action(db, "adv_approve" if approve else "adv_reject", actor.id, actor.first_name,
+               row["user_id"], shown, {"adv_id": adv_id, "amount": row["amount"], "note": note})
+    try:
+        if approve:
+            await context.bot.send_message(row["user_id"], adv_msg_active(db, row)
+                                           + (f"\n\nОт шефа: {md_safe(note)}" if note else ""),
+                                           parse_mode="Markdown")
+        else:
+            await context.bot.send_message(
+                row["user_id"], f"❌ *Запрос аванса отклонён*\n\nСумма: {fmt_sum(row['amount'])} сум\n"
+                + (f"Причина: {md_safe(note)}" if note else "Без комментария"), parse_mode="Markdown")
+    except Exception:
+        pass
+    await reply_fn(("✅ Аванс выдан" if approve else "❌ Запрос отклонён")
+                   + f"\n\nКому: {md_safe(shown)}\nСумма: {fmt_sum(row['amount'])} сум")
+
+
 # ═══════════════════════════════════════
 #  CALLBACK HANDLER
 # ═══════════════════════════════════════
@@ -6788,6 +7260,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "noop":
+        return
+
+    # ─── Avans onay/red (inline, yeni sistem) ───
+    if data.startswith("adv_ok:") or data.startswith("adv_no:"):
+        try:
+            _aid = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        db = get_db()
+        if get_role(db, query.from_user.id) != "owner":
+            await query.edit_message_text("❌ Только владелец может решать.")
+            return
+        async def _areply(txt):
+            try: await query.edit_message_text(txt, parse_mode="Markdown")
+            except Exception:
+                try: await context.bot.send_message(query.message.chat_id, txt, parse_mode="Markdown")
+                except Exception: pass
+        await adv_decide_and_notify(context, db, query.from_user, _aid,
+                                    data.startswith("adv_ok:"), "", _areply)
         return
 
     # ─── Borç onay/red butonları (inline) ───
@@ -11937,64 +12428,50 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # ─── Borç talebi: barista istek gönderir ───
         elif action == "loan_request":
-            db = get_db()
-            amount = int(data.get("amount", 0) or 0)
-            reason = (data.get("reason") or "").strip()
-            if amount <= 0 or amount > 5_000_000:
-                await update.message.reply_text("❌ Сумма некорректна.")
-                return
-            if not reason:
-                await update.message.reply_text("❌ Укажите причину.")
-                return
-            # Aynı kullanıcının pending talebi varsa engelle
-            existing = db.execute("SELECT id FROM loans WHERE barista_id=? AND status='pending'",
-                                  (user.id,)).fetchone()
-            if existing:
-                await update.message.reply_text("⚠️ У вас уже есть запрос в ожидании.")
-                return
-            now = datetime.now(TZ).isoformat()
-            cur = db.execute(
-                "INSERT INTO loans (barista_id, amount, reason, status, created_at) "
-                "VALUES (?,?,?,'pending',?)",
-                (user.id, amount, reason, now))
-            db.commit()
-            loan_id = cur.lastrowid
-            log_action(db, "loan_request", user.id, user.first_name, user.id, user.first_name,
-                       {"amount": amount, "reason": reason})
-            shown = display_name_for(db, user.id, fallback=user.first_name)
-            # Owner'lara bildir
-            owners = db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall()
-            for o in owners:
-                if o["user_id"] == user.id:
-                    continue
-                try:
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Одобрить", callback_data=f"loan_ok:{loan_id}"),
-                         InlineKeyboardButton("❌ Отклонить", callback_data=f"loan_no:{loan_id}")]
-                    ])
-                    await context.bot.send_message(
-                        o["user_id"],
-                        f"💸 *Запрос аванса*\n\n"
-                        f"От: *{md_safe(shown)}*\n"
-                        f"Сумма: *{fmt_sum(amount)}* сум\n"
-                        f"Причина: {md_safe(reason)}",
-                        parse_mode="Markdown",
-                        reply_markup=kb)
-                except Exception:
-                    pass
-            await update.message.reply_text(
-                f"✅ Запрос отправлен\n\nСумма: {fmt_sum(amount)} сум\nЖдите решения шефа.")
+            # Eski serbest talep kapandı: limit/komisyon/taksit kuralları yalnız
+            # yeni sistemde (adv_request) uygulanıyor.
+            await update.message.reply_text("ℹ️ Аванс теперь оформляется в Nero: Профиль → «Аванс».")
+            return
 
-        # ─── Owner: borç onayla/reddet (webapp üzerinden) ───
-        # ─── Owner: avansı DOĞRUDAN ver (talep beklemeden) ───
-        # Avans yalnızca çalışanın talebi onaylanarak verilebiliyordu. Owner da
-        # burada çalışıyor: kendine avans alınca kaydedecek yolu yoktu, başkasına
-        # elden verdiğinde de sistem görmüyordu (2026-08-17'de bildirildi).
-        # Talep mekanizması KALDIRILMADI — çalışanın «Запросить аванс» düğmesi
-        # duruyor; owner tarafında talep artık ARKA PLANDA oluşuyor: aynı `loans`
-        # satırı 'approved' olarak yazılır ve maaştan düşen `payments` kaydı
-        # `_decide_loan`'daki ile BİREBİR aynı biçimde (kind='loan') açılır.
+        # Eski doğrudan verme de kapandı — yerine adv_grant (aynı kurallar).
         elif action == "loan_grant":
+            await update.message.reply_text("ℹ️ Аванс теперь выдаётся в Nero: «Авансы» — по правилам лимита.")
+            return
+
+        # ─── AVANS SİSTEMİ: çalışan talep eder (hesap sunucuda) ───
+        elif action == "adv_request":
+            db = get_db()
+            if is_observer(db, user.id):
+                await update.message.reply_text("❌ Наблюдателю аванс недоступен.")
+                return
+            amount = int(_norm_amt(data.get("amount", 0)))
+            err, aid = adv_create(db, user.id, amount, user.id, user.first_name, approve=False)
+            if err:
+                await update.message.reply_text("❌ " + err)
+                return
+            row = db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone()
+            shown = display_name_for(db, user.id, fallback=user.first_name)
+            log_action(db, "adv_request", user.id, user.first_name, user.id, shown,
+                       {"adv_id": aid, "amount": row["amount"], "total": row["total"]})
+            await adv_notify_owners(context, db, row, shown)
+            await update.message.reply_text(
+                f"✅ Запрос аванса отправлен\n\nСумма: {fmt_sum(row['amount'])} сум\n"
+                f"Комиссия: {fmt_sum(row['commission'])} сум\n"
+                f"К возврату: {fmt_sum(row['total'])} сум (3 части)\nЖдите выдачи.")
+
+        # ─── AVANS: owner karar verir (Nero) ───
+        elif action == "adv_decide":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            await adv_decide_and_notify(context, db, user, int(data.get("id", 0) or 0),
+                                        data.get("decision") == "approve",
+                                        (data.get("note") or "").strip(),
+                                        update.message.reply_text)
+
+        # ─── AVANS: owner nakdi talep olmadan verir — kurallar AYNI ───
+        elif action == "adv_grant":
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец может выдать аванс.")
@@ -12003,48 +12480,45 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 target_id = int(data.get("target") or 0) or user.id
             except Exception:
                 target_id = user.id
-            amount = int(_norm_amt(data.get("amount", 0)))
-            reason = (data.get("reason") or "").strip()
-            if amount <= 0 or amount > 5_000_000:
-                await update.message.reply_text("❌ Сумма некорректна.")
-                return
-            if not reason:
-                await update.message.reply_text("❌ Укажите причину.")
-                return
-            trow = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
-            if not trow:
+            if not db.execute("SELECT 1 FROM users WHERE user_id=?", (target_id,)).fetchone():
                 await update.message.reply_text("❌ Сотрудник не найден.")
                 return
-            now = datetime.now(TZ).isoformat()
-            cur = db.execute(
-                "INSERT INTO loans (barista_id, amount, reason, status, created_at, "
-                "decided_by, decided_at, decision_note) VALUES (?,?,?,'approved',?,?,?,?)",
-                (target_id, amount, reason, now, user.id, now, "выдан владельцем"))
-            loan_id = cur.lastrowid
-            db.execute(
-                "INSERT INTO payments (user_id, period, amount, kind, note, paid_by, paid_by_name, paid_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (target_id, current_period(), amount, "loan",
-                 f"Аванс: {reason}", user.id, user.first_name, now))
-            db.commit()
-            _gnm = display_name_for(db, target_id, fallback=trow["name"] or "?")
-            log_action(db, "loan_grant", user.id, user.first_name, target_id, _gnm,
-                       {"loan_id": loan_id, "amount": amount, "reason": reason})
-            # Kendine değilse kişiye haber ver.
+            amount = int(_norm_amt(data.get("amount", 0)))
+            err, aid = adv_create(db, target_id, amount, user.id, user.first_name, approve=True)
+            if err:
+                await update.message.reply_text("❌ " + err)
+                return
+            row = db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone()
+            _gnm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "adv_grant", user.id, user.first_name, target_id, _gnm,
+                       {"adv_id": aid, "amount": row["amount"], "total": row["total"]})
             if target_id != user.id:
                 try:
-                    await context.bot.send_message(
-                        target_id,
-                        f"💸 *Выдан аванс*\n\nСумма: *{fmt_sum(amount)}* сум\n"
-                        f"Основание: {md_safe(reason)}\n"
-                        "Будет вычтен из ближайшей зарплаты.",
-                        parse_mode="Markdown")
+                    await context.bot.send_message(target_id, adv_msg_active(db, row), parse_mode="Markdown")
                 except Exception:
                     pass
             await update.message.reply_text(
-                f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(amount)} сум\n"
-                f"📝 {md_safe(reason)}\n_Вычтется из ближайшей зарплаты._",
+                f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
+                f"К возврату {fmt_sum(row['total'])} сум · 3 части из зарплаты.",
                 parse_mode="Markdown")
+
+        # ─── Şube standart vardiya süresi (avans limiti için aylık maaş) ───
+        elif action == "branch_std_hours":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _bid = int(data.get("branch_id") or 0)
+                _h = float(str(data.get("hours") or 0).replace(",", "."))
+            except Exception:
+                _bid, _h = 0, 0
+            if not _bid or not (1 <= _h <= 24):
+                await update.message.reply_text("❌ Часы смены: от 1 до 24.")
+                return
+            db.execute("UPDATE branches SET std_shift_h=? WHERE id=?", (_h, _bid))
+            db.commit()
+            log_action(db, "branch_std_hours", user.id, user.first_name, None, "", {"branch_id": _bid, "hours": _h})
 
         elif action == "loan_decide":
             db = get_db()
