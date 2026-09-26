@@ -482,6 +482,18 @@ def get_db():
         decided_by_name TEXT,
         decided_at TEXT,
         decision_note TEXT)""")
+    # ELLE (owner 2026-09-26): özel avans — limit/3 hak dışında, parça sayısı ve
+    # aralığı owner seçer (ör. eski borç 3 ayda). manual=1 limitten düşmez.
+    for _ac, _at in (("manual", "INTEGER DEFAULT 0"), ("n_inst", "INTEGER"), ("step_days", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE advances ADD COLUMN {_ac} {_at}")
+        except sqlite3.OperationalError:
+            pass
+    # Çalışana elle avans limiti (NULL = otomatik hesap).
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN adv_limit_manual INTEGER")
+    except sqlite3.OperationalError:
+        pass
     db.execute("""CREATE TABLE IF NOT EXISTS advance_inst (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         advance_id INTEGER,
@@ -3974,9 +3986,19 @@ def adv_salary_info(db, user_id):
             src = "default"
     salary = int(round(rate * hours * ADV_DAYS))
     br = get_branch(db, bid) or {}
+    auto_limit = int(round(salary * ADV_LIMIT_PCT / 100.0))
+    # Owner'ın elle koyduğu limit (varsa) otomatik hesabın yerine geçer.
+    man = None
+    try:
+        _m = db.execute("SELECT adv_limit_manual FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if _m and _m["adv_limit_manual"] is not None and int(_m["adv_limit_manual"]) > 0:
+            man = int(_m["adv_limit_manual"])
+    except Exception:
+        man = None
     return {"bid": bid, "branch": br.get("name") or "", "rate": rate,
             "cat": pi.get("cat_name") or "", "hours": hours, "hours_src": src, "days": ADV_DAYS,
-            "salary": salary, "limit": int(round(salary * ADV_LIMIT_PCT / 100.0))}
+            "salary": salary, "auto_limit": auto_limit, "limit_manual": 1 if man else 0,
+            "limit": man if man else auto_limit}
 
 
 def adv_quote(amount, limit):
@@ -4114,7 +4136,7 @@ def adv_month_usage(db, user_id, month=None, exclude_id=None):
     """Bu ay limitten düşen avanslar: {used, count}."""
     month = month or current_period()
     q = ("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM advances "
-         f"WHERE user_id=? AND month=? AND status IN ({','.join('?' * len(ADV_LIVE))})")
+         f"WHERE user_id=? AND month=? AND COALESCE(manual,0)=0 AND status IN ({','.join('?' * len(ADV_LIVE))})")
     args = [user_id, month, *ADV_LIVE]
     if exclude_id:
         q += " AND id<>?"
@@ -4144,18 +4166,56 @@ def adv_check(db, user_id, amount, exclude_id=None):
 
 
 def adv_write_schedule(db, adv_row, from_date=None):
-    """Onaylanan avansın 3 taksitini yaz (varsa önce siler — tek sefer)."""
-    # Tutarlar kayıttaki (dondurulmuş) toplamdan bölünür.
+    """Avansın taksitlerini yaz (varsa önce siler — tek sefer).
+    Normal avans: 3 parça, +10/+20/+30 gün. Özel (elle) avans: kayıttaki
+    parça sayısı (n_inst) ve aralık (step_days)."""
+    keys = adv_row.keys()
+    n = int((adv_row["n_inst"] if "n_inst" in keys else 0) or ADV_INSTALLMENTS)
+    step = int((adv_row["step_days"] if "step_days" in keys else 0) or ADV_STEP_DAYS)
     total = int(adv_row["total"] or 0)
-    base = total // ADV_INSTALLMENTS
-    q_inst = [base] * ADV_INSTALLMENTS
-    q_inst[-1] = total - base * (ADV_INSTALLMENTS - 1)
+    base = total // n
+    q_inst = [base] * n
+    q_inst[-1] = total - base * (n - 1)
+    start = from_date or _adv_today()
     db.execute("DELETE FROM advance_inst WHERE advance_id=?", (adv_row["id"],))
-    for i, due in enumerate(adv_schedule(from_date or _adv_today()), start=1):
+    for i in range(1, n + 1):
+        due = start + timedelta(days=step * i)
         db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) "
                    "VALUES (?,?,?,?,?,?)",
                    (adv_row["id"], adv_row["user_id"], i, due.isoformat(),
                     due.strftime("%Y-%m"), q_inst[i - 1]))
+
+
+def adv_create_manual(db, user_id, amount, n_inst, step_days, pct, actor_id, actor_name, note=""):
+    """ÖZEL avans (owner elle): limit, 3 hak, kapalı gün ve «запуск» kuralları
+    UYGULANMAZ — acil/eski borç için. Parça sayısı 1–12, aralık 10/15/30 gün,
+    komisyon %0–30 owner'ın elinde. Döner: (hata | None, advance_id)."""
+    try:
+        amount = int(amount or 0); n_inst = int(n_inst or 0); step_days = int(step_days or 0)
+        pct = round(float(pct or 0), 2)
+    except Exception:
+        return "Неверные данные.", None
+    if not (1 <= amount <= 100_000_000):
+        return "Укажите сумму.", None
+    if not (1 <= n_inst <= 12):
+        return "Частей: от 1 до 12.", None
+    if step_days not in (10, 15, 30):
+        return "Интервал: 10, 15 или 30 дней.", None
+    if not (0 <= pct <= ADV_MAX_COM_PCT):
+        return f"Комиссия: от 0 до {ADV_MAX_COM_PCT}%.", None
+    info = adv_salary_info(db, user_id)
+    com = int(amount * pct / 100.0 + 0.5)
+    now = datetime.now(TZ).isoformat()
+    cur = db.execute(
+        "INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,salary,adv_limit,"
+        "status,created_at,created_by,decided_by,decided_by_name,decided_at,decision_note,manual,n_inst,step_days) "
+        "VALUES (?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,1,?,?)",
+        (user_id, current_period(), amount, pct, com, amount + com, info["salary"], info["limit"],
+         now, actor_id, actor_id, actor_name, now, (note or "Особый аванс").strip()[:200], n_inst, step_days))
+    aid = cur.lastrowid
+    adv_write_schedule(db, db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone())
+    db.commit()
+    return None, aid
 
 
 def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
@@ -4325,10 +4385,13 @@ def adv_view(db, user_id, full=True):
         lst.append({
             "id": a["id"], "at": a["created_at"], "month": a["month"],
             "given": a["decided_at"] or "",
+            "manual": int((a["manual"] if "manual" in a.keys() else 0) or 0),
+            "n_inst": len(inst) if inst else int((a["n_inst"] if "n_inst" in a.keys() else 0) or ADV_INSTALLMENTS),
+            "step": int((a["step_days"] if "step_days" in a.keys() else 0) or ADV_STEP_DAYS),
             "amount": int(a["amount"] or 0), "pct": a["commission_pct"] or 0,
             "com": int(a["commission"] or 0), "total": int(a["total"] or 0),
             "status": a["status"], "note": a["decision_note"] or "",
-            "paid_n": len(paid), "left_n": len(inst) - len(paid) if inst else ADV_INSTALLMENTS,
+            "paid_n": len(paid), "left_n": len(inst) - len(paid) if inst else int((a["n_inst"] if "n_inst" in a.keys() else 0) or ADV_INSTALLMENTS),
             "left_sum": left_sum if inst else int(a["total"] or 0),
             "inst": [{"n": i["n"], "due": i["due_date"], "amount": int(i["amount"] or 0),
                       "com": _parts.get(i["id"], 0),
@@ -12695,6 +12758,59 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
                 f"К возврату {fmt_sum(row['total'])} сум · 3 части из зарплаты.",
                 parse_mode="Markdown")
+
+        # ─── ÖZEL avans (owner elle): parça sayısı / aralık / komisyon owner'da ───
+        elif action == "adv_manual":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            if not target_id or not db.execute("SELECT 1 FROM users WHERE user_id=?", (target_id,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            err, aid = adv_create_manual(db, target_id, _norm_amt(data.get("amount", 0)), data.get("n"),
+                                         data.get("step"), data.get("pct"), user.id, user.first_name,
+                                         data.get("note") or "")
+            if err:
+                await update.message.reply_text("❌ " + err)
+                return
+            row = db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone()
+            _gnm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "adv_manual", user.id, user.first_name, target_id, _gnm,
+                       {"adv_id": aid, "amount": row["amount"], "n": row["n_inst"], "step": row["step_days"],
+                        "pct": row["commission_pct"], "note": row["decision_note"]})
+            if target_id != user.id:
+                try:
+                    await context.bot.send_message(target_id, adv_msg_active(db, row), parse_mode="Markdown")
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                f"💸 Особый аванс — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
+                f"К возврату {fmt_sum(row['total'])} сум · {row['n_inst']} частей из зарплаты.",
+                parse_mode="Markdown")
+
+        # ─── Elle avans limiti (owner): sayı = elle, boş/0 = otomatik ───
+        elif action == "adv_limit_set":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+                _lim = int(_norm_amt(data.get("limit") or 0))
+            except Exception:
+                target_id, _lim = 0, -1
+            if not target_id or _lim < 0 or _lim > 100_000_000:
+                await update.message.reply_text("❌ Неверный лимит.")
+                return
+            db.execute("UPDATE users SET adv_limit_manual=? WHERE user_id=?", (_lim or None, target_id))
+            db.commit()
+            log_action(db, "adv_limit_set", user.id, user.first_name, target_id,
+                       display_name_for(db, target_id, fallback="?"), {"limit": _lim or "auto"})
 
         # ─── Avans sistemini çalışanlara aç / kapat (owner) ───
         elif action == "adv_live":
