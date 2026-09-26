@@ -4186,13 +4186,13 @@ def adv_write_schedule(db, adv_row, from_date=None):
                     due.strftime("%Y-%m"), q_inst[i - 1]))
 
 
-def adv_create_manual(db, user_id, amount, n_inst, step_days, pct, actor_id, actor_name, note=""):
+def adv_create_manual(db, user_id, amount, n_inst, step_days, actor_id, actor_name, note=""):
     """ÖZEL avans (owner elle): limit, 3 hak, kapalı gün ve «запуск» kuralları
-    UYGULANMAZ — acil/eski borç için. Parça sayısı 1–12, aralık 10/15/30 gün,
-    komisyon %0–30 owner'ın elinde. Döner: (hata | None, advance_id)."""
+    UYGULANMAZ — acil/eski borç için. Parça sayısı 1–12, aralık 10/15/30 gün.
+    Komisyon ANA SİSTEMLE AYNI (owner 2026-09-26): avans / limit × %30,
+    en fazla %30 — elle seçilmez. Döner: (hata | None, advance_id)."""
     try:
         amount = int(amount or 0); n_inst = int(n_inst or 0); step_days = int(step_days or 0)
-        pct = round(float(pct or 0), 2)
     except Exception:
         return "Неверные данные.", None
     if not (1 <= amount <= 100_000_000):
@@ -4201,10 +4201,9 @@ def adv_create_manual(db, user_id, amount, n_inst, step_days, pct, actor_id, act
         return "Частей: от 1 до 12.", None
     if step_days not in (10, 15, 30):
         return "Интервал: 10, 15 или 30 дней.", None
-    if not (0 <= pct <= ADV_MAX_COM_PCT):
-        return f"Комиссия: от 0 до {ADV_MAX_COM_PCT}%.", None
     info = adv_salary_info(db, user_id)
-    com = int(amount * pct / 100.0 + 0.5)
+    q = adv_quote(amount, info["limit"])
+    pct, com = q["pct"], q["commission"]
     now = datetime.now(TZ).isoformat()
     cur = db.execute(
         "INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,salary,adv_limit,"
@@ -12773,7 +12772,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Сотрудник не найден.")
                 return
             err, aid = adv_create_manual(db, target_id, _norm_amt(data.get("amount", 0)), data.get("n"),
-                                         data.get("step"), data.get("pct"), user.id, user.first_name,
+                                         data.get("step"), user.id, user.first_name,
                                          data.get("note") or "")
             if err:
                 await update.message.reply_text("❌ " + err)
