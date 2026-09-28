@@ -9777,14 +9777,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         await context.bot.send_message(chat_id=int(_nu), text=_nt)
                     except Exception:
                         pass
+                # Grup HER hedefte haber alir (owner 2026-09-28: Magic'te herkesin
+                # CPS'i zaten 100 oldugu icin kimse yukselmedi ve grup mesaji
+                # hic gitmedi). CPS satiri yalnizca biri gercekten yukseldiyse.
                 try:
                     _g2 = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (bid,)).fetchone()
-                    if _rdone and _g2 and _g2["group_chat_id"]:
-                        await context.bot.send_message(
-                            chat_id=int(_g2["group_chat_id"]),
-                            text=(f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_fp(_tot)} / "
-                                  f"{int(_cfg['fr_target'])}. CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b "
-                                  f"\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {int(_cfg['fr_restore'])}."))
+                    if _g2 and _g2["group_chat_id"]:
+                        _gt = (f"\U0001f3af \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u043f\u0440\u043e\u0439\u0434\u0435\u043d\u0430: {_fp(_tot)} / "
+                               f"{int(_cfg['fr_target'])}.")
+                        if _rdone:
+                            _gt += (f" CPS \u043a\u043e\u043c\u0430\u043d\u0434\u044b "
+                                    f"\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {int(_cfg['fr_restore'])}.")
+                        else:
+                            _gt += " \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430 \u2014 \u043c\u043e\u043b\u043e\u0434\u0446\u044b!"
+                        await context.bot.send_message(chat_id=int(_g2["group_chat_id"]), text=_gt)
                 except Exception:
                     pass
             await update.message.reply_text(_msg)
