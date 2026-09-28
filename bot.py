@@ -502,6 +502,28 @@ def get_db():
         due_date TEXT,
         period TEXT,
         amount INTEGER)""")
+    # ═══ RESERVE (owner 2026-09-28) ═══════════════════════════════════════
+    # Hareket defteri: satırlar SİLİNMEZ/DEĞİŞMEZ. Bakiye = SUM(amount).
+    # contrib (+, çalışılan gün başına bir kez) · return (−, işten ayrılınca iade).
+    db.execute("""CREATE TABLE IF NOT EXISTS reserve_tx (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, kind TEXT, date TEXT, period TEXT, amount INTEGER,
+        target INTEGER, note TEXT, created_by INTEGER, created_by_name TEXT, created_at TEXT)""")
+    # Aynı gün için ikinci katkı YAZILAMAZ (çift kayıt koruması).
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS reserve_tx_day ON reserve_tx(user_id, date) WHERE kind='contrib'")
+    db.execute("""CREATE TABLE IF NOT EXISTS reserve_settlements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, amount INTEGER, status TEXT DEFAULT 'pending',
+        created_at TEXT, created_by INTEGER, created_by_name TEXT,
+        decided_at TEXT, decided_by INTEGER, decided_by_name TEXT, note TEXT)""")
+    # Kişiye özel ayar (NULL = varsayılan) + stajyerden çıkış günü + son hedef (günlük için).
+    for _rc, _rt in (("reserve_pct", "REAL"), ("reserve_months", "INTEGER"),
+                     ("reserve_from", "TEXT"), ("reserve_last_target", "INTEGER"),
+                     ("reserve_synced_to", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
+        except sqlite3.OperationalError:
+            pass
     # Resmi sınav daveti (owner → barista)
     db.execute("""CREATE TABLE IF NOT EXISTS rt_exam_invites (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -883,6 +905,19 @@ def get_db():
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('slotrole_seeded', ?)", (datetime.now(TZ).isoformat(),))
     except Exception:
         pass
+    # RESERVE: kategori dahil mi? Stajyer (assistant slotu) bir kez 0'a çekilir;
+    # sonra owner kategori ekranından istediği gibi açıp kapatır.
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN reserve_on INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        if not db.execute("SELECT 1 FROM meta WHERE k='reserve_cat_seeded'").fetchone():
+            db.execute("UPDATE salary_categories SET reserve_on=0 "
+                       "WHERE COALESCE(slot_role,'barista')='assistant' OR name=?", ("Стажёр",))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('reserve_cat_seeded', ?)", (datetime.now(TZ).isoformat(),))
+    except Exception:
+        pass
     db.commit()
     return db
 
@@ -1002,6 +1037,7 @@ def get_salary_categories(db, only_active=False):
          "COALESCE(ot_month,0) AS ot_month,COALESCE(ot_type,'fixed') AS ot_type,"
          "COALESCE(ot_value,0) AS ot_value,"
          "COALESCE(adv_shift_h,0) AS adv_shift_h,"
+         "COALESCE(reserve_on,1) AS reserve_on,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -3804,7 +3840,9 @@ def calc_summary(db, user_id, period=None):
     except Exception as e:
         logger.warning(f"adv_deduction {user_id} {period}: {e}")
         adv_ded, _adv_rows = 0, []
-    net = gross - fine_total - paid_total + adj_total - adv_ded
+    # Reserve: çalışılan günlerin katkıları bu ayın maaşından düşer.
+    res_ded = reserve_deduction(db, user_id, period)
+    net = gross - fine_total - paid_total + adj_total - adv_ded - res_ded
 
     return {
         "period": period,
@@ -3826,6 +3864,7 @@ def calc_summary(db, user_id, period=None):
         "adjustments_list": [dict(a) for a in _adj_rows],
         "adv_ded": adv_ded,
         "adv_ded_list": [dict(r) for r in _adv_rows],
+        "res_ded": res_ded,
         "gross": gross,
         "net": net,
         "shifts_count": len(shifts),
@@ -3860,7 +3899,7 @@ def carry_debt(db, user_id, period=None):
     pers = set()
     try:
         # advance_inst: yalnız avans taksiti olan ay (vardiya yok) da devre girsin.
-        for _t in ("shifts", "fines", "payments", "adjustments", "advance_inst"):
+        for _t in ("shifts", "fines", "payments", "adjustments", "advance_inst", "reserve_tx"):
             for r in db.execute(
                     f"SELECT DISTINCT period AS p FROM {_t} WHERE user_id=?", (user_id,)).fetchall():
                 _p = str(r["p"] or "")
@@ -4149,6 +4188,11 @@ def adv_check(db, user_id, amount, exclude_id=None):
     """Yeni avans verilebilir mi? (hata_metni | None, info, quote).
     Bütün güvenlik kuralları TEK yerde: talep, onay ve doğrudan veriş aynı kontrolden geçer."""
     info = adv_salary_info(db, user_id)
+    # RESERVE kilidi (owner 2026-09-28): резерв 100% olmadan normal avans yok.
+    # Özel avans (adv_create_manual) bu kontrolden GEÇMEZ — owner kararı.
+    _rb = reserve_adv_block(db, user_id)
+    if _rb:
+        return (_rb, info, None)
     use = adv_month_usage(db, user_id, exclude_id=exclude_id)
     left = max(0, info["limit"] - use["used"])
     amount = int(amount or 0)
@@ -4332,8 +4376,259 @@ def adv_decade_pay(db, user_id, today=None):
         "SELECT COALESCE(SUM(i.amount),0) AS s FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
         "WHERE i.user_id=? AND i.due_date>=? AND i.due_date<=? AND x.status IN ('active','done')",
         (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0
+    try:
+        res = int(db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND kind='contrib' "
+                             "AND date>=? AND date<=?", (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0)
+    except Exception:
+        res = 0
     return {"from": a.isoformat(), "to": b.isoformat(), "gross": gross,
-            "adv": int(inst), "fines": fines, "net": gross - int(inst) - fines}
+            "adv": int(inst), "fines": fines, "res": res, "net": gross - int(inst) - fines - res}
+
+
+# ═══ RESERVE — çalışanın finansal rezervi (owner 2026-09-28) ══════════════
+# Hedef = aylık maaş (avansla AYNI hesap: ставка × şube vardiyası × 30) × %.
+# Katkı YALNIZ ÇALIŞILAN GÜNDE, günde bir kez: hedef ÷ (ay × 30), hedefi aşmaz.
+# Owner «Запустить» diyene kadar hiçbir şey yazılmaz; başlangıç = o gün.
+# Birikmiş para asla silinmez; hedef maaşla birlikte yeniden hesaplanır.
+RESERVE_DEFAULTS = {"pct": 60.0, "months": 2}
+
+
+def reserve_cfg(db):
+    cfg = dict(RESERVE_DEFAULTS)
+    cfg["started"] = ""
+    try:
+        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('reserve_pct','reserve_months','reserve_started')").fetchall():
+            if r["k"] == "reserve_pct":
+                cfg["pct"] = float(r["val"])
+            elif r["k"] == "reserve_months":
+                cfg["months"] = int(float(r["val"]))
+            else:
+                cfg["started"] = str(r["val"] or "")[:10]
+    except Exception:
+        pass
+    return cfg
+
+
+def _reserve_user_row(db, user_id):
+    return db.execute("SELECT user_id, role, COALESCE(archived,0) AS archived, reserve_pct, reserve_months, "
+                      "reserve_from, reserve_last_target, reserve_synced_to FROM users WHERE user_id=?",
+                      (user_id,)).fetchone()
+
+
+def reserve_eligible(db, user_id):
+    """Kategori Reserve'e dahil mi (stajyer değil)? Kategorisiz kişi dahildir."""
+    try:
+        pi = barista_pay_info(db, user_id)
+        cid = pi.get("cat_id")
+        if not cid:
+            return True
+        r = db.execute("SELECT COALESCE(reserve_on,1) AS o FROM salary_categories WHERE id=?", (cid,)).fetchone()
+        return bool(r["o"]) if r else True
+    except Exception:
+        return True
+
+
+def reserve_balance(db, user_id):
+    r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=?", (user_id,)).fetchone()
+    return int(r["s"] or 0)
+
+
+def reserve_info(db, user_id, cfg=None):
+    """Sunucu tarafı TEK hesap: hedef, bakiye, yüzde, durum, günlük pay."""
+    cfg = cfg or reserve_cfg(db)
+    u = _reserve_user_row(db, user_id)
+    own = bool(u and (u["reserve_pct"] is not None or u["reserve_months"] is not None))
+    pct = float(u["reserve_pct"]) if (u and u["reserve_pct"] is not None) else float(cfg["pct"])
+    months = int(u["reserve_months"]) if (u and u["reserve_months"] is not None) else int(cfg["months"])
+    months = max(1, months)
+    try:
+        salary = int(adv_salary_info(db, user_id)["salary"] or 0)
+    except Exception:
+        salary = 0
+    target = int(round(salary * pct / 100.0)) if salary > 0 else 0
+    bal = reserve_balance(db, user_id)
+    per_day = int(round(target / (months * 30.0))) if target else 0
+    elig = reserve_eligible(db, user_id)
+    started = cfg["started"]
+    done = target > 0 and bal >= target
+    if not started or not elig or target <= 0 or (bal <= 0 and not done):
+        status = "not_started"
+    elif done:
+        status = "completed"
+    else:
+        status = "in_progress"
+    pct_done = 100 if done else (int(bal * 100 // target) if target > 0 else 0)
+    remaining = max(0, target - bal)
+    return {"live": 1 if started else 0, "started": started, "eligible": 1 if elig else 0,
+            "pct": round(pct, 2), "months": months, "own": 1 if own else 0,
+            "def_pct": float(cfg["pct"]), "def_months": int(cfg["months"]),
+            "salary": salary, "target": target, "balance": bal, "remaining": remaining,
+            "progress": min(100, pct_done), "per_day": per_day,
+            "days_left": (-(-remaining // per_day) if per_day and remaining else 0),
+            "status": status, "from": (u["reserve_from"] or "") if u else ""}
+
+
+def reserve_sync(db, user_id, cfg=None, today=None):
+    """Eksik katkıları yaz (idempotent). Çalışılan her gün (kapanmış vardiya)
+    için en fazla bir satır; başlangıçtan/stajyerlik bitişinden önce yok.
+    Döner: yazılan satır sayısı."""
+    cfg = cfg or reserve_cfg(db)
+    if not cfg["started"]:
+        return 0
+    u = _reserve_user_row(db, user_id)
+    # Owner Reserve'e girmez; arşivdeki/stajyer kişiye katkı yazılmaz.
+    if not u or u["archived"] or (u["role"] or "") == "owner" or not reserve_eligible(db, user_id):
+        return 0
+    info = reserve_info(db, user_id, cfg)
+    target = info["target"]
+    # Hedef değiştiyse (maaş/kategori/ayar) günlüğe bir kez yaz.
+    try:
+        _last = u["reserve_last_target"]
+        if target and _last is not None and int(_last) != target:
+            log_action(db, "reserve_target_recalc", 0, "Nero", user_id,
+                       display_name_for(db, user_id, fallback=f"ID {user_id}"),
+                       {"old": int(_last), "new": target, "balance": info["balance"]})
+        if _last is None or int(_last or 0) != target:
+            db.execute("UPDATE users SET reserve_last_target=? WHERE user_id=?", (target, user_id))
+            db.commit()
+    except Exception as e:
+        logger.warning(f"reserve target log {user_id}: {e}")
+    hi = (today or _adv_today()).isoformat()
+    # İŞARET: her gün YALNIZ BİR KEZ değerlendirilir. Reserve doluyken geçen
+    # günler, hedef sonradan artınca geriye dönük kesilmez (o maaş belki ödendi).
+    # 1 gün geri: gece yarısını geçen vardiya başladığı güne yazılır.
+    _mark = str(u["reserve_synced_to"] or "")[:10]
+    _mark_lo = ((datetime.strptime(_mark, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
+                if _mark else "")
+    if target <= 0 or info["per_day"] <= 0:
+        db.execute("UPDATE users SET reserve_synced_to=? WHERE user_id=?", (hi, user_id))
+        db.commit()
+        return 0
+    lo = max(cfg["started"], str(u["reserve_from"] or "")[:10], _mark_lo)
+    days = [r["d"] for r in db.execute(
+        "SELECT DISTINCT substr(COALESCE(start_time, date),1,10) AS d FROM shifts "
+        "WHERE user_id=? AND end_time IS NOT NULL AND substr(COALESCE(start_time, date),1,10)>=? "
+        "AND substr(COALESCE(start_time, date),1,10)<=? ORDER BY d", (user_id, lo, hi)).fetchall() if r["d"]]
+    have = {r["date"] for r in db.execute("SELECT date FROM reserve_tx WHERE user_id=? AND kind='contrib'",
+                                          (user_id,)).fetchall()}
+    bal, n = info["balance"], 0
+    now = datetime.now(TZ).isoformat()
+    for d in days:
+        if d in have:
+            continue
+        amt = min(info["per_day"], target - bal)
+        if amt <= 0:
+            break
+        try:
+            db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (user_id, "contrib", d, d[:7], int(amt), target, "Взнос в резерв", 0, "Nero", now))
+        except sqlite3.IntegrityError:
+            continue                      # aynı gün başka yoldan yazıldı
+        bal += amt
+        n += 1
+        if bal >= target:
+            log_action(db, "reserve_completed", 0, "Nero", user_id,
+                       display_name_for(db, user_id, fallback=f"ID {user_id}"), {"balance": bal, "target": target})
+    db.execute("UPDATE users SET reserve_synced_to=? WHERE user_id=?", (hi, user_id))
+    db.commit()
+    return n
+
+
+def reserve_sync_all(db):
+    cfg = reserve_cfg(db)
+    if not cfg["started"]:
+        return 0
+    n = 0
+    for r in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+                        "AND COALESCE(role,'barista')!='owner'").fetchall():
+        try:
+            n += reserve_sync(db, int(r["user_id"]), cfg)
+        except Exception as e:
+            logger.warning(f"reserve_sync {r['user_id']}: {e}")
+    return n
+
+
+def reserve_deduction(db, user_id, period):
+    """Bu dönemin katkıları maaştan düşer (return/iade maaşa dokunmaz)."""
+    try:
+        r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND period=? AND kind='contrib'",
+                       (user_id, period)).fetchone()
+        return int(r["s"] or 0)
+    except Exception:
+        return 0
+
+
+def reserve_adv_block(db, user_id):
+    """Avans kilidi: Reserve başlatıldıysa ve %100 değilse metin döner, yoksa None."""
+    cfg = reserve_cfg(db)
+    if not cfg["started"]:
+        return None
+    if get_role(db, user_id) == "owner":
+        return None
+    info = reserve_info(db, user_id, cfg)
+    if not info["eligible"]:
+        return "Аванс доступен после перехода из стажёров: сначала нужно собрать резерв."
+    if info["target"] <= 0:
+        return "Резерв не рассчитан: не задана ставка или смена филиала."
+    if info["status"] != "completed":
+        return f"Резерв собран на {info['progress']}/100. Аванс откроется, когда резерв достигнет 100%."
+    return None
+
+
+def reserve_view(db, user_id, full=True):
+    """Nero: kişinin Reserve görünümü + hareket geçmişi + iade kaydı."""
+    info = reserve_info(db, user_id)
+    lim = 200 if full else 30
+    info["hist"] = [{"id": r["id"], "kind": r["kind"], "date": r["date"], "amount": int(r["amount"] or 0),
+                     "note": r["note"] or ""} for r in db.execute(
+        "SELECT * FROM reserve_tx WHERE user_id=? ORDER BY date DESC, id DESC LIMIT ?", (user_id, lim)).fetchall()]
+    st = db.execute("SELECT * FROM reserve_settlements WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+    info["settle"] = ({"id": st["id"], "amount": int(st["amount"] or 0), "status": st["status"],
+                       "at": st["created_at"], "done_at": st["decided_at"] or ""} if st else None)
+    return info
+
+
+def reserve_owner_list(db):
+    out = []
+    cfg = reserve_cfg(db)
+    for r in db.execute("SELECT user_id, COALESCE(archived,0) AS arch FROM users WHERE role!='owner' "
+                        "AND COALESCE(approved,0)=1 ORDER BY COALESCE(display_name,name)").fetchall():
+        uid = int(r["user_id"])
+        i = reserve_info(db, uid, cfg)
+        st = db.execute("SELECT id, amount, status FROM reserve_settlements WHERE user_id=? AND status='pending' "
+                        "ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
+        if r["arch"] and not st and i["balance"] <= 0:
+            continue
+        out.append({"uid": uid, "name": display_name_for(db, uid, fallback="?"), "arch": int(r["arch"]),
+                    "balance": i["balance"], "target": i["target"], "progress": i["progress"],
+                    "remaining": i["remaining"], "status": i["status"], "eligible": i["eligible"],
+                    "own": i["own"], "pct": i["pct"], "months": i["months"],
+                    "settle": ({"id": st["id"], "amount": int(st["amount"] or 0)} if st else None)})
+    return {"cfg": cfg, "list": out}
+
+
+def reserve_open_settlement(db, user_id, actor_id, actor_name):
+    """İşten ayrılış: bakiye > 0 ise iade kaydı (pending). Para OTOMATİK ödenmez."""
+    bal = reserve_balance(db, user_id)
+    if bal <= 0:
+        return None
+    if db.execute("SELECT 1 FROM reserve_settlements WHERE user_id=? AND status='pending'", (user_id,)).fetchone():
+        return None
+    cur = db.execute("INSERT INTO reserve_settlements (user_id,amount,status,created_at,created_by,created_by_name) "
+                     "VALUES (?,?,'pending',?,?,?)", (user_id, bal, datetime.now(TZ).isoformat(), actor_id, actor_name))
+    db.commit()
+    log_action(db, "reserve_settlement_open", actor_id, actor_name, user_id,
+               display_name_for(db, user_id, fallback=f"ID {user_id}"), {"amount": bal})
+    return cur.lastrowid
+
+
+def _res_card(db, user_id):
+    try:
+        return reserve_view(db, user_id, full=False)
+    except Exception as e:
+        logger.warning(f"_res_card({user_id}): {e}")
+        return None
 
 
 def _adv_card(db, user_id):
@@ -4363,6 +4658,7 @@ def adv_view(db, user_id, full=True):
         "closed_days": adv_closed_days(db),
         "live": 1 if adv_live(db) else 0,
         "closed_today": 1 if today.day in adv_closed_days(db) else 0,
+        "reserve_block": reserve_adv_block(db, user_id) or "",
     })
     rows = db.execute("SELECT * FROM advances WHERE user_id=? ORDER BY id DESC LIMIT 60",
                       (user_id,)).fetchall()
@@ -4762,6 +5058,11 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
          bonus, hourly_pay, total, note or "",
          json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h, active["id"]))
     db.commit()
+    # RESERVE: çalışılan gün kapandı → o günün katkısı (tek sefer, idempotent).
+    try:
+        reserve_sync(db, user_id)
+    except Exception as _e_rs:
+        logger.warning(f"reserve_sync end_shift {user_id}: {_e_rs}")
     return db.execute("SELECT * FROM shifts WHERE id=?", (active["id"],)).fetchone()
 
 
@@ -5319,6 +5620,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     # siparis, tum subeler), para alanlari sifirlanmis. Istemciye role=observer.
     _obs = role != "owner" and is_observer(db, user_id)
     _see_all = role == "owner" or _obs
+    # RESERVE: eksik katkıları yaz (idempotent) — maaş hesabından ÖNCE.
+    try:
+        if role == "owner":
+            reserve_sync_all(db)
+        else:
+            reserve_sync(db, user_id)
+    except Exception as e:
+        logger.warning(f"reserve sync payload: {e}")
     s = calc_summary(db, user_id)
     # Owner tarafından atanan display_name varsa onu kullan
     show_name = display_name_for(db, user_id, fallback=name)
@@ -5336,6 +5645,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "fines_list": s["fines_list"][-5:],
         "active": s["active"],
         "adv_ded": s.get("adv_ded", 0),
+        "res_ded": s.get("res_ded", 0),
     }
     # Yeni avans sistemi — herkesin kendi görünümü; owner'a bekleyen talepler.
     try:
@@ -5343,6 +5653,17 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     except Exception as e:
         logger.warning(f"adv_view({user_id}): {e}")
         adv_self = None
+    try:
+        res_self = reserve_view(db, user_id)
+    except Exception as e:
+        logger.warning(f"reserve_view({user_id}): {e}")
+        res_self = None
+    res_own = None
+    if role == "owner":
+        try:
+            res_own = reserve_owner_list(db)
+        except Exception as e:
+            logger.warning(f"reserve_owner_list: {e}")
     adv_pend = []
     adv_own = None
     if role == "owner":
@@ -5751,6 +6072,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"adv={quote(json.dumps(adv_self, ensure_ascii=False) if adv_self else '')}",
         f"adv_pend={quote(json.dumps(adv_pend, ensure_ascii=False))}",
         f"adv_own={quote(json.dumps(adv_own, ensure_ascii=False) if adv_own else '')}",
+        f"res={quote(json.dumps(res_self, ensure_ascii=False) if res_self else '')}",
+        f"res_own={quote(json.dumps(res_own, ensure_ascii=False) if res_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
         f"kasa_index={quote(json.dumps(kasa_index))}",
@@ -6072,6 +6395,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 # Avans: bu ay maaştan düşen taksitler + yönetici kartı özeti
                 "advd": bs.get("adv_ded", 0),
                 "adv": _adv_card(db, b["user_id"]),
+                # Reserve: bu ay maaştan düşen katkı + kart özeti (son 30 hareket)
+                "resd": bs.get("res_ded", 0),
+                "res": _res_card(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
@@ -9390,8 +9716,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if cid_val is not None and not db.execute(
                         "SELECT 1 FROM salary_categories WHERE id=?", (cid_val,)).fetchone():
                     cid_val = None
+                # RESERVE: stajyer ↔ kalıcı geçişi. Önce eski kategoriyle eksik
+                # günleri kapat; stajyerden çıkıyorsa katkı BUGÜNDEN başlar
+                # (stajyerlik dönemi için geriye dönük katkı YOK).
+                try:
+                    _rs_was = reserve_eligible(db, int(tgt))
+                    if _rs_was:
+                        reserve_sync(db, int(tgt))
+                except Exception:
+                    _rs_was = True
                 _cur = db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid_val, int(tgt)))
                 db.commit()
+                try:
+                    if not _rs_was and reserve_eligible(db, int(tgt)):
+                        db.execute("UPDATE users SET reserve_from=? WHERE user_id=?",
+                                   (_adv_today().isoformat(), int(tgt)))
+                        db.commit()
+                        log_action(db, "reserve_eligible", user.id, user.first_name, int(tgt),
+                                   display_name_for(db, int(tgt), fallback=f"ID {int(tgt)}"),
+                                   {"from": _adv_today().isoformat()})
+                except Exception as _e_rs:
+                    logger.warning(f"reserve eligibility: {_e_rs}")
                 if (_cur.rowcount or 0) < 1:
                     logger.warning(f"salcat_assign: 0 satir guncellendi uid={tgt} cat={cid_val}")
                 # Kategori = saat ücreti + bonus sistemi + kasa yetkisi. Kimin
@@ -11174,9 +11519,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 (now, target_id))
             db.commit()
             log_action(db, "archive_user", user.id, user.first_name, target_id, shown, {})
+            # RESERVE: işten ayrılış → iade kaydı (para OTOMATİK ödenmez; owner kapatır).
+            _rs_txt = ""
+            try:
+                _rsid = reserve_open_settlement(db, target_id, user.id, user.first_name)
+                if _rsid:
+                    _rs_txt = (f"\n💼 Резерв к возврату: *{fmt_sum(reserve_balance(db, target_id))}* сум — "
+                               "Управление → Резерв.")
+            except Exception as _e_rs:
+                logger.warning(f"reserve settlement archive: {_e_rs}")
             await update.message.reply_text(
                 f"📦 *{md_safe(shown)}* перенесён в архив.\n"
-                f"Доступ закрыт, но вся история сохранена.",
+                f"Доступ закрыт, но вся история сохранена." + _rs_txt,
                 parse_mode="Markdown")
 
         elif action == "unarchive_user":
@@ -11191,6 +11545,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             shown = target_row["display_name"] or target_row["name"] or "?"
             db.execute("UPDATE users SET archived=0, archived_at=NULL WHERE user_id=?", (target_id,))
+            # Geri döndü → bekleyen Reserve iadesi iptal (bakiye yerinde kalır).
+            db.execute("UPDATE reserve_settlements SET status='cancelled', decided_at=?, decided_by=?, decided_by_name=? "
+                       "WHERE user_id=? AND status='pending'",
+                       (datetime.now(TZ).isoformat(), user.id, user.first_name, target_id))
             db.commit()
             log_action(db, "unarchive_user", user.id, user.first_name, target_id, shown, {})
             await update.message.reply_text(
@@ -12860,6 +13218,127 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("UPDATE salary_categories SET adv_shift_h=? WHERE id=?", (_h or None, _cid))
             db.commit()
             log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
+
+        # ═══ RESERVE — owner işlemleri (hepsi günlüğe: eski → yeni) ═══
+        elif action in ("reserve_cfg_set", "reserve_start", "reserve_stop", "reserve_user_set",
+                        "reserve_settle_open", "reserve_settle_done", "salcat_reserve"):
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _now = datetime.now(TZ).isoformat()
+            _setm = lambda k, v: db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, str(v)))
+            if action == "reserve_cfg_set":
+                _old = reserve_cfg(db)
+                try:
+                    _p = round(float(str(data.get("pct") or 0).replace(",", ".")), 2)
+                    _m = int(float(str(data.get("months") or 0).replace(",", ".")))
+                except Exception:
+                    _p, _m = 0, 0
+                if not (1 <= _p <= 100) or not (1 <= _m <= 24):
+                    await update.message.reply_text("❌ Резерв: процент 1–100, срок 1–24 мес.")
+                    return
+                _setm("reserve_pct", _p)
+                _setm("reserve_months", _m)
+                db.commit()
+                log_action(db, "reserve_cfg", user.id, user.first_name, None, "",
+                           {"pct": f"{_old['pct']:g} → {_p:g}", "months": f"{_old['months']} → {_m}"})
+            elif action == "reserve_start":
+                if reserve_cfg(db)["started"]:
+                    await update.message.reply_text("ℹ️ Резерв уже запущен.")
+                    return
+                _setm("reserve_started", _adv_today().isoformat())
+                db.commit()
+                log_action(db, "reserve_start", user.id, user.first_name, None, "", {"from": _adv_today().isoformat()})
+                await update.message.reply_text(
+                    f"💼 Резерв запущен с {_adv_today().strftime('%d.%m.%Y')}. Взносы — за каждый рабочий день.")
+            elif action == "reserve_stop":
+                _was = reserve_cfg(db)["started"]
+                db.execute("DELETE FROM meta WHERE k='reserve_started'")
+                db.commit()
+                log_action(db, "reserve_stop", user.id, user.first_name, None, "", {"was_from": _was})
+            elif action == "reserve_user_set":
+                try:
+                    _tid = int(data.get("target") or 0)
+                except Exception:
+                    _tid = 0
+                _u = db.execute("SELECT reserve_pct, reserve_months FROM users WHERE user_id=?", (_tid,)).fetchone()
+                if not _u:
+                    await update.message.reply_text("❌ Сотрудник не найден.")
+                    return
+                if int(data.get("default") or 0):
+                    _np, _nm = None, None
+                else:
+                    try:
+                        _np = round(float(str(data.get("pct") or 0).replace(",", ".")), 2)
+                        _nm = int(float(str(data.get("months") or 0).replace(",", ".")))
+                    except Exception:
+                        _np, _nm = 0, 0
+                    if not (1 <= _np <= 100) or not (1 <= _nm <= 24):
+                        await update.message.reply_text("❌ Резерв: процент 1–100, срок 1–24 мес.")
+                        return
+                db.execute("UPDATE users SET reserve_pct=?, reserve_months=? WHERE user_id=?", (_np, _nm, _tid))
+                db.commit()
+                _fmt = lambda p, m: "по умолчанию" if p is None else f"{p:g}% · {m} мес."
+                log_action(db, "reserve_user_set", user.id, user.first_name, _tid,
+                           display_name_for(db, _tid, fallback=f"ID {_tid}"),
+                           {"old": _fmt(_u["reserve_pct"], _u["reserve_months"]), "new": _fmt(_np, _nm)})
+            elif action == "reserve_settle_open":
+                try:
+                    _tid = int(data.get("target") or 0)
+                except Exception:
+                    _tid = 0
+                if not reserve_open_settlement(db, _tid, user.id, user.first_name):
+                    await update.message.reply_text("ℹ️ Возвращать нечего или возврат уже оформлен.")
+                    return
+            elif action == "reserve_settle_done":
+                try:
+                    _sid = int(data.get("id") or 0)
+                except Exception:
+                    _sid = 0
+                _st = db.execute("SELECT * FROM reserve_settlements WHERE id=? AND status='pending'", (_sid,)).fetchone()
+                if not _st:
+                    await update.message.reply_text("❌ Возврат не найден или уже закрыт.")
+                    return
+                # Ödenen = şu anki bakiye (kayıttan sonra değişmiş olabilir); defter sıfırlanır.
+                _amt = reserve_balance(db, int(_st["user_id"]))
+                if _amt > 0:
+                    db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                               (int(_st["user_id"]), "return", _adv_today().isoformat(), current_period(), -_amt, 0,
+                                "Возврат резерва при увольнении", user.id, user.first_name, _now))
+                db.execute("UPDATE reserve_settlements SET status='paid', amount=?, decided_at=?, decided_by=?, decided_by_name=?, "
+                           "note=? WHERE id=?", (_amt, _now, user.id, user.first_name,
+                                                 str(data.get("note") or "")[:200], _sid))
+                db.commit()
+                log_action(db, "reserve_settle_done", user.id, user.first_name, int(_st["user_id"]),
+                           display_name_for(db, int(_st["user_id"]), fallback="?"), {"amount": _amt})
+            elif action == "salcat_reserve":
+                try:
+                    _cid = int(data.get("id") or 0)
+                    _on = 1 if int(data.get("on") or 0) else 0
+                except Exception:
+                    _cid, _on = 0, 0
+                _c = db.execute("SELECT name, COALESCE(reserve_on,1) AS o FROM salary_categories WHERE id=?", (_cid,)).fetchone()
+                if not _c:
+                    await update.message.reply_text("❌ Категория не найдена.")
+                    return
+                if int(_c["o"]) != _on:
+                    _members = [int(r["user_id"]) for r in db.execute(
+                        "SELECT user_id FROM users WHERE salary_cat_id=?", (_cid,)).fetchall()]
+                    if not _on:
+                        for _m in _members:          # kapanmadan önce eksik günler
+                            try:
+                                reserve_sync(db, _m)
+                            except Exception:
+                                pass
+                    db.execute("UPDATE salary_categories SET reserve_on=? WHERE id=?", (_on, _cid))
+                    if _on:                          # katkı BUGÜNDEN (geriye dönük yok)
+                        for _m in _members:
+                            db.execute("UPDATE users SET reserve_from=? WHERE user_id=?", (_adv_today().isoformat(), _m))
+                    db.commit()
+                    log_action(db, "salcat_reserve", user.id, user.first_name, None, _c["name"],
+                               {"id": _cid, "on": f"{int(_c['o'])} → {_on}"})
 
         # ─── Şube vardiyaları (Филиалы) — açılış cezası + aylık maaş aynı kayıt ───
         elif action == "branch_windows":
