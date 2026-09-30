@@ -5638,11 +5638,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "product_bonus": s.get("product_bonus", 0),
         "fines": s["fines"], "paid": s["paid"], "net": s["net"],
         "tips": s["tips"], "tips_count": s["tips_count"],
-        "tips_list": s["tips_list"][-5:],
+        "tips_list": [{k: x.get(k) for k in ("id", "amount", "note", "created_at")} for x in s["tips_list"]][-60:],
         "period": s["period"], "shifts_count": s["shifts_count"],
         "fines_count": s["fines_count"],
         "shifts": s["shifts"][-5:],
-        "fines_list": s["fines_list"][-5:],
+        # Ceza ekranı: dönemin TÜM cezaları + nedeni (owner 2026-09-30: «neden
+        # kesildiği yazılmıyor»). Önceden yalnız son 5 gidiyor ve hiç gösterilmiyordu.
+        "fines_list": [{k: x.get(k) for k in ("id", "amount", "reason", "type", "created_at", "added_by_name")}
+                       for x in s["fines_list"]][-100:],
         "active": s["active"],
         "adv_ded": s.get("adv_ded", 0),
         "res_ded": s.get("res_ded", 0),
