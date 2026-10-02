@@ -4269,6 +4269,13 @@ def adv_inst_cfg(db):
     return cfg
 
 
+def adv_inst_allowed(db, user_id):
+    """Bu kişinin seçebileceği EN FAZLA parça (owner 2026-10-03): komisyon
+    kapalıysa yalnız komisyonsuz sınır kadar (en az 1); açıksa genel en fazla."""
+    _ic = adv_inst_cfg(db)
+    return _ic["max"] if adv_com_enabled(db, user_id) else max(1, min(_ic["max"], _ic["free"]))
+
+
 def adv_quote(amount, limit, com_on=True, n=ADV_INSTALLMENTS, free=None):
     """Tek avansın hesabı. Komisyon % = avans / limit × %30.
     Komisyon YOK: komisyon kapalıysa ya da parça sayısı ücretsiz sınırdaysa (n ≤ free)."""
@@ -4445,12 +4452,13 @@ def adv_check(db, user_id, amount, exclude_id=None, n=None):
     if amount > left:
         return (f"Доступно только {fmt_sum(left)} сум.", info, None)
     _ic = adv_inst_cfg(db)
+    _mx = adv_inst_allowed(db, user_id)
     try:
-        n = int(n) if n not in (None, "", 0, "0") else min(ADV_INSTALLMENTS, _ic["max"])
+        n = int(n) if n not in (None, "", 0, "0") else min(ADV_INSTALLMENTS, _mx)
     except Exception:
         n = 0
-    if not (1 <= n <= _ic["max"]):
-        return (f"Частей: от 1 до {_ic['max']}.", info, None)
+    if not (1 <= n <= _mx):
+        return (f"Частей: от 1 до {_mx}." if _mx > 1 else "Аванс — одной частью.", info, None)
     return (None, info, adv_quote(amount, info["limit"], adv_com_enabled(db, user_id), n, _ic["free"]))
 
 
@@ -4915,8 +4923,9 @@ def adv_view(db, user_id, full=True):
         "closed_today": 1 if today.day in adv_closed_days(db) else 0,
         "reserve_block": reserve_adv_block(db, user_id) or "",
         "com_on": 1 if adv_com_enabled(db, user_id) else 0,
-        "inst_max": adv_inst_cfg(db)["max"], "inst_free": adv_inst_cfg(db)["free"],
-        "next_dates": [d.isoformat() for d in adv_schedule(today, adv_inst_cfg(db)["max"])],
+        # inst_max = BU KİŞİNİN seçebileceği en fazla parça (komisyon kapalıysa ücretsiz sınır).
+        "inst_max": adv_inst_allowed(db, user_id), "inst_free": adv_inst_cfg(db)["free"],
+        "next_dates": [d.isoformat() for d in adv_schedule(today, adv_inst_allowed(db, user_id))],
     })
     try:
         _uc = db.execute("SELECT adv_com FROM users WHERE user_id=?", (user_id,)).fetchone()
