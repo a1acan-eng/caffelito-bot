@@ -1762,6 +1762,16 @@ def grid_off_gap(db, week_key, user_id, day):
 _GRID_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
+async def grid_notify_owners(bot_obj, db, text):
+    """Çalışan kendi planını değiştirdiğinde (izin koydu/kaldırdı) owner'a DM.
+    Eskiden yalnız TALEP owner'a gidiyordu; kendi koyduğu izin sessizdi."""
+    for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        try:
+            await bot_obj.send_message(_o["user_id"], text, parse_mode="Markdown")
+        except Exception:
+            pass
+
+
 def grid_day_label(day):
     try:
         return _GRID_DAYS[int(day)]
@@ -11507,7 +11517,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # Ceza siliniyorsa owner'a yazilan ALACAK da geri alinir,
                     # yoksa ceza yokken para owner'da kalirdi.
                     if kind == "fine":
-                        fine_to_owner_undo(db, rid)
+                        # Açılış gecikmesi cezası ise gecikme kaydı da «отменён»
+                        # olmalı (op_reject aynı geri almayı yapar) — yoksa kayıt
+                        # «оштрафован» kalır ve tablo cezayla tutmaz.
+                        _opr = db.execute("SELECT id FROM opening_delays WHERE fine_id=? LIMIT 1",
+                                          (rid,)).fetchone()
+                        if _opr:
+                            op_reject(db, int(_opr["id"]), user.id, user.first_name or "")
+                        else:
+                            fine_to_owner_undo(db, rid)
                     db.execute(f"DELETE FROM {tbl} WHERE id=?", (rid,))
                     db.commit()
                     log_action(db, "delete_record", user.id, user.first_name, None, None, {"kind": kind, "id": rid})
@@ -14223,6 +14241,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl0} — смена не назначена.")
                     except Exception:
                         pass
+                if get_role(db, user.id) != "owner":
+                    _dd0 = grid_day_date(wk0, day0)
+                    await grid_notify_owners(context.bot, db,
+                        f"↩️ *{md_safe(_nm0)}* отменил(а) свой выходной: {_dl0}"
+                        + (f" {_dd0.strftime('%d.%m')}" if _dd0 else "") + "\n\nУправление → График смен")
                 return
             wk = grid_week_key(data.get("week"))
             try:
@@ -14276,6 +14299,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl} — {_what}.")
                 except Exception:
                     pass
+            if code == "off" and get_role(db, user.id) != "owner":
+                _dd = grid_day_date(wk, day)
+                await grid_notify_owners(context.bot, db,
+                    f"🛋 *{md_safe(_nm)}* взял(а) выходной: {_dl}"
+                    + (f" {_dd.strftime('%d.%m')}" if _dd else "") + "\n\nУправление → График смен")
 
         elif action == "shift_reassign":
             # График: bir günün vardiyası bir personelden diğerine devredilir.
