@@ -302,7 +302,13 @@ def get_db():
     # baristanin KENDI planindan onceki, TEK BASINA calistigi dakikalar ×1.5.
     for _hc, _ht in (("pass_at", "TEXT"), ("accept_at", "TEXT"), ("accept_uid", "INTEGER"),
                      ("cover_min", "INTEGER"), ("cover_amount", "INTEGER"), ("cover_adj_id", "INTEGER"),
-                     ("b2_real_at", "TEXT")):
+                     ("b2_real_at", "TEXT"),
+                     # ERKEN CAGIRMA (owner 2026-09-30): 1. barista sменщика erken
+                     # cagirir (saat YAZMADAN); kabul ederse gelip baslattigi an
+                     # devir penceresi baslar, ucret GERCEK saatten sayilir.
+                     ("call_uid", "INTEGER"), ("call_name", "TEXT"), ("call_status", "TEXT"),
+                     ("call_at", "TEXT"), ("call_dec_at", "TEXT"),
+                     ("orig_b2_start", "TEXT"), ("orig_sched_end", "TEXT")):
         try:
             db.execute(f"ALTER TABLE handover ADD COLUMN {_hc} {_ht}")
         except sqlite3.OperationalError:
@@ -3063,6 +3069,151 @@ def ho_cover_pay(db, row, left_at):
         return row
 
 
+# ── ERKEN CAGIRMA (owner 2026-09-30) ─────────────────────────────────────
+# Saha: 1. barista 2.'yi 15:30 yerine 12:00'de cagirdi. 2. barista 12:00'de
+# basladi ama ucret 15:30'dan sayildi (izinsiz erken gelis kurali) ve 1.
+# barista 16:30'a kadar kapatamadi. Yeni akis:
+#   1) 1. barista «Вызвать сменщика раньше» → kisiyi secer (saat YOK).
+#   2) Sменщик kabul eder (Telegram dugmesi ya da Nero).
+#   3) Gelip vardiyayi baslattigi AN: baslangic gercek saat, devir penceresi
+#      o an baslar ve normal uzunlugunda (plan: 15:30→16:30 = 60 dk) surer.
+#   4) Pencere bitince 1. baristanin vardiyasi taslakla KENDILIGINDEN kapanir.
+#      Daha erken cikmak: devret → devral → owner izni (degismedi).
+HO_CALL_OPEN = ("pending", "accepted")
+
+
+def ho_call_cands(db, row):
+    """Cagrilabilecek kisiler: bu subenin baristalari (stajyer/asistan degil),
+    vardiyada olmayanlar. Bugun grafikte 2. vardiyada olan EN USTTE."""
+    bid = int(row["branch_id"] or 0)
+    try:
+        b2s = datetime.fromisoformat(row["b2_start"])
+    except Exception:
+        b2s = datetime.now(TZ).replace(tzinfo=None)
+    out = []
+    try:
+        busy = {int(r["user_id"]) for r in db.execute(
+            "SELECT user_id FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL").fetchall()}
+        rows = db.execute(
+            "SELECT user_id, COALESCE(branch_id,1) AS bid FROM users WHERE COALESCE(approved,0)=1 "
+            "AND COALESCE(archived,0)=0 AND COALESCE(role,'barista')!='owner' AND user_id!=?",
+            (int(row["user_id"]),)).fetchall()
+        tpls = grid_templates(db)
+        for r in rows:
+            uid = int(r["user_id"])
+            if uid in busy:
+                continue
+            try:
+                if closer_is_assistant(db, uid, bid):
+                    continue
+            except Exception:
+                pass
+            sched = False
+            try:
+                _pl, _code = op_scheduled(db, uid, b2s, tpls)
+                _tb = (tpls.get(_code) or {}).get("branch_id")
+                sched = bool(_pl) and abs((_pl - b2s).total_seconds()) <= 3 * 3600 and (not _tb or int(_tb) == bid)
+            except Exception:
+                sched = False
+            if int(r["bid"]) != bid and not sched:
+                continue
+            out.append({"uid": uid, "nm": display_name_for(db, uid, fallback="?"), "sched": 1 if sched else 0})
+    except Exception as e:
+        logger.warning(f"ho_call_cands: {e}")
+    out.sort(key=lambda x: (-x["sched"], x["nm"]))
+    return out
+
+
+def ho_call_send(db, row, to_uid):
+    if row["finalized"]:
+        return None, "Смена уже закрыта."
+    if row["b2_arrived_at"]:
+        return None, "Сменщик уже на смене."
+    now = datetime.now(TZ).replace(tzinfo=None)
+    try:
+        if now >= datetime.fromisoformat(row["b2_start"]):
+            return None, "Время сменщика уже наступило — вызывать раньше поздно."
+    except Exception:
+        pass
+    if (row["call_status"] or "") in HO_CALL_OPEN:
+        return None, "Вызов уже отправлен · сначала отмените его."
+    if not any(c["uid"] == int(to_uid) for c in ho_call_cands(db, row)):
+        return None, "Этого сотрудника нельзя вызвать."
+    nm = display_name_for(db, int(to_uid), fallback="?")
+    db.execute("UPDATE handover SET call_uid=?, call_name=?, call_status='pending', call_at=?, call_dec_at=NULL WHERE id=?",
+               (int(to_uid), nm, datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_call_decide(db, hid, uid, ok):
+    row = db.execute("SELECT * FROM handover WHERE id=?", (int(hid),)).fetchone()
+    if not row or row["finalized"]:
+        return None, "Вызов уже неактуален."
+    if int(row["call_uid"] or 0) != int(uid):
+        return None, "Этот вызов не для вас."
+    if (row["call_status"] or "") != "pending":
+        return None, "Ответ уже дан."
+    db.execute("UPDATE handover SET call_status=?, call_dec_at=? WHERE id=?",
+               ("accepted" if ok else "declined", datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_call_cancel(db, row):
+    if (row["call_status"] or "") not in HO_CALL_OPEN:
+        return None, "Активного вызова нет."
+    db.execute("UPDATE handover SET call_status='cancelled', call_dec_at=? WHERE id=?",
+               (datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"]), ""
+
+
+def ho_call_accepted_for(db, row, uid):
+    """Bu kisi bu satir icin kabul edilmis erken cagriya sahip mi?"""
+    try:
+        return (row is not None and (row["call_status"] or "") == "accepted"
+                and int(row["call_uid"] or 0) == int(uid))
+    except Exception:
+        return False
+
+
+async def ho_call_notify(bot_obj, db, row, what):
+    """Erken cagri bildirimleri (hepsi DM). what: send | accepted | declined | cancelled."""
+    _br = (get_branch(db, int(row["branch_id"] or 0)) or {}).get("name") or ""
+    try:
+        _plan = datetime.fromisoformat(row["b2_start"]).strftime("%H:%M")
+    except Exception:
+        _plan = ""
+    try:
+        if what == "send":
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Приду раньше", callback_data=f"ho_call_ok:{int(row['id'])}"),
+                InlineKeyboardButton("❌ Не могу", callback_data=f"ho_call_no:{int(row['id'])}")]])
+            await bot_obj.send_message(
+                int(row["call_uid"]),
+                f"📣 {row['user_name']} просит вас выйти на смену раньше · {_br}\n"
+                f"По плану ваша смена с {_plan}.\n\n"
+                "Если согласны — приходите и начните смену в Nero: время засчитается с начала смены, "
+                "передача смены начнётся сразу.", reply_markup=kb)
+        elif what in ("accepted", "declined"):
+            await bot_obj.send_message(
+                int(row["user_id"]),
+                (f"✅ {row['call_name']} согласился выйти раньше. Когда он начнёт смену — сразу начнётся передача смены."
+                 if what == "accepted" else f"❌ {row['call_name']} не может выйти раньше. Смена — по плану."))
+            if what == "accepted":
+                _oid = _primary_owner(db)
+                if _oid and int(_oid) not in (int(row["user_id"]), int(row["call_uid"] or 0)):
+                    await bot_obj.send_message(
+                        int(_oid), f"📣 {_br}: {row['user_name']} вызвал {row['call_name']} раньше плана ({_plan}) — "
+                                   f"{row['call_name']} согласился. Оплата {row['call_name']} — с фактического начала смены.")
+        elif what == "cancelled" and row["call_uid"]:
+            await bot_obj.send_message(int(row["call_uid"]),
+                                       f"ℹ️ {row['user_name']} отменил вызов. Ваша смена — по плану ({_plan}).")
+    except Exception as e:
+        logger.warning(f"ho_call_notify {what}: {e}")
+
+
 def ho_on_b2_arrival(db, cfg, b2_sh):
     """2. barista vardiya basladi → ayni subede ACIK devir satirini isaretle.
     Doner: kapanis gereken satir (17:30 sonrasi gelis + taslak) ya da None."""
@@ -3086,6 +3237,27 @@ def ho_on_b2_arrival(db, cfg, b2_sh):
     except Exception:
         return None
     nm = display_name_for(db, int(b2.get("user_id") or 0), fallback="?")
+    # ERKEN CAGIRMA kabul edilmisse: devir penceresi SIMDI baslar ve normal
+    # uzunlugunda surer (plan 15:30→16:30 = 60 dk → 12:00→13:00). Eski plan
+    # orig_* sutunlarinda saklanir.
+    try:
+        _b2s0 = datetime.fromisoformat(row["b2_start"])
+        if ho_call_accepted_for(db, row, int(b2.get("user_id") or 0)) and at < _b2s0:
+            _dur = en - _b2s0
+            if _dur.total_seconds() <= 0:
+                _dur = timedelta(minutes=60)
+            _new_en = at + _dur
+            db.execute("UPDATE handover SET orig_b2_start=COALESCE(orig_b2_start, b2_start), "
+                       "orig_sched_end=COALESCE(orig_sched_end, sched_end), b2_start=?, sched_end=?, "
+                       "call_status='used' WHERE id=?", (at.isoformat(), _new_en.isoformat(), int(row["id"])))
+            db.commit()
+            log_action(db, "ho_call_arrival", int(b2.get("user_id") or 0), nm, int(row["user_id"]),
+                       row["user_name"] or "", {"shift_id": int(row["shift_id"]), "arrived": at.isoformat(),
+                                                "old_b2_start": row["b2_start"], "old_end": row["sched_end"],
+                                                "new_end": _new_en.isoformat()})
+            en = _new_en
+    except Exception as _e_call:
+        logger.warning(f"ho_call arrival: {_e_call}")
     ho_started = at.isoformat() if at < en else None
     _real = b2.get("_real_start") or at.isoformat()
     db.execute("UPDATE handover SET b2_uid=?, b2_name=?, b2_arrived_at=?, b2_real_at=?, "
@@ -3256,7 +3428,10 @@ def ho_view(db, row, now):
             "cover_min": r.get("cover_min") or 0, "cover_amount": r.get("cover_amount") or 0,
             "ho_active": 1 if active else 0, "left": left,
             "extra_on": 1 if (r.get("extra_from") and not r.get("extra_to")) else 0,
-            "extra_min": ex_min or 0, "extra_amount": r.get("extra_amount") or 0}
+            "extra_min": ex_min or 0, "extra_amount": r.get("extra_amount") or 0,
+            "call": r.get("call_status") or "", "call_nm": r.get("call_name") or "",
+            "call_at": _hm(r.get("call_at") or ""),
+            "orig_end": _hm(r.get("orig_sched_end") or ""), "orig_b2": _hm(r.get("orig_b2_start") or "")}
 
 
 async def handover_loop(app):
@@ -5799,6 +5974,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _hr = ho_get_or_create(db, _opc, _act_ho)
                 if _hr:
                     _ho_out["me"] = ho_view(db, _hr, _now_ho)
+                    # Erken cagri: kimler cagrilabilir (sменщик henuz gelmediyse).
+                    if not _hr["b2_arrived_at"] and not _hr["finalized"]:
+                        _ho_out["call_cands"] = ho_call_cands(db, _hr)
                     _ho_out["ln"] = [{"id": r["id"], "nm": r["user_name"], "at": (r["expected_at"] or "")[11:16]}
                                      for r in db.execute("SELECT * FROM late_notices WHERE branch_id=? AND status='pending' AND user_id!=? ORDER BY id DESC LIMIT 5",
                                                          (int(_act_ho["branch_id"] or 0), user_id)).fetchall()]
@@ -5828,6 +6006,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                  (user_id, _now_ho.strftime("%Y-%m-%d"))).fetchone()
                 if _lm:
                     _ho_out["ln_me"] = {"id": _lm["id"], "at": (_lm["expected_at"] or "")[11:16], "status": _lm["status"]}
+                # Beni erken cagiran var mi?
+                _cm = db.execute("SELECT * FROM handover WHERE call_uid=? AND finalized=0 AND call_status IN ('pending','accepted') "
+                                 "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+                if _cm:
+                    _ho_out["call_me"] = {"id": _cm["id"], "from": _cm["user_name"] or "", "status": _cm["call_status"],
+                                          "plan": (_cm["b2_start"] or "")[11:16],
+                                          "br": (get_branch(db, int(_cm["branch_id"] or 0)) or {}).get("name") or ""}
             _ho_out["solo"] = [int(b["id"]) for b in get_branches(db, only_active=True)
                                if ho_solo(db, int(b["id"]), _now_ho)]
             # Baristaya dugmeyi YALNIZ anlamliysa goster (owner'da hep durur).
@@ -7840,6 +8025,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "noop":
         return
 
+    # ─── Erken cagri: sменщик Telegram'dan cevap veriyor ───
+    if data.startswith("ho_call_ok:") or data.startswith("ho_call_no:"):
+        try:
+            _hid = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        db = get_db()
+        _ok = data.startswith("ho_call_ok:")
+        row, err = ho_call_decide(db, _hid, query.from_user.id, _ok)
+        if err:
+            try: await query.edit_message_text("ℹ️ " + err)
+            except Exception: pass
+            return
+        log_action(db, "ho_call_accept" if _ok else "ho_call_decline", query.from_user.id,
+                   query.from_user.first_name, int(row["user_id"]), row["user_name"] or "",
+                   {"shift_id": int(row["shift_id"])})
+        try:
+            await query.edit_message_text(
+                "✅ Вы согласились выйти раньше. Когда придёте — начните смену в Nero: время засчитается с начала смены."
+                if _ok else "❌ Вы ответили: не могу. Смена — по плану.")
+        except Exception:
+            pass
+        await ho_call_notify(context.bot, db, row, "accepted" if _ok else "declined")
+        return
+
     # ─── Avans onay/red (inline, yeni sistem) ───
     if data.startswith("adv_ok:") or data.startswith("adv_no:"):
         try:
@@ -8488,7 +8698,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
                         "AND b2_arrived_at IS NULL ORDER BY id DESC LIMIT 1",
                         (int(_bid_chk or 0), user.id)).fetchone()
-                    if _erow and str(_erow["early_status"] or "none") != "approved":
+                    if (_erow and str(_erow["early_status"] or "none") != "approved"
+                            and not ho_call_accepted_for(db, _erow, user.id)):
                         _b2s = datetime.fromisoformat(_erow["b2_start"])
                         _want = _parse_user_time(custom_start) or datetime.now(TZ).replace(tzinfo=None)
                         if _want < _b2s:
@@ -12462,6 +12673,48 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  f"сверхурочно ×{float(op_cfg(db).get('extra_k') or 1.5):g} не начисляется, сменщика не ждём."
                  + (f"\n↩️ Отменено начисление сверхурочных: {_undone}" if _undone else ""))
                 if _on else f"🤝 {_bn_s}: обычный режим — передача смены снова включена.")
+
+        # ─── ERKEN CAGIRMA (owner 2026-09-30) ───
+        elif action in ("ho_call", "ho_call_cancel"):
+            db = get_db()
+            active = get_active_shift(db, user.id)
+            row = ho_get_or_create(db, op_cfg(db), active) if active else None
+            if not row:
+                await update.message.reply_text("❌ Нет смены с передачей."); return
+            if action == "ho_call":
+                try:
+                    _to = int(data.get("to") or 0)
+                except Exception:
+                    _to = 0
+                row, err = ho_call_send(db, row, _to)
+                if err:
+                    await update.message.reply_text("❌ " + err); return
+                log_action(db, "ho_call", user.id, user.first_name, _to, row["call_name"] or "",
+                           {"shift_id": int(row["shift_id"]), "plan_b2": row["b2_start"]})
+                await ho_call_notify(context.bot, db, row, "send")
+                await update.message.reply_text(f"📣 Вызов отправлен: {row['call_name']}. Ждём ответа.")
+            else:
+                _old = dict(row)
+                row, err = ho_call_cancel(db, row)
+                if err:
+                    await update.message.reply_text("❌ " + err); return
+                log_action(db, "ho_call_cancel", user.id, user.first_name, int(_old.get("call_uid") or 0),
+                           _old.get("call_name") or "", {"shift_id": int(row["shift_id"])})
+                await ho_call_notify(context.bot, db, row, "cancelled")
+
+        elif action == "ho_call_decide":
+            db = get_db()
+            try:
+                _hid = int(data.get("id") or 0)
+            except Exception:
+                _hid = 0
+            _ok = bool(int(data.get("ok") or 0))
+            row, err = ho_call_decide(db, _hid, user.id, _ok)
+            if err:
+                await update.message.reply_text("❌ " + err); return
+            log_action(db, "ho_call_accept" if _ok else "ho_call_decline", user.id, user.first_name,
+                       int(row["user_id"]), row["user_name"] or "", {"shift_id": int(row["shift_id"])})
+            await ho_call_notify(context.bot, db, row, "accepted" if _ok else "declined")
 
         elif action == "ho_pass":
             # 1. barista: «Передаю смену» (taslak kilitli olmali).
