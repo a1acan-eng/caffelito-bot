@@ -12811,6 +12811,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await update.message.reply_text(
                         "ℹ️ Сменщик уже на смене (или уже приходил сегодня) — режим «один за двоих» не нужен.\n"
                         "Если что-то изменилось, включить может владелец."); return
+            # Mod yalnız TEK barista çalışırken anlamlı (owner 2026-10-02): şubede
+            # iki barista vardiyası açıksa owner da açamaz. (Önceden ayarlamak
+            # serbest — kimse yokken açılabilir; 2. gelince kendiliğinden kapanır.)
+            if _on:
+                _open_b = [r for r in db.execute(
+                    "SELECT * FROM shifts WHERE COALESCE(branch_id,1)=? AND end_time IS NULL "
+                    "AND start_time IS NOT NULL", (_sb,)).fetchall() if ho_shift_is_barista(db, r)]
+                if len(_open_b) >= 2:
+                    await update.message.reply_text(
+                        "ℹ️ На филиале сейчас работают двое — режим «один за двоих» включается, "
+                        "только когда на смене один бариста."); return
             ho_solo_set(db, _sb, _on)
             _bn_s = (get_branch(db, _sb) or {}).get("name") or str(_sb)
             # Acilirken: bugunun ACIK devir satirlari kapatilir (sверхурочно
