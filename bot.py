@@ -517,6 +517,14 @@ def get_db():
         target INTEGER, note TEXT, created_by INTEGER, created_by_name TEXT, created_at TEXT)""")
     # Aynı gün için ikinci katkı YAZILAMAZ (çift kayıt koruması).
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS reserve_tx_day ON reserve_tx(user_id, date) WHERE kind='contrib'")
+    # Owner bir katkıyı SİLEBİLİR (2026-10-03: yedek baristadan yanlışlıkla kesildi).
+    # Satır iz için KALIR (voided=1, kim/ne zaman); bakiyeye ve maaşa girmez. Gün
+    # «kullanılmış» sayılır → eşitleme o günü bir daha eklemez.
+    for _vc, _vt in (("voided", "INTEGER"), ("voided_by", "INTEGER"), ("voided_by_name", "TEXT"), ("voided_at", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE reserve_tx ADD COLUMN {_vc} {_vt}")
+        except sqlite3.OperationalError:
+            pass
     db.execute("""CREATE TABLE IF NOT EXISTS reserve_settlements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, status TEXT DEFAULT 'pending',
@@ -4588,7 +4596,7 @@ def adv_decade_pay(db, user_id, today=None):
         "WHERE i.user_id=? AND i.due_date>=? AND i.due_date<=? AND x.status IN ('active','done')",
         (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0
     try:
-        res = int(db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND kind='contrib' "
+        res = int(db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND kind='contrib' AND COALESCE(voided,0)=0 "
                              "AND date>=? AND date<=?", (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0)
     except Exception:
         res = 0
@@ -4640,7 +4648,8 @@ def reserve_eligible(db, user_id):
 
 
 def reserve_balance(db, user_id):
-    r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=?", (user_id,)).fetchone()
+    r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND COALESCE(voided,0)=0",
+                   (user_id,)).fetchone()
     return int(r["s"] or 0)
 
 
@@ -4767,7 +4776,8 @@ def reserve_sync_all(db):
 def reserve_deduction(db, user_id, period):
     """Bu dönemin katkıları maaştan düşer (return/iade maaşa dokunmaz)."""
     try:
-        r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND period=? AND kind='contrib'",
+        r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND period=? AND kind='contrib' "
+                       "AND COALESCE(voided,0)=0",
                        (user_id, period)).fetchone()
         return int(r["s"] or 0)
     except Exception:
@@ -4799,7 +4809,8 @@ def reserve_view(db, user_id, full=True):
     lim = 200 if full else 30
     info["hist"] = [{"id": r["id"], "kind": r["kind"], "date": r["date"], "amount": int(r["amount"] or 0),
                      "note": r["note"] or ""} for r in db.execute(
-        "SELECT * FROM reserve_tx WHERE user_id=? ORDER BY date DESC, id DESC LIMIT ?", (user_id, lim)).fetchall()]
+        "SELECT * FROM reserve_tx WHERE user_id=? AND COALESCE(voided,0)=0 ORDER BY date DESC, id DESC LIMIT ?",
+        (user_id, lim)).fetchall()]
     st = db.execute("SELECT * FROM reserve_settlements WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
     info["settle"] = ({"id": st["id"], "amount": int(st["amount"] or 0), "status": st["status"],
                        "at": st["created_at"], "done_at": st["decided_at"] or ""} if st else None)
@@ -13524,6 +13535,35 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
 
         # ═══ Owner düğmeleri (2026-10-02): komisyon · stajyer avansı · kişiye Reserve ═══
+        elif action == "reserve_tx_void":
+            # Owner: yanlış alınmış bir Reserve katkısını sil (maaşa geri döner).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _rid = int(data.get("id") or 0)
+            except Exception:
+                _rid = 0
+            _tx = db.execute("SELECT * FROM reserve_tx WHERE id=? AND kind='contrib' AND COALESCE(voided,0)=0",
+                             (_rid,)).fetchone()
+            if not _tx:
+                await update.message.reply_text("❌ Взнос не найден или уже удалён.")
+                return
+            db.execute("UPDATE reserve_tx SET voided=1, voided_by=?, voided_by_name=?, voided_at=? WHERE id=?",
+                       (user.id, user.first_name, datetime.now(TZ).isoformat(), _rid))
+            db.commit()
+            _tu = int(_tx["user_id"])
+            log_action(db, "reserve_tx_void", user.id, user.first_name, _tu,
+                       display_name_for(db, _tu, fallback=f"ID {_tu}"),
+                       {"date": _tx["date"], "amount": int(_tx["amount"] or 0)})
+            try:
+                await context.bot.send_message(
+                    _tu, f"↩️ Взнос в резерв за {_tx['date'][8:10]}.{_tx['date'][5:7]} "
+                         f"({fmt_sum(int(_tx['amount'] or 0))} сум) отменён владельцем — сумма вернулась в зарплату.")
+            except Exception:
+                pass
+
         elif action in ("adv_com_set", "adv_trainee_set", "reserve_user_off"):
             db = get_db()
             if get_role(db, user.id) != "owner":
