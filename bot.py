@@ -982,6 +982,14 @@ def branch_group_id(db, branch_id):
     return None
 
 
+def branch_ready(b):
+    """Şubeye geçilebilir mi: Telegram grubu bağlı olmalı. Ana şube grupsuz da
+    çalışır (eski tekil gruba düşer), o yüzden hep hazır sayılır."""
+    if not b:
+        return False
+    return bool(str(b.get("group_chat_id") or "").strip()) or int(b.get("id") or 0) == DEFAULT_BRANCH_ID
+
+
 def acting_branch_id(db, user_id):
     """Bir aksiyonun ait olduğu şube: 1) AÇIK vardiyanın şubesi →
     2) girişte seçilen oturum şubesi (cur_branch) → 3) ev şubesi.
@@ -6250,6 +6258,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     try:
         if role == "owner":
             branches_out = [{"id": b["id"], "name": b["name"], "group": b["group_chat_id"] or "",
+                             "ready": 1 if branch_ready(b) else 0,
                              "active": int(b["active"] or 0), "sort": b["sort_order"] or 0,
                              "open": (b["open_hour"] if b["open_hour"] is not None else 7),
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
@@ -6268,6 +6277,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # görünüp baristada görünmemesinin sebebi buydu.
             # Bunlar gizli veri değil: kişi kendi ödenen saatini doğru görmeli.
             branches_out = [{"id": b["id"], "name": b["name"],
+                             # Grubu açılmamış şubeye geçilemez (seçicide gizlenir).
+                             "ready": 1 if branch_ready(b) else 0,
                              "open": (b["open_hour"] if b["open_hour"] is not None else 7),
                              "close": (b["close_hour"] if b["close_hour"] is not None else 3),
                              "unpaid": (b["unpaid_win"] if b["unpaid_win"] is not None else 1),
@@ -9702,7 +9713,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 bid = int(data.get("branch_id") or 0)
             except Exception:
                 bid = 0
-            if bid and get_branch(db, bid):
+            if bid and branch_ready(get_branch(db, bid)):
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
                            (f"cur_branch_{user.id}", str(bid)))
                 db.commit()
@@ -9715,7 +9726,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 bid = int(data.get("branch_id") or 0)
             except Exception:
                 bid = 0
-            if bid and get_branch(db, bid):
+            if bid and branch_ready(get_branch(db, bid)):
                 act = get_active_shift(db, user.id)
                 if act is not None:
                     db.execute("UPDATE shifts SET branch_id=? WHERE id=?", (bid, act["id"]))
