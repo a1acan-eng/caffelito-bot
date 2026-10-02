@@ -1709,6 +1709,56 @@ def grid_off_allowed(db, week_key, user_id, day):
     return True, ""
 
 
+def grid_day_date(week_key, day):
+    """Plan hücresinin gerçek tarihi (hafta Pazartesi'si + gün)."""
+    try:
+        return datetime.strptime(str(week_key), "%Y-%m-%d").date() + timedelta(days=int(day))
+    except Exception:
+        return None
+
+
+def grid_day_past(week_key, day):
+    """Gün geçti mi (bugünden önce). Geçmiş güne çalışan izin koyamaz/iptal edemez."""
+    d = grid_day_date(week_key, day)
+    return bool(d and d < datetime.now(TZ).replace(tzinfo=None).date())
+
+
+OFF_GAP_DAYS = 7
+
+
+def grid_off_gap(db, week_key, user_id, day):
+    """Haftalık hak 1 iken: iki izin arasında en az 7 gün olmalı (Pazartesi
+    alan bir sonrakini en erken gelecek Pazartesi alır). İhlal → (False, sebep,
+    en erken serbest tarih); daha erkeni yalnız owner onayıyla."""
+    if grid_off_limit(db, user_id) != 1:
+        return True, "", None
+    tgt = grid_day_date(week_key, day)
+    if not tgt:
+        return True, "", None
+    lo, hi = tgt - timedelta(days=20), tgt + timedelta(days=20)
+    try:
+        rows = db.execute(
+            "SELECT week_key, day FROM shift_grid WHERE user_id=? AND code='off' "
+            "AND week_key BETWEEN ? AND ?",
+            (int(user_id), lo.isoformat(), hi.isoformat())).fetchall()
+    except Exception:
+        return True, "", None
+    for r in rows:
+        d = grid_day_date(r["week_key"], r["day"])
+        if not d or d == tgt:
+            continue
+        if abs((tgt - d).days) < OFF_GAP_DAYS:
+            nxt = d + timedelta(days=OFF_GAP_DAYS)
+            if d < tgt:
+                return (False,
+                        f"Выходной уже был {d.strftime('%d.%m')} — следующий без согласования "
+                        f"владельца можно с {nxt.strftime('%d.%m')}.", nxt)
+            return (False,
+                    f"Рядом уже есть выходной {d.strftime('%d.%m')} — между выходными "
+                    f"нужно {OFF_GAP_DAYS} дней.", None)
+    return True, "", None
+
+
 _GRID_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
@@ -14115,6 +14165,27 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if target_id != user.id and get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Изменять чужой график может только владелец.")
                 return
+            # Çalışan kendi planında YALNIZ izin koyar ya da kendi iznini kaldırır.
+            # Eskiden kendine herhangi bir vardiya yazabiliyor, owner'ın atadığı
+            # vardiyayı 'none' ile silebiliyordu. Geçmiş günler kilitli.
+            if get_role(db, user.id) != "owner":
+                if code not in ("off", "none"):
+                    await update.message.reply_text("❌ Смены назначает владелец.")
+                    return
+                _wkx = grid_week_key(data.get("week"))
+                try:
+                    _dx = int(data.get("day"))
+                except Exception:
+                    _dx = 0
+                if grid_day_past(_wkx, _dx):
+                    await update.message.reply_text("⚠️ Этот день уже прошёл.")
+                    return
+                if code == "none":
+                    _cx = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                                     (_wkx, _dx, target_id)).fetchone()
+                    if not _cx or (_cx["code"] or "") != "off":
+                        await update.message.reply_text("❌ Снять можно только свой выходной.")
+                        return
             # 'none' = HÜCREYİ BOŞALT. İzin alındıktan sonra onu geri almanın yolu
             # yoktu: plan yalnızca «vardiya» ya da «выходной» tutabiliyordu, üçüncü
             # bir durum (henüz atanmadı) yazılamıyordu. Artık izin iptal edilince
@@ -14160,8 +14231,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # veremiyordu. Owner sınırın üstünde de atayabilir — sorumluluk onda.
             if code == "off" and get_role(db, user.id) != "owner":
                 _ok2, _why2 = grid_off_allowed(db, wk, target_id, day)
+                if _ok2:
+                    _ok2, _why2, _ = grid_off_gap(db, wk, target_id, day)
                 if not _ok2:
-                    await update.message.reply_text("⚠️ " + _why2)
+                    await update.message.reply_text("⚠️ " + _why2 + "\nОтправьте заявку владельцу.")
                     return
             db.execute(
                 "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
@@ -14377,11 +14450,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 day = 0
             wk = grid_week_key(data.get("week"))
             note = (data.get("note") or "").strip()[:200]
-            # HAFTALIK LİMİT — talep aşamasında kontrol edilir, onayda tekrar.
+            # Geçmiş güne talep olmaz. Haftalık limit ya da 7 gün aralığı aşılıyorsa
+            # talep YİNE gider — tam da bunun için owner onayı var; owner'a hangi
+            # kuralın aşıldığı yazılır.
+            if grid_day_past(wk, day):
+                await update.message.reply_text("⚠️ Этот день уже прошёл.")
+                return
+            _over = []
             _ok, _why = grid_off_allowed(db, wk, user.id, day)
             if not _ok:
-                await update.message.reply_text("⚠️ " + _why)
-                return
+                _over.append(_why)
+            _okg, _whyg, _ = grid_off_gap(db, wk, user.id, day)
+            if not _okg:
+                _over.append(_whyg)
             _dup = db.execute(
                 "SELECT id FROM dayoff_requests WHERE user_id=? AND week_key=? AND day=? AND status='pending'",
                 (user.id, wk, day)).fetchone()
@@ -14408,7 +14489,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         _o["user_id"],
                         f"🔔 *Новый запрос на выходной*\n{md_safe(shown)} · {_dl}"
+                        + (f" {grid_day_date(wk, day).strftime('%d.%m')}" if grid_day_date(wk, day) else "")
                         + (f"\nПричина: {md_safe(note)}" if note else "")
+                        + ("".join(f"\n⚠️ {md_safe(_w)}" for _w in _over))
                         + "\n\nУправление → График смен",
                         parse_mode="Markdown")
                 except Exception:
