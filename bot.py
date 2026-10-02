@@ -525,7 +525,10 @@ def get_db():
     # Kişiye özel ayar (NULL = varsayılan) + stajyerden çıkış günü + son hedef (günlük için).
     for _rc, _rt in (("reserve_pct", "REAL"), ("reserve_months", "INTEGER"),
                      ("reserve_from", "TEXT"), ("reserve_last_target", "INTEGER"),
-                     ("reserve_synced_to", "TEXT")):
+                     ("reserve_synced_to", "TEXT"),
+                     # owner 2026-10-02: kişiye özel Reserve kapalı (1) · avans komisyonu
+                     # kişiye özel (NULL = genel ayar, 1 açık, 0 kapalı)
+                     ("reserve_off", "INTEGER"), ("adv_com", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -4215,11 +4218,40 @@ def adv_salary_info(db, user_id):
             "limit": man if man else auto_limit}
 
 
-def adv_quote(amount, limit):
-    """Tek avansın hesabı. Komisyon % = avans / limit × %30."""
+def adv_com_on_all(db):
+    """Avans komisyonu GENEL olarak açık mı (owner 2026-10-02). Varsayılan açık."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='adv_com_on'").fetchone()
+        return (str(r["val"]) != "0") if r else True
+    except Exception:
+        return True
+
+
+def adv_com_enabled(db, user_id):
+    """Bu kişiye komisyon uygulanır mı: kişiye özel ayar, yoksa genel ayar."""
+    try:
+        r = db.execute("SELECT adv_com FROM users WHERE user_id=?", (int(user_id),)).fetchone()
+        if r and r["adv_com"] is not None:
+            return bool(int(r["adv_com"]))
+    except Exception:
+        pass
+    return adv_com_on_all(db)
+
+
+def adv_trainee_on(db):
+    """Stajyerler avans alabilir mi (owner 2026-10-02). Varsayılan: hayır."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='adv_trainee'").fetchone()
+        return bool(r and str(r["val"]) == "1")
+    except Exception:
+        return False
+
+
+def adv_quote(amount, limit, com_on=True):
+    """Tek avansın hesabı. Komisyon % = avans / limit × %30 (komisyon kapalıysa 0)."""
     amount = int(amount or 0)
     limit = int(limit or 0)
-    pct = min(float(ADV_MAX_COM_PCT), (amount / limit * ADV_MAX_COM_PCT)) if limit > 0 else 0.0
+    pct = min(float(ADV_MAX_COM_PCT), (amount / limit * ADV_MAX_COM_PCT)) if (limit > 0 and com_on) else 0.0
     pct = max(0.0, pct)
     # Yarım yukarı yuvarlanır (Nero'daki Math.round ile aynı sonuç).
     com = int(amount * pct / 100.0 + 0.5)   # tam oranla; ekranda % yuvarlanır
@@ -4326,7 +4358,8 @@ def adv_owner_view(db, period=None):
     pend = db.execute("SELECT COUNT(*) AS c FROM advances WHERE status='pending'").fetchone()["c"] or 0
     return {"period": period, "got_month": got_month, "got_total": got_total,
             "com_upcoming": upcoming, "debt": debt, "pend": int(pend), "rows": rows[:40],
-            "live": 1 if adv_live(db) else 0, "closed_days": adv_closed_days(db)}
+            "live": 1 if adv_live(db) else 0, "closed_days": adv_closed_days(db),
+            "com_on": 1 if adv_com_on_all(db) else 0, "trainee_on": 1 if adv_trainee_on(db) else 0}
 
 
 def adv_closed_text(days):
@@ -4365,6 +4398,9 @@ def adv_check(db, user_id, amount, exclude_id=None):
     info = adv_salary_info(db, user_id)
     # RESERVE kilidi (owner 2026-09-28): резерв 100% olmadan normal avans yok.
     # Özel avans (adv_create_manual) bu kontrolden GEÇMEZ — owner kararı.
+    # STAJYER: avans owner'ın tek düğmesine bağlı (owner 2026-10-02).
+    if not reserve_eligible(db, user_id) and get_role(db, user_id) != "owner" and not adv_trainee_on(db):
+        return ("Аванс стажёрам сейчас не выдаётся.", info, None)
     _rb = reserve_adv_block(db, user_id)
     if _rb:
         return (_rb, info, None)
@@ -4381,7 +4417,7 @@ def adv_check(db, user_id, amount, exclude_id=None):
         return ("Укажите сумму.", info, None)
     if amount > left:
         return (f"Доступно только {fmt_sum(left)} сум.", info, None)
-    return (None, info, adv_quote(amount, info["limit"]))
+    return (None, info, adv_quote(amount, info["limit"], adv_com_enabled(db, user_id)))
 
 
 def adv_write_schedule(db, adv_row, from_date=None):
@@ -4421,7 +4457,7 @@ def adv_create_manual(db, user_id, amount, n_inst, step_days, actor_id, actor_na
     if step_days not in (10, 15, 30):
         return "Интервал: 10, 15 или 30 дней.", None
     info = adv_salary_info(db, user_id)
-    q = adv_quote(amount, info["limit"])
+    q = adv_quote(amount, info["limit"], adv_com_enabled(db, user_id))
     pct, com = q["pct"], q["commission"]
     now = datetime.now(TZ).isoformat()
     cur = db.execute(
@@ -4586,8 +4622,8 @@ def reserve_cfg(db):
 
 def _reserve_user_row(db, user_id):
     return db.execute("SELECT user_id, role, COALESCE(archived,0) AS archived, reserve_pct, reserve_months, "
-                      "reserve_from, reserve_last_target, reserve_synced_to FROM users WHERE user_id=?",
-                      (user_id,)).fetchone()
+                      "reserve_from, reserve_last_target, reserve_synced_to, COALESCE(reserve_off,0) AS reserve_off "
+                      "FROM users WHERE user_id=?", (user_id,)).fetchone()
 
 
 def reserve_eligible(db, user_id):
@@ -4626,7 +4662,10 @@ def reserve_info(db, user_id, cfg=None):
     elig = reserve_eligible(db, user_id)
     started = cfg["started"]
     done = target > 0 and bal >= target
-    if not started or not elig or target <= 0 or (bal <= 0 and not done):
+    off = bool(u and u["reserve_off"])
+    if off:
+        status = "off"
+    elif not started or not elig or target <= 0 or (bal <= 0 and not done):
         status = "not_started"
     elif done:
         status = "completed"
@@ -4634,7 +4673,7 @@ def reserve_info(db, user_id, cfg=None):
         status = "in_progress"
     pct_done = 100 if done else (int(bal * 100 // target) if target > 0 else 0)
     remaining = max(0, target - bal)
-    return {"live": 1 if started else 0, "started": started, "eligible": 1 if elig else 0,
+    return {"live": 1 if started else 0, "started": started, "eligible": 1 if elig else 0, "off": 1 if off else 0,
             "pct": round(pct, 2), "months": months, "own": 1 if own else 0,
             "def_pct": float(cfg["pct"]), "def_months": int(cfg["months"]),
             "salary": salary, "target": target, "balance": bal, "remaining": remaining,
@@ -4652,7 +4691,8 @@ def reserve_sync(db, user_id, cfg=None, today=None):
         return 0
     u = _reserve_user_row(db, user_id)
     # Owner Reserve'e girmez; arşivdeki/stajyer kişiye katkı yazılmaz.
-    if not u or u["archived"] or (u["role"] or "") == "owner" or not reserve_eligible(db, user_id):
+    if (not u or u["archived"] or (u["role"] or "") == "owner" or u["reserve_off"]
+            or not reserve_eligible(db, user_id)):
         return 0
     info = reserve_info(db, user_id, cfg)
     target = info["target"]
@@ -4742,8 +4782,10 @@ def reserve_adv_block(db, user_id):
     if get_role(db, user_id) == "owner":
         return None
     info = reserve_info(db, user_id, cfg)
-    if not info["eligible"]:
-        return "Аванс доступен после перехода из стажёров: сначала нужно собрать резерв."
+    # Reserve kişiye KAPALI → avans reserve şartı aramaz. Stajyerin avansı
+    # adv_check'teki ayrı düğmeye bağlı; buraya geldiyse izin var demektir.
+    if info["off"] or not info["eligible"]:
+        return None
     if info["target"] <= 0:
         return "Резерв не рассчитан: не задана ставка или смена филиала."
     if info["status"] != "completed":
@@ -4778,7 +4820,7 @@ def reserve_owner_list(db):
         out.append({"uid": uid, "name": display_name_for(db, uid, fallback="?"), "arch": int(r["arch"]),
                     "balance": i["balance"], "target": i["target"], "progress": i["progress"],
                     "remaining": i["remaining"], "status": i["status"], "eligible": i["eligible"],
-                    "own": i["own"], "pct": i["pct"], "months": i["months"],
+                    "own": i["own"], "pct": i["pct"], "months": i["months"], "off": i["off"],
                     "settle": ({"id": st["id"], "amount": int(st["amount"] or 0)} if st else None)})
     return {"cfg": cfg, "list": out}
 
@@ -4834,7 +4876,13 @@ def adv_view(db, user_id, full=True):
         "live": 1 if adv_live(db) else 0,
         "closed_today": 1 if today.day in adv_closed_days(db) else 0,
         "reserve_block": reserve_adv_block(db, user_id) or "",
+        "com_on": 1 if adv_com_enabled(db, user_id) else 0,
     })
+    try:
+        _uc = db.execute("SELECT adv_com FROM users WHERE user_id=?", (user_id,)).fetchone()
+        out["com_own"] = (None if (not _uc or _uc["adv_com"] is None) else int(_uc["adv_com"]))
+    except Exception:
+        out["com_own"] = None
     rows = db.execute("SELECT * FROM advances WHERE user_id=? ORDER BY id DESC LIMIT 60",
                       (user_id,)).fetchall()
     lst, debt, com_paid, repay_total, upcoming = [], 0, 0, 0, []
@@ -5851,7 +5899,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             logger.warning(f"adv_owner_view: {e}")
         try:
             for r in db.execute("SELECT * FROM advances WHERE status='pending' ORDER BY id").fetchall():
-                _q = adv_quote(r["amount"], r["adv_limit"])
+                _q = adv_quote(r["amount"], r["adv_limit"], adv_com_enabled(db, r["user_id"]))
                 adv_pend.append({"id": r["id"], "uid": r["user_id"],
                                  "name": display_name_for(db, r["user_id"], fallback="?"),
                                  "amount": r["amount"], "pct": _q["pct"], "com": _q["commission"],
@@ -13474,6 +13522,61 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("UPDATE salary_categories SET adv_shift_h=? WHERE id=?", (_h or None, _cid))
             db.commit()
             log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
+
+        # ═══ Owner düğmeleri (2026-10-02): komisyon · stajyer avansı · kişiye Reserve ═══
+        elif action in ("adv_com_set", "adv_trainee_set", "reserve_user_off"):
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            if _tid and not db.execute("SELECT 1 FROM users WHERE user_id=?", (_tid,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            _tnm = display_name_for(db, _tid, fallback=f"ID {_tid}") if _tid else ""
+            if action == "adv_com_set":
+                _mode = str(data.get("mode") or "")
+                if _tid:
+                    _new = None if _mode == "default" else (1 if _mode == "on" else 0)
+                    _old = db.execute("SELECT adv_com FROM users WHERE user_id=?", (_tid,)).fetchone()["adv_com"]
+                    db.execute("UPDATE users SET adv_com=? WHERE user_id=?", (_new, _tid))
+                    db.commit()
+                    _lbl = lambda v: "по умолчанию" if v is None else ("вкл" if int(v) else "выкл")
+                    log_action(db, "adv_com_set", user.id, user.first_name, _tid, _tnm,
+                               {"old": _lbl(_old), "new": _lbl(_new)})
+                else:
+                    _on = 1 if _mode == "on" else 0
+                    _old = 1 if adv_com_on_all(db) else 0
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('adv_com_on',?)", (str(_on),))
+                    db.commit()
+                    log_action(db, "adv_com_set", user.id, user.first_name, None, "все",
+                               {"old": "вкл" if _old else "выкл", "new": "вкл" if _on else "выкл"})
+            elif action == "adv_trainee_set":
+                _on = 1 if int(data.get("on") or 0) else 0
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('adv_trainee',?)", (str(_on),))
+                db.commit()
+                log_action(db, "adv_trainee_set", user.id, user.first_name, None, "стажёры",
+                           {"on": "разрешён" if _on else "запрещён"})
+            else:
+                if not _tid:
+                    await update.message.reply_text("❌ Сотрудник не найден.")
+                    return
+                _off = 1 if int(data.get("off") or 0) else 0
+                if _off:
+                    try:
+                        reserve_sync(db, _tid)          # kapanmadan önce eksik günler
+                    except Exception:
+                        pass
+                db.execute("UPDATE users SET reserve_off=? WHERE user_id=?", (_off or None, _tid))
+                if not _off:                            # açılınca katkı BUGÜNDEN
+                    db.execute("UPDATE users SET reserve_from=?, reserve_synced_to=? WHERE user_id=?",
+                               (_adv_today().isoformat(), _adv_today().isoformat(), _tid))
+                db.commit()
+                log_action(db, "reserve_user_off", user.id, user.first_name, _tid, _tnm,
+                           {"reserve": "выключен" if _off else "включён"})
 
         # ═══ RESERVE — owner işlemleri (hepsi günlüğe: eski → yeni) ═══
         elif action in ("reserve_cfg_set", "reserve_start", "reserve_stop", "reserve_user_set",
