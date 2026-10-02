@@ -2482,6 +2482,10 @@ def op_register(db, shift_row, why=None):
         if db.execute("SELECT 1 FROM opening_delays WHERE shift_id=? LIMIT 1",
                       (sid,)).fetchone():
             _why.append("по этой смене уже есть запись"); return None
+        # Sahip otomatik gecikme cezasından MUAF (owner 2026-10-02): kendine
+        # kesilen ceza ne kimseye gider ne bir şey düzeltir — yalnız maaşını bozar.
+        if get_role(db, int(sh.get("user_id") or 0)) == "owner":
+            _why.append("владелец не штрафуется"); return None
         actual = datetime.fromisoformat(sh["start_time"])
         bid = int(sh.get("branch_id") or 0)
         if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
@@ -2622,6 +2626,25 @@ def op_register(db, shift_row, why=None):
     except Exception as e:
         logger.exception(f"op_register: {e}")
         return None
+
+
+def op_void_owner(db):
+    """Sahibe yazılmış açılış gecikmesi kayıtlarını «отменён» yap (ceza ve
+    alacak geri alınır). Sahip muafiyetinden ÖNCE açılmış kayıtlar için;
+    açılışta çalışır, idempotent."""
+    n = 0
+    try:
+        for r in db.execute(
+                "SELECT d.id FROM opening_delays d JOIN users u ON u.user_id=d.user_id "
+                "WHERE u.role='owner' AND COALESCE(d.status,'')!='rejected'").fetchall():
+            _, err = op_reject(db, int(r["id"]), 0, "Nero")
+            if not err:
+                n += 1
+        if n:
+            logger.info(f"opening_delays: sahibe ait {n} kayit iptal edildi")
+    except Exception as e:
+        logger.warning(f"op_void_owner: {e}")
+    return n
 
 
 def op_reason(row):
@@ -15612,6 +15635,10 @@ async def setup_commands(app):
             logger.info(f"active_group yüklendi: {_ag['val']}")
     except Exception as e:
         logger.warning(f"active_group load failed: {e}")
+    try:
+        op_void_owner(get_db())
+    except Exception as e:
+        logger.warning(f"op_void_owner startup: {e}")
     # Yol B: Mini App'i + API'yi sunan HTTP sunucusunu başlat
     await start_web_server(app)
     # Ödeme hatırlatma arka plan görevi
