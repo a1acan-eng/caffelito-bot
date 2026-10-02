@@ -4255,20 +4255,38 @@ def adv_trainee_on(db):
         return False
 
 
-def adv_quote(amount, limit, com_on=True):
-    """Tek avansın hesabı. Komisyon % = avans / limit × %30 (komisyon kapalıysa 0)."""
+def adv_inst_cfg(db):
+    """Taksit ayarı (owner 2026-10-03): çalışan 1..max parça seçer; `free`
+    parçaya kadar komisyon YOK, daha fazlasında komisyon kendiliğinden."""
+    cfg = {"max": ADV_INSTALLMENTS, "free": 1}
+    try:
+        for r in db.execute("SELECT k,val FROM meta WHERE k IN ('adv_inst_max','adv_inst_free')").fetchall():
+            cfg["max" if r["k"] == "adv_inst_max" else "free"] = int(float(r["val"]))
+    except Exception:
+        pass
+    cfg["max"] = max(1, min(12, cfg["max"]))
+    cfg["free"] = max(0, min(cfg["max"], cfg["free"]))
+    return cfg
+
+
+def adv_quote(amount, limit, com_on=True, n=ADV_INSTALLMENTS, free=None):
+    """Tek avansın hesabı. Komisyon % = avans / limit × %30.
+    Komisyon YOK: komisyon kapalıysa ya da parça sayısı ücretsiz sınırdaysa (n ≤ free)."""
     amount = int(amount or 0)
     limit = int(limit or 0)
+    n = max(1, int(n or ADV_INSTALLMENTS))
+    if free is not None and n <= int(free):
+        com_on = False
     pct = min(float(ADV_MAX_COM_PCT), (amount / limit * ADV_MAX_COM_PCT)) if (limit > 0 and com_on) else 0.0
     pct = max(0.0, pct)
     # Yarım yukarı yuvarlanır (Nero'daki Math.round ile aynı sonuç).
     com = int(amount * pct / 100.0 + 0.5)   # tam oranla; ekranda % yuvarlanır
     pct = round(pct, 2)
     total = amount + com
-    base = total // ADV_INSTALLMENTS
-    inst = [base] * ADV_INSTALLMENTS
-    inst[-1] = total - base * (ADV_INSTALLMENTS - 1)   # kuruş farkı son taksitte
-    return {"amount": amount, "pct": pct, "commission": com, "total": total, "inst": inst}
+    base = total // n
+    inst = [base] * n
+    inst[-1] = total - base * (n - 1)   # kuruş farkı son taksitte
+    return {"amount": amount, "pct": pct, "commission": com, "total": total, "inst": inst, "n": n}
 
 
 def adv_decade(d):
@@ -4367,7 +4385,8 @@ def adv_owner_view(db, period=None):
     return {"period": period, "got_month": got_month, "got_total": got_total,
             "com_upcoming": upcoming, "debt": debt, "pend": int(pend), "rows": rows[:40],
             "live": 1 if adv_live(db) else 0, "closed_days": adv_closed_days(db),
-            "com_on": 1 if adv_com_on_all(db) else 0, "trainee_on": 1 if adv_trainee_on(db) else 0}
+            "com_on": 1 if adv_com_on_all(db) else 0, "trainee_on": 1 if adv_trainee_on(db) else 0,
+            "inst_max": adv_inst_cfg(db)["max"], "inst_free": adv_inst_cfg(db)["free"]}
 
 
 def adv_closed_text(days):
@@ -4400,7 +4419,7 @@ def adv_month_usage(db, user_id, month=None, exclude_id=None):
     return {"used": int(r["s"] or 0), "count": int(r["c"] or 0)}
 
 
-def adv_check(db, user_id, amount, exclude_id=None):
+def adv_check(db, user_id, amount, exclude_id=None, n=None):
     """Yeni avans verilebilir mi? (hata_metni | None, info, quote).
     Bütün güvenlik kuralları TEK yerde: talep, onay ve doğrudan veriş aynı kontrolden geçer."""
     info = adv_salary_info(db, user_id)
@@ -4425,7 +4444,14 @@ def adv_check(db, user_id, amount, exclude_id=None):
         return ("Укажите сумму.", info, None)
     if amount > left:
         return (f"Доступно только {fmt_sum(left)} сум.", info, None)
-    return (None, info, adv_quote(amount, info["limit"], adv_com_enabled(db, user_id)))
+    _ic = adv_inst_cfg(db)
+    try:
+        n = int(n) if n not in (None, "", 0, "0") else min(ADV_INSTALLMENTS, _ic["max"])
+    except Exception:
+        n = 0
+    if not (1 <= n <= _ic["max"]):
+        return (f"Частей: от 1 до {_ic['max']}.", info, None)
+    return (None, info, adv_quote(amount, info["limit"], adv_com_enabled(db, user_id), n, _ic["free"]))
 
 
 def adv_write_schedule(db, adv_row, from_date=None):
@@ -4465,7 +4491,8 @@ def adv_create_manual(db, user_id, amount, n_inst, step_days, actor_id, actor_na
     if step_days not in (10, 15, 30):
         return "Интервал: 10, 15 или 30 дней.", None
     info = adv_salary_info(db, user_id)
-    q = adv_quote(amount, info["limit"], adv_com_enabled(db, user_id))
+    # Özel avans da aynı kurala uyar: seçilen parça sayısı ücretsiz sınırdaysa komisyon yok.
+    q = adv_quote(amount, info["limit"], adv_com_enabled(db, user_id), n_inst, adv_inst_cfg(db)["free"])
     pct, com = q["pct"], q["commission"]
     now = datetime.now(TZ).isoformat()
     cur = db.execute(
@@ -4480,13 +4507,13 @@ def adv_create_manual(db, user_id, amount, n_inst, step_days, actor_id, actor_na
     return None, aid
 
 
-def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
+def adv_create(db, user_id, amount, actor_id, actor_name, approve=False, n=None):
     """Avans kaydı. approve=True → owner doğrudan verdi (active + takvim).
     Döner: (hata | None, advance_id)."""
     _g = adv_gate(db)
     if _g:
         return _g, None
-    err, info, q = adv_check(db, user_id, amount)
+    err, info, q = adv_check(db, user_id, amount, n=n)
     if err:
         return err, None
     if not approve and db.execute(
@@ -4495,11 +4522,11 @@ def adv_create(db, user_id, amount, actor_id, actor_name, approve=False):
     now = datetime.now(TZ).isoformat()
     cur = db.execute(
         "INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,salary,adv_limit,"
-        "status,created_at,created_by,decided_by,decided_by_name,decided_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "status,created_at,created_by,decided_by,decided_by_name,decided_at,n_inst) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, current_period(), q["amount"], q["pct"], q["commission"], q["total"],
          info["salary"], info["limit"], "active" if approve else "pending", now, actor_id,
-         actor_id if approve else None, actor_name if approve else None, now if approve else None))
+         actor_id if approve else None, actor_name if approve else None, now if approve else None, q["n"]))
     aid = cur.lastrowid
     if approve:
         adv_write_schedule(db, db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone())
@@ -4522,7 +4549,8 @@ def adv_decide(db, adv_id, approve, actor_id, actor_name, note=""):
         if _g:
             return _g, row
         # Talepten beri ay değiştiyse bu ayın limitine göre yeniden hesaplanır.
-        err, info, q = adv_check(db, row["user_id"], row["amount"], exclude_id=adv_id)
+        err, info, q = adv_check(db, row["user_id"], row["amount"], exclude_id=adv_id,
+                                 n=(row["n_inst"] if "n_inst" in row.keys() else None))
         if err:
             return err, row
         db.execute(
@@ -4882,12 +4910,13 @@ def adv_view(db, user_id, full=True):
         "limit_pct": ADV_LIMIT_PCT, "com_max": ADV_MAX_COM_PCT, "max_count": ADV_MAX_COUNT,
         "used": use["used"], "count": use["count"],
         "left": max(0, info["limit"] - use["used"]),
-        "next_dates": [d.isoformat() for d in nxt],
         "closed_days": adv_closed_days(db),
         "live": 1 if adv_live(db) else 0,
         "closed_today": 1 if today.day in adv_closed_days(db) else 0,
         "reserve_block": reserve_adv_block(db, user_id) or "",
         "com_on": 1 if adv_com_enabled(db, user_id) else 0,
+        "inst_max": adv_inst_cfg(db)["max"], "inst_free": adv_inst_cfg(db)["free"],
+        "next_dates": [d.isoformat() for d in adv_schedule(today, adv_inst_cfg(db)["max"])],
     })
     try:
         _uc = db.execute("SELECT adv_com FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -5910,11 +5939,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             logger.warning(f"adv_owner_view: {e}")
         try:
             for r in db.execute("SELECT * FROM advances WHERE status='pending' ORDER BY id").fetchall():
-                _q = adv_quote(r["amount"], r["adv_limit"], adv_com_enabled(db, r["user_id"]))
+                _ni = int((r["n_inst"] if "n_inst" in r.keys() else 0) or ADV_INSTALLMENTS)
+                _q = adv_quote(r["amount"], r["adv_limit"], adv_com_enabled(db, r["user_id"]), _ni,
+                               adv_inst_cfg(db)["free"])
                 adv_pend.append({"id": r["id"], "uid": r["user_id"],
                                  "name": display_name_for(db, r["user_id"], fallback="?"),
                                  "amount": r["amount"], "pct": _q["pct"], "com": _q["commission"],
-                                 "total": _q["total"], "at": r["created_at"]})
+                                 "total": _q["total"], "at": r["created_at"], "n": _ni})
         except Exception as e:
             logger.warning(f"adv_pend: {e}")
     # Avans talepleri — barista kendisininkiler, owner pending olanların hepsi
@@ -8041,7 +8072,7 @@ async def adv_notify_owners(context, db, row, shown):
                 f"💸 *Запрос аванса*\n\nОт: *{md_safe(shown)}*\n"
                 f"Сумма: *{fmt_sum(row['amount'])}* сум\n"
                 f"Комиссия: {fmt_sum(row['commission'])} сум ({row['commission_pct']:g}%)\n"
-                f"К возврату: {fmt_sum(row['total'])} сум · 3 части из зарплаты\n"
+                f"К возврату: {fmt_sum(row['total'])} сум · {int(row['n_inst'] or 3)} ч. из зарплаты\n"
                 f"Лимит месяца: {fmt_sum(row['adv_limit'])} сум\n\n"
                 "_Всё посчитано автоматически. «Выдать» — когда передадите деньги._",
                 parse_mode="Markdown", reply_markup=kb)
@@ -13380,7 +13411,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Наблюдателю аванс недоступен.")
                 return
             amount = int(_norm_amt(data.get("amount", 0)))
-            err, aid = adv_create(db, user.id, amount, user.id, user.first_name, approve=False)
+            err, aid = adv_create(db, user.id, amount, user.id, user.first_name, approve=False, n=data.get("n"))
             if err:
                 await update.message.reply_text("❌ " + err)
                 return
@@ -13392,7 +13423,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"✅ Запрос аванса отправлен\n\nСумма: {fmt_sum(row['amount'])} сум\n"
                 f"Комиссия: {fmt_sum(row['commission'])} сум\n"
-                f"К возврату: {fmt_sum(row['total'])} сум (3 части)\nЖдите выдачи.")
+                f"К возврату: {fmt_sum(row['total'])} сум ({int(row['n_inst'] or 3)} ч.)\nЖдите выдачи.")
 
         # ─── AVANS: owner karar verir (Nero) ───
         elif action == "adv_decide":
@@ -13419,7 +13450,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Сотрудник не найден.")
                 return
             amount = int(_norm_amt(data.get("amount", 0)))
-            err, aid = adv_create(db, target_id, amount, user.id, user.first_name, approve=True)
+            err, aid = adv_create(db, target_id, amount, user.id, user.first_name, approve=True, n=data.get("n"))
             if err:
                 await update.message.reply_text("❌ " + err)
                 return
@@ -13434,7 +13465,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     pass
             await update.message.reply_text(
                 f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
-                f"К возврату {fmt_sum(row['total'])} сум · 3 части из зарплаты.",
+                f"К возврату {fmt_sum(row['total'])} сум · {int(row['n_inst'] or 3)} ч. из зарплаты.",
                 parse_mode="Markdown")
 
         # ─── ÖZEL avans (owner elle): parça sayısı / aralık / komisyon owner'da ───
@@ -13535,6 +13566,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "salcat_adv_hours", user.id, user.first_name, None, "", {"id": _cid, "hours": _h})
 
         # ═══ Owner düğmeleri (2026-10-02): komisyon · stajyer avansı · kişiye Reserve ═══
+        elif action == "adv_inst_set":
+            # Owner: en fazla kaç parça ve kaç parçaya kadar komisyonsuz.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _mx = int(data.get("max") or 0); _fr = int(data.get("free") or 0)
+            except Exception:
+                _mx, _fr = 0, -1
+            if not (1 <= _mx <= 12) or not (0 <= _fr <= _mx):
+                await update.message.reply_text("❌ Частей: от 1 до 12; без комиссии — не больше максимума.")
+                return
+            _old = adv_inst_cfg(db)
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('adv_inst_max',?)", (str(_mx),))
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('adv_inst_free',?)", (str(_fr),))
+            db.commit()
+            log_action(db, "adv_inst_set", user.id, user.first_name, None, "",
+                       {"max": f"{_old['max']} → {_mx}", "free": f"{_old['free']} → {_fr}"})
+
         elif action == "reserve_tx_void":
             # Owner: yanlış alınmış bir Reserve katkısını sil (maaşa geri döner).
             db = get_db()
