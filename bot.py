@@ -11995,6 +11995,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Филиал не найден.")
                 return
             en = 1 if int(data.get("enabled", 0) or 0) else 0
+            # KAPATMA KİLİDİ (owner 2026-10-03): şubede şu an asistan/stajyer
+            # vardiyası açıksa pozisyon kapatılamaz — yanlış dokunuş canlı akışı
+            # bozuyordu. Vardiyası bitince kapatılabilir.
+            if not en:
+                _busy = []
+                for _r in db.execute(
+                        "SELECT * FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
+                        "AND COALESCE(branch_id,1)=?", (bid,)).fetchall():
+                    _is_asst = (_r["shift_role"] or "") == "assistant" if "shift_role" in _r.keys() else False
+                    if _is_asst or closer_is_assistant(db, int(_r["user_id"]), bid, _r):
+                        _busy.append(display_name_for(db, int(_r["user_id"]), fallback="?"))
+                if _busy:
+                    await update.message.reply_text(
+                        "⛔ Нельзя выключить: сейчас на смене ассистент/стажёр — " + ", ".join(_busy) +
+                        ".\nВыключить можно, когда смена закончится.")
+                    return
             db.execute("UPDATE branches SET trainee_enabled=? WHERE id=?", (en, bid))
             db.commit()
             log_action(db, "branch_trainee", user.id, user.first_name, None, None,
