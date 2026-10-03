@@ -536,7 +536,10 @@ def get_db():
                      ("reserve_synced_to", "TEXT"),
                      # owner 2026-10-02: kişiye özel Reserve kapalı (1) · avans komisyonu
                      # kişiye özel (NULL = genel ayar, 1 açık, 0 kapalı)
-                     ("reserve_off", "INTEGER"), ("adv_com", "INTEGER")):
+                     ("reserve_off", "INTEGER"), ("adv_com", "INTEGER"),
+                     # owner 2026-10-03: Reserve İPTAL (1) — birikmiş para maaşa döner,
+                     # owner yeniden başlatana kadar tamamen kapalı (geçici kapatmadan ayrı).
+                     ("reserve_cancelled", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -3772,9 +3775,20 @@ def ho_is_second_window(cfg, branch_id, when_dt):
     return False
 
 
+HO_BDAY_SHIFT_H = 7    # iş günü 07:00'de başlar: gece yarısından sonra = önceki iş günü
+
+
+def ho_bday(when_dt=None):
+    """İş günü (YYYY-MM-DD). Gece vardiyası (17:00–03:00) tek bir güne aittir:
+    gece yarısından sonraki saatler ÖNCEKİ güne sayılır. Takvim tarihi
+    kullanılınca 00:00 sonrası açılan «один за двоих» dünkü devri/1.5x'i
+    görmüyordu (2026-10-03, gece testinde yakalandı)."""
+    w = when_dt or datetime.now(TZ).replace(tzinfo=None)
+    return (w - timedelta(hours=HO_BDAY_SHIFT_H)).strftime("%Y-%m-%d")
+
+
 def ho_solo_key(branch_id, when_dt=None):
-    d = (when_dt or datetime.now(TZ).replace(tzinfo=None)).strftime("%Y-%m-%d")
-    return f"ho_solo_{int(branch_id or 0)}_{d}"
+    return f"ho_solo_{int(branch_id or 0)}_{ho_bday(when_dt)}"
 
 
 def ho_solo(db, branch_id, when_dt=None):
@@ -3803,7 +3817,7 @@ def ho_solo_can(db, user_id, branch_id, when_dt=None):
             "AND start_time IS NOT NULL AND user_id!=? LIMIT 1", (bid, int(user_id))).fetchone()
         if other:
             return False                  # sменщик zaten iste — normal gun
-        d = (when_dt or datetime.now(TZ).replace(tzinfo=None)).strftime("%Y-%m-%d")
+        d = ho_bday(when_dt)
         came = db.execute(
             "SELECT 1 FROM handover WHERE branch_id=? AND date=? AND b2_arrived_at IS NOT NULL LIMIT 1",
             (bid, d)).fetchone()
@@ -5665,7 +5679,8 @@ def reserve_cfg(db):
 
 def _reserve_user_row(db, user_id):
     return db.execute("SELECT user_id, role, COALESCE(archived,0) AS archived, reserve_pct, reserve_months, "
-                      "reserve_from, reserve_last_target, reserve_synced_to, COALESCE(reserve_off,0) AS reserve_off "
+                      "reserve_from, reserve_last_target, reserve_synced_to, COALESCE(reserve_off,0) AS reserve_off, "
+                      "COALESCE(reserve_cancelled,0) AS reserve_cancelled "
                       "FROM users WHERE user_id=?", (user_id,)).fetchone()
 
 
@@ -5706,8 +5721,11 @@ def reserve_info(db, user_id, cfg=None):
     elig = reserve_eligible(db, user_id)
     started = cfg["started"]
     done = target > 0 and bal >= target
-    off = bool(u and u["reserve_off"])
-    if off:
+    off = bool(u and (u["reserve_off"] or u["reserve_cancelled"]))
+    cancelled = bool(u and u["reserve_cancelled"])
+    if cancelled:
+        status = "cancelled"
+    elif off:
         status = "off"
     elif not started or not elig or target <= 0 or (bal <= 0 and not done):
         status = "not_started"
@@ -5718,6 +5736,7 @@ def reserve_info(db, user_id, cfg=None):
     pct_done = 100 if done else (int(bal * 100 // target) if target > 0 else 0)
     remaining = max(0, target - bal)
     return {"live": 1 if started else 0, "started": started, "eligible": 1 if elig else 0, "off": 1 if off else 0,
+            "cancelled": 1 if cancelled else 0,
             "pct": round(pct, 2), "months": months, "own": 1 if own else 0,
             "def_pct": float(cfg["pct"]), "def_months": int(cfg["months"]),
             "salary": salary, "target": target, "balance": bal, "remaining": remaining,
@@ -5735,7 +5754,7 @@ def reserve_sync(db, user_id, cfg=None, today=None):
         return 0
     u = _reserve_user_row(db, user_id)
     # Owner Reserve'e girmez; arşivdeki/stajyer kişiye katkı yazılmaz.
-    if (not u or u["archived"] or (u["role"] or "") == "owner" or u["reserve_off"]
+    if (not u or u["archived"] or (u["role"] or "") == "owner" or u["reserve_off"] or u["reserve_cancelled"]
             or not reserve_eligible(db, user_id)):
         return 0
     info = reserve_info(db, user_id, cfg)
@@ -5866,7 +5885,7 @@ def reserve_owner_list(db):
         out.append({"uid": uid, "name": display_name_for(db, uid, fallback="?"), "arch": int(r["arch"]),
                     "balance": i["balance"], "target": i["target"], "progress": i["progress"],
                     "remaining": i["remaining"], "status": i["status"], "eligible": i["eligible"],
-                    "own": i["own"], "pct": i["pct"], "months": i["months"], "off": i["off"],
+                    "own": i["own"], "pct": i["pct"], "months": i["months"], "off": i["off"], "cancelled": i.get("cancelled", 0),
                     "settle": ({"id": st["id"], "amount": int(st["amount"] or 0)} if st else None)})
     return {"cfg": cfg, "list": out}
 
@@ -14029,8 +14048,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # baslamissa geri alinir) — tek kisi calisiyorsa devir yoktur.
             _undone = 0
             if _on:
-                for _r in db.execute("SELECT * FROM handover WHERE branch_id=? AND date=? AND finalized=0",
-                                     (_sb, datetime.now(TZ).strftime("%Y-%m-%d"))).fetchall():
+                _bd_s = ho_bday()
+                _cal_s = datetime.now(TZ).strftime("%Y-%m-%d")
+                for _r in db.execute("SELECT * FROM handover WHERE branch_id=? AND date IN (?,?) AND finalized=0",
+                                     (_sb, _bd_s, _cal_s)).fetchall():
                     if _r["extra_adj_id"]:
                         db.execute("DELETE FROM adjustments WHERE id=?", (int(_r["extra_adj_id"]),))
                     db.execute("UPDATE handover SET finalized=1, finalized_at=?, finalize_reason='solo_day', "
@@ -14868,6 +14889,53 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "adv_inst_set", user.id, user.first_name, None, "",
                        {"max": f"{_old['max']} → {_mx}", "free": f"{_old['free']} → {_fr}"})
 
+        elif action == "reserve_user_cancel":
+            # Owner: kişinin Reserve'ini İPTAL et. Birikmiş tutar bu ayın maaşına
+            # ALACAK olarak geçer (adjustments), defter sıfırlanır (reserve_tx
+            # 'release', maaş kesintisine girmez). Owner yeniden başlatana kadar
+            # katkı yok, avans Reserve şartına bağlı değil.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            if not _tid or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_tid,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            try:
+                reserve_sync(db, _tid)                  # eksik günler önce yazılsın, sonra hepsi iade
+            except Exception:
+                pass
+            _now_c = datetime.now(TZ).isoformat()
+            _bal = reserve_balance(db, _tid)
+            _tnm = display_name_for(db, _tid, fallback=f"ID {_tid}")
+            if _bal > 0:
+                db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
+                           "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (_tid, "release", _adv_today().isoformat(), current_period(), -_bal, 0,
+                            "Отмена резерва — сумма возвращена в зарплату", user.id, user.first_name, _now_c))
+                db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           (_tid, _bal, f"Возврат резерва (отмена) [reserve_release:{_tid}]", current_period(),
+                            user_branch_id(db, _tid), user.id, user.first_name, _now_c))
+            db.execute("UPDATE reserve_settlements SET status='cancelled', decided_at=?, decided_by=?, decided_by_name=?, "
+                       "note='отмена резерва' WHERE user_id=? AND status='pending'", (_now_c, user.id, user.first_name, _tid))
+            db.execute("UPDATE users SET reserve_off=1, reserve_cancelled=1 WHERE user_id=?", (_tid,))
+            db.commit()
+            log_action(db, "reserve_user_cancel", user.id, user.first_name, _tid, _tnm, {"returned": _bal})
+            await update.message.reply_text(
+                f"✅ Резерв {_tnm} отменён." + (f" {fmt_sum(_bal)} сум вернулись в его зарплату." if _bal > 0 else "")
+                + "\nЗапустить заново — переключателем «Резерв для сотрудника».")
+            try:
+                await context.bot.send_message(
+                    _tid, "ℹ️ Ваш резерв отменён владельцем."
+                    + (f" Накопленные {fmt_sum(_bal)} сум добавлены к вашей зарплате." if _bal > 0 else ""))
+            except Exception:
+                pass
+
         elif action == "reserve_tx_void":
             # Owner: yanlış alınmış bir Reserve katkısını sil (maaşa geri döner).
             db = get_db()
@@ -14944,6 +15012,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     except Exception:
                         pass
                 db.execute("UPDATE users SET reserve_off=? WHERE user_id=?", (_off or None, _tid))
+                if not _off:                            # açılınca iptal de kalkar
+                    db.execute("UPDATE users SET reserve_cancelled=NULL WHERE user_id=?", (_tid,))
                 if not _off:                            # açılınca katkı BUGÜNDEN
                     db.execute("UPDATE users SET reserve_from=?, reserve_synced_to=? WHERE user_id=?",
                                (_adv_today().isoformat(), _adv_today().isoformat(), _tid))
