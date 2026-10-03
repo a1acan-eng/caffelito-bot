@@ -968,6 +968,17 @@ def get_branch(db, branch_id):
     return dict(r) if r else None
 
 
+def user_theme(db, user_id):
+    """Kişinin seçtiği tema ('dark' | 'light' | ''): uygulama her açılışta
+    açık temaya dönüyordu (owner 2026-10-03) — seçim artık sunucuda."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k=?", (f"theme_{int(user_id)}",)).fetchone()
+        v = (r["val"] if r else "") or ""
+        return v if v in ("dark", "light") else ""
+    except Exception:
+        return ""
+
+
 def user_branch_id(db, user_id):
     """Kullanıcının atandığı (ev) şube — yoksa ana şube."""
     r = db.execute("SELECT branch_id FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -6483,6 +6494,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"my_cat={quote(json.dumps({'id': _my_pi['cat_id'], 'name': _my_pi['cat_name'], 'kpi': _my_pi['use_kpi'], 'does_kasa': _my_pi['does_kasa'], 'slot_role': _my_pi['slot_role']}, ensure_ascii=False))}",
         f"my_does_kasa={int(_my_pi['does_kasa'])}",
         f"my_bonus_sys={_my_pi['bonus_system']}",
+        f"my_theme={user_theme(db, user_id)}",
         f"my_pay_window={quote(json.dumps(_my_win, ensure_ascii=False))}",
         f"caffelito_bonus={quote(json.dumps(get_caffelito_bonus(db), ensure_ascii=False))}",
         f"fine_presets={quote(json.dumps(get_fine_presets(db) if role == 'owner' else [], ensure_ascii=False))}",
@@ -11509,6 +11521,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         text="🔄 Владелец открыл ваше закрытие для правок. Закройте смену ещё раз.")
                 except Exception:
                     pass
+
+        elif action == "set_theme":
+            # Tema tercihi (sessiz — sohbete mesaj gönderilmez).
+            db = get_db()
+            _t = str(data.get("theme") or "")
+            if _t in ("dark", "light"):
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (f"theme_{user.id}", _t))
+                db.commit()
 
         elif action == "delete_record":
             # Owner: Отчёт odalarından tek kayıt sil (maaşa/kasaya yansır)
