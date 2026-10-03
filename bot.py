@@ -625,6 +625,34 @@ def get_db():
         claim_uid INTEGER, claim_name TEXT, claim_at TEXT,
         decided_by INTEGER, decided_by_name TEXT, decided_at TEXT,
         reason TEXT, created_at TEXT)""")
+    # ─── KARAR MOTORU (2026-10-03): open_shifts genişletilir, ikinci tablo açılmaz ───
+    for _oc, _ot in (("kind", "TEXT"), ("cov", "TEXT"), ("dayoff_req_id", "INTEGER"), ("role_need", "TEXT"),
+                     ("escalated_at", "TEXT"), ("covered_by", "INTEGER"), ("wave", "INTEGER DEFAULT 0"),
+                     ("override", "INTEGER"), ("override_reason", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE open_shifts ADD COLUMN {_oc} {_ot}")
+        except sqlite3.OperationalError:
+            pass
+    # Şube saat bazlı minimum personel (owner tanımlar; tanım yoksa şablonlardan türetilir).
+    db.execute("""CREATE TABLE IF NOT EXISTS branch_needs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER, start_t TEXT, end_t TEXT,
+        min_staff INTEGER DEFAULT 1, min_barista INTEGER DEFAULT 1,
+        updated_by INTEGER, updated_at TEXT)""")
+    # Kime teklif gitti, ne cevap verdi (yük dengeleme + «neden bu kişi?» izi).
+    db.execute("""CREATE TABLE IF NOT EXISTS cov_offers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        os_id INTEGER, uid INTEGER, tier INTEGER, score REAL, kind TEXT,
+        src_branch_id INTEGER, src_before INTEGER, src_after INTEGER, src_need INTEGER,
+        warn INTEGER DEFAULT 0, status TEXT DEFAULT 'sent', ack INTEGER DEFAULT 0,
+        hours REAL, wave INTEGER, created_at TEXT, decided_at TEXT)""")
+    # Çalışan tercihleri: ek vardiya (off/own/other/any), çalışma modu (normal/more/max),
+    # stajyere barista vardiyası izni (NULL = role göre).
+    for _uc2, _ut2 in (("cov_extra", "TEXT"), ("cov_work", "TEXT"), ("cov_barista_ok", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE users ADD COLUMN {_uc2} {_ut2}")
+        except sqlite3.OperationalError:
+            pass
     # Şube başına GÜNLÜK MAKSİMUM ÇALIŞAN — plana bu sayıdan fazlası atanamaz.
     try:
         db.execute("ALTER TABLE branches ADD COLUMN max_staff INTEGER DEFAULT 2")
@@ -1781,6 +1809,875 @@ async def grid_notify_owners(bot_obj, db, text):
             await bot_obj.send_message(_o["user_id"], text, parse_mode="Markdown")
         except Exception:
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  VARDİYA & İZİN KARAR MOTORU (Workforce Coverage Engine · owner 2026-10-03)
+#  Mevcut yapıların ÜSTÜNE kurulu — ikinci bir plan/izin sistemi YOK:
+#    plan      → shift_grid + shift_templates
+#    açık      → open_shifts (kind/cov sütunlarıyla genişletildi)
+#    izin      → dayoff_requests
+#    log       → logs (log_action 'cov_decision')
+#    bildirim  → Telegram DM + inline düğme (ho_call ile aynı desen)
+#  Yeni: branch_needs (saat bazlı minimum), cov_offers (kime teklif gitti),
+#  users.cov_extra / cov_work / cov_barista_ok (tercih ve yetki).
+#  Personel sayısı SABİT DEĞİL: her hesap o anki çalışan listesinden yapılır.
+#  Maaş/avans/rezerv/ödeme koduna dokunulmaz — motor yalnız «kim, hangi gün,
+#  hangi saat, hangi şubede» sorusunu yönetir.
+# ═══════════════════════════════════════════════════════════════════════
+
+COV_DEFAULTS = {"on": 1, "min_rest_h": 8, "max_block_h": 16, "max_week_h": 72,
+                "wave_sick": 3, "wave_dayoff": 2, "wave_vacancy": 2,
+                "timeout_sick_min": 20, "timeout_dayoff_min": 120, "timeout_vacancy_min": 120}
+COV_EXTRA = ("off", "own", "other", "any")      # Доп. смены: выкл · свой филиал · другие тоже · любые
+COV_WORK = ("normal", "more", "max")            # Режим: обычный · хочу больше · беру максимум
+COV_REASONS = {"short": "Нехватка персонала", "urgent": "Срочная ситуация",
+               "business": "Решение владельца", "temp": "Временное решение", "other": "Другое"}
+
+
+def cov_cfg(db):
+    cfg = dict(COV_DEFAULTS)
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='cov_cfg'").fetchone()
+        if r and r["val"]:
+            for k, v in (json.loads(r["val"]) or {}).items():
+                if k in cfg:
+                    cfg[k] = int(v)
+    except Exception:
+        pass
+    return cfg
+
+
+def cov_cfg_save(db, patch):
+    cfg = cov_cfg(db)
+    for k, v in (patch or {}).items():
+        if k in COV_DEFAULTS:
+            try:
+                cfg[k] = max(0, int(v))
+            except (TypeError, ValueError):
+                pass
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cov_cfg',?)", (json.dumps(cfg),))
+    db.commit()
+    return cfg
+
+
+def cov_on(db):
+    return bool(cov_cfg(db).get("on"))
+
+
+# ── Kişi: rol, tercih ───────────────────────────────────────────────────
+def cov_role(db, uid):
+    """'barista' | 'trainee' | 'assistant' — mevcut kategori alanlarından (yeni rol sistemi yok).
+    Asistan: kasa vermeyen / slot_role assistant. Stajyer: Reserve'e dahil olmayan kategori."""
+    try:
+        if closer_is_assistant(db, int(uid)):
+            return "assistant"
+        if not reserve_eligible(db, int(uid)):
+            return "trainee"
+    except Exception:
+        pass
+    return "barista"
+
+
+def cov_user(db, uid):
+    r = db.execute("SELECT user_id, role, COALESCE(branch_id,1) AS bid, COALESCE(archived,0) AS arch, "
+                   "COALESCE(approved,0) AS appr, cov_extra, cov_work, cov_barista_ok "
+                   "FROM users WHERE user_id=?", (int(uid),)).fetchone()
+    if not r:
+        return None
+    ex = r["cov_extra"] if r["cov_extra"] in COV_EXTRA else "own"
+    wk = r["cov_work"] if r["cov_work"] in COV_WORK else "normal"
+    return {"uid": int(r["user_id"]), "role": r["role"] or "barista", "bid": int(r["bid"] or 1),
+            "arch": int(r["arch"]), "appr": int(r["appr"]), "extra": ex, "work": wk,
+            "barista_ok": r["cov_barista_ok"], "nm": display_name_for(db, int(r["user_id"]), fallback="?")}
+
+
+def cov_can_barista(db, u):
+    if u["barista_ok"] is not None:
+        return bool(u["barista_ok"])
+    return cov_role(db, u["uid"]) == "barista"
+
+
+def cov_volunteer(u):
+    return u["work"] in ("more", "max") or u["extra"] == "any"
+
+
+# ── Zaman: plan hücresi → mutlak aralık ────────────────────────────────
+def _cov_hm(t):
+    try:
+        h, m = str(t).split(":")
+        return int(h), int(m)
+    except Exception:
+        return None
+
+
+def cov_window(date_, start_t, end_t):
+    """Gün + «HH:MM–HH:MM» → (başlangıç, bitiş) datetime; gece yarısını geçen vardiya ertesi güne taşar."""
+    a, b = _cov_hm(start_t), _cov_hm(end_t)
+    if not a or not b:
+        return None, None
+    s = datetime(date_.year, date_.month, date_.day, a[0], a[1])
+    e = datetime(date_.year, date_.month, date_.day, b[0], b[1])
+    if e <= s:
+        e += timedelta(days=1)
+    return s, e
+
+
+def cov_cells(db, d_from, d_to, uid=None, branch_id=None, tpls=None):
+    """Plan hücreleri [d_from, d_to] günleri için: [{uid, date, code, bid, s, e}] (yalnız şablonlu hücreler)."""
+    tpls = tpls if tpls is not None else grid_templates(db)
+    out = []
+    d = d_from
+    while d <= d_to:
+        wk = (d - timedelta(days=d.weekday())).isoformat()
+        q = "SELECT user_id, code FROM shift_grid WHERE week_key=? AND day=?"
+        args = [wk, d.weekday()]
+        if uid is not None:
+            q += " AND user_id=?"
+            args.append(int(uid))
+        for r in db.execute(q, args).fetchall():
+            t = tpls.get(r["code"] or "")
+            if not t:
+                continue
+            if branch_id is not None and int(t["branch_id"] or 0) != int(branch_id):
+                continue
+            s, e = cov_window(d, t["start"], t["end"])
+            if s:
+                out.append({"uid": int(r["user_id"]), "date": d, "code": r["code"],
+                            "bid": int(t["branch_id"] or 0), "s": s, "e": e})
+        d += timedelta(days=1)
+    return out
+
+
+def cov_cell_code(db, uid, date_):
+    wk = (date_ - timedelta(days=date_.weekday())).isoformat()
+    r = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                   (wk, date_.weekday(), int(uid))).fetchone()
+    return (r["code"] if r else "") or ""
+
+
+def cov_set_cell(db, uid, date_, code, actor_id=0, actor_name="Nero"):
+    wk = (date_ - timedelta(days=date_.weekday())).isoformat()
+    if code in (None, "", "none"):
+        db.execute("DELETE FROM shift_grid WHERE week_key=? AND day=? AND user_id=?", (wk, date_.weekday(), int(uid)))
+    else:
+        db.execute("INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                   "VALUES (?,?,?,?,?,?,?)", (wk, date_.weekday(), int(uid), code, actor_id, actor_name,
+                                              datetime.now(TZ).isoformat()))
+
+
+# ── Şube ihtiyacı ──────────────────────────────────────────────────────
+def cov_needs(db, branch_id):
+    """Owner'ın tanımladığı saat dilimleri [{id,s,e,n,nb}]; tanım yoksa []."""
+    try:
+        return [{"id": r["id"], "s": r["start_t"], "e": r["end_t"], "n": int(r["min_staff"] or 0),
+                 "nb": int(r["min_barista"] if r["min_barista"] is not None else min(1, int(r["min_staff"] or 0)))}
+                for r in db.execute("SELECT * FROM branch_needs WHERE branch_id=? ORDER BY start_t",
+                                    (int(branch_id),)).fetchall()]
+    except Exception:
+        return []
+
+
+def cov_needs_save(db, branch_id, segs, actor_id=0, actor_name=""):
+    db.execute("DELETE FROM branch_needs WHERE branch_id=?", (int(branch_id),))
+    n = 0
+    for sg in (segs or [])[:24]:
+        s, e = str(sg.get("s") or ""), str(sg.get("e") or "")
+        if not _cov_hm(s) or not _cov_hm(e) or s == e:
+            continue
+        try:
+            mn = max(0, min(20, int(sg.get("n") or 0)))
+            nb = max(0, min(mn, int(sg.get("nb") if sg.get("nb") is not None else min(1, mn))))
+        except (TypeError, ValueError):
+            continue
+        db.execute("INSERT INTO branch_needs (branch_id,start_t,end_t,min_staff,min_barista,updated_by,updated_at) "
+                   "VALUES (?,?,?,?,?,?,?)", (int(branch_id), s, e, mn, nb, actor_id, datetime.now(TZ).isoformat()))
+        n += 1
+    db.commit()
+    log_action(db, "cov_needs_save", actor_id, actor_name, None, None, {"branch_id": int(branch_id), "segs": segs})
+    return n
+
+
+def cov_need_intervals(db, branch_id, d_from, d_to, tpls=None):
+    """[d_from, d_to] günleri için ihtiyaç aralıkları: [(s, e, min_staff, min_barista)].
+    Owner tanımı yoksa şablonlardan TÜRETİLİR: şubenin bir şablonunun kapsadığı her an
+    için 1 kişi / 1 barista (yani «açıkken en az bir barista»). Kodda sabit sayı yok."""
+    needs = cov_needs(db, branch_id)
+    out = []
+    d = d_from - timedelta(days=1)
+    while d <= d_to:
+        if needs:
+            for sg in needs:
+                s, e = cov_window(d, sg["s"], sg["e"])
+                if s:
+                    out.append((s, e, sg["n"], sg["nb"]))
+        else:
+            tpls = tpls if tpls is not None else grid_templates(db)
+            for t in tpls.values():
+                if int(t["branch_id"] or 0) == int(branch_id):
+                    s, e = cov_window(d, t["start"], t["end"])
+                    if s:
+                        out.append((s, e, 1, 1))
+        d += timedelta(days=1)
+    return out
+
+
+def cov_shortfalls(db, branch_id, a, b, remove_uid=None, add=None, tpls=None, cells=None):
+    """[a,b) içinde şubenin ihtiyacı karşılanıyor mu? Eksik dilimler listesi:
+    [{s, e, have, need, have_b, need_b}]. remove_uid: o kişi plandan çıkarılmış gibi;
+    add: [{uid, s, e, barista}] eklenmiş gibi. Boş liste = açık yok."""
+    tpls = tpls if tpls is not None else grid_templates(db)
+    d0, d1 = (a - timedelta(days=1)).date(), b.date()
+    cells = cells if cells is not None else cov_cells(db, d0, d1, branch_id=branch_id, tpls=tpls)
+    people = []
+    rolec = {}
+    for c in cells:
+        if remove_uid is not None and c["uid"] == int(remove_uid):
+            continue
+        if c["e"] <= a or c["s"] >= b:
+            continue
+        if c["uid"] not in rolec:
+            u = cov_user(db, c["uid"])
+            rolec[c["uid"]] = bool(u and cov_can_barista(db, u))
+        people.append((c["s"], c["e"], rolec[c["uid"]]))
+    for x in (add or []):
+        people.append((x["s"], x["e"], bool(x.get("barista", True))))
+    needs = [n for n in cov_need_intervals(db, branch_id, d0, d1, tpls) if n[1] > a and n[0] < b]
+    pts = {a, b}
+    for s, e, *_ in needs:
+        pts.update([max(a, s), min(b, e)])
+    for s, e, _ in people:
+        pts.update([max(a, min(b, s)), max(a, min(b, e))])
+    pts = sorted(p for p in pts if a <= p <= b)
+    out = []
+    for i in range(len(pts) - 1):
+        x0, x1 = pts[i], pts[i + 1]
+        if x1 <= x0:
+            continue
+        mid = x0 + (x1 - x0) / 2
+        need = max([n for s, e, n, _ in needs if s <= mid < e] or [0])
+        need_b = max([nb for s, e, _, nb in needs if s <= mid < e] or [0])
+        if not need and not need_b:
+            continue
+        here = [p for p in people if p[0] <= mid < p[1]]
+        have, have_b = len(here), len([p for p in here if p[2]])
+        if have < need or have_b < need_b:
+            if out and out[-1]["e"] == x0 and out[-1]["have"] == have and out[-1]["need"] == need:
+                out[-1]["e"] = x1
+            else:
+                out.append({"s": x0, "e": x1, "have": have, "need": need, "have_b": have_b, "need_b": need_b})
+    return out
+
+
+# ── Aday değerlendirme (HARD + SOFT kurallar) ───────────────────────────
+def cov_extra_hours(db, uid, days=28):
+    """Son `days` günde motorla üstlenilen ek vardiya saatleri (yük dengeleme)."""
+    try:
+        since = (datetime.now(TZ) - timedelta(days=days)).isoformat()
+        r = db.execute("SELECT COALESCE(SUM(hours),0) AS h FROM cov_offers WHERE uid=? AND status='accepted' "
+                       "AND decided_at>=?", (int(uid), since)).fetchone()
+        return float(r["h"] or 0)
+    except Exception:
+        return 0.0
+
+
+def cov_branch_dist(db, a, b):
+    if int(a) == int(b):
+        return 0
+    try:
+        so = {r["id"]: int(r["sort_order"] or 0) for r in db.execute("SELECT id, sort_order FROM branches").fetchall()}
+        return abs(so.get(int(a), 0) - so.get(int(b), 0)) or 1
+    except Exception:
+        return 1
+
+
+def cov_gap_info(db, os_row, tpls=None):
+    """open_shifts satırı → {bid, date, s, e, code, need_role}."""
+    tpls = tpls if tpls is not None else grid_templates(db)
+    t = tpls.get(os_row["code"] or "")
+    if not t:
+        return None
+    d = grid_day_date(os_row["week_key"], os_row["day"])
+    s, e = cov_window(d, t["start"], t["end"])
+    return {"bid": int(os_row["branch_id"] or t["branch_id"] or 0), "date": d, "s": s, "e": e,
+            "code": os_row["code"], "need_role": (os_row["role_need"] if "role_need" in os_row.keys() else None) or "barista"}
+
+
+def cov_eval(db, gap, u, cfg=None, tpls=None, exclude=()):
+    """Bir kişi bu açık için uygun mu? {ok, why, tier, score, kind, src, warn, src_eff, hours, notes}.
+    HARD kural ihlali → ok=False + why. SOFT kurallar → skor."""
+    cfg = cfg or cov_cfg(db)
+    tpls = tpls if tpls is not None else grid_templates(db)
+    res = {"uid": u["uid"], "nm": u["nm"], "ok": False, "why": "", "tier": 9, "score": 0, "kind": "free",
+           "src": None, "warn": False, "src_eff": None, "hours": round((gap["e"] - gap["s"]).total_seconds() / 3600, 2),
+           "notes": [], "extra": u["extra"], "work": u["work"]}
+    if u["uid"] in exclude:
+        res["why"] = "уже спрашивали"; return res
+    if u["role"] in ("owner", "observer") or u["arch"] or not u["appr"]:
+        res["why"] = "не в штате"; return res
+    if u["extra"] == "off":
+        res["why"] = "доп. смены выключены"; return res
+    if gap["need_role"] == "barista" and not cov_can_barista(db, u):
+        res["why"] = "нет допуска к смене бариста"; return res
+    cross = u["bid"] != gap["bid"]
+    if cross and u["extra"] not in ("other", "any"):
+        res["why"] = "только свой филиал"; return res
+    day_code = cov_cell_code(db, u["uid"], gap["date"])
+    if day_code in ("off", "sick"):
+        res["why"] = "выходной" if day_code == "off" else "болеет"; return res
+    try:
+        wk = (gap["date"] - timedelta(days=gap["date"].weekday())).isoformat()
+        if db.execute("SELECT 1 FROM dayoff_requests WHERE user_id=? AND week_key=? AND day=? AND status='pending'",
+                      (u["uid"], wk, gap["date"].weekday())).fetchone():
+            res["why"] = "просит выходной"; return res
+    except Exception:
+        pass
+    mine = cov_cells(db, gap["date"] - timedelta(days=1), gap["date"] + timedelta(days=1), uid=u["uid"], tpls=tpls)
+    transfer = None
+    for c in mine:
+        if c["e"] <= gap["s"] or c["s"] >= gap["e"]:
+            continue
+        if c["bid"] == gap["bid"]:
+            res["why"] = "уже в смене здесь"; return res
+        if c["s"] == gap["s"] and c["e"] == gap["e"] and u["extra"] in ("other", "any"):
+            transfer = c
+            continue
+        res["why"] = "пересекается со своей сменой"; return res
+    rest_min = float(cfg["min_rest_h"])
+    for c in mine:
+        if c is transfer or not (c["e"] <= gap["s"] or c["s"] >= gap["e"]):
+            continue
+        g = (gap["s"] - c["e"]).total_seconds() / 3600 if c["e"] <= gap["s"] else (c["s"] - gap["e"]).total_seconds() / 3600
+        if g < 0.01:
+            block = (max(c["e"], gap["e"]) - min(c["s"], gap["s"])).total_seconds() / 3600
+            if block > cfg["max_block_h"]:
+                res["why"] = f"подряд {block:g} ч — больше {cfg['max_block_h']} ч"; return res
+            res["notes"].append("подряд со своей сменой")
+        elif g < rest_min:
+            res["why"] = f"мало отдыха ({g:.0f} ч)"; return res
+    wk0 = gap["date"] - timedelta(days=gap["date"].weekday())
+    week_h = sum((c["e"] - c["s"]).total_seconds() / 3600
+                 for c in cov_cells(db, wk0, wk0 + timedelta(days=6), uid=u["uid"], tpls=tpls) if c is not transfer
+                 and not (transfer and c["date"] == transfer["date"] and c["code"] == transfer["code"]))
+    if week_h + res["hours"] > cfg["max_week_h"]:
+        res["why"] = f"лимит часов недели ({week_h + res['hours']:.0f}/{cfg['max_week_h']})"; return res
+    # ── uygun → SOFT kurallar ile puan ──
+    vol = cov_volunteer(u)
+    res["ok"] = True
+    res["tier"] = (1 if vol else 2) if not cross else (3 if vol else 4)
+    sc = 0.0
+    sc += 30 if vol else 0
+    sc += 10 if u["work"] == "max" else 0
+    sc += 20 if not cross else 0
+    sc -= 2 * cov_branch_dist(db, u["bid"], gap["bid"]) if cross else 0
+    ex = cov_extra_hours(db, u["uid"])
+    res["extra_h"] = ex
+    sc -= 2 * ex
+    sc -= 5 if res["notes"] else 0
+    sc -= 0.2 * week_h
+    if transfer:
+        res["kind"] = "transfer"
+        res["src"] = transfer["bid"]
+        sf = cov_shortfalls(db, transfer["bid"], gap["s"], gap["e"], remove_uid=u["uid"], tpls=tpls)
+        if sf:
+            w = min(sf, key=lambda x: (x["have"] - x["need"]))
+            res["warn"] = True
+            res["src_eff"] = {"bid": transfer["bid"], "after": w["have"], "before": w["have"] + 1, "need": w["need"]}
+            sc -= 25
+        else:
+            sc -= 10        # gereksiz transferden kaçın
+    else:
+        sc += 10
+    res["score"] = round(sc, 1)
+    return res
+
+
+def cov_candidates(db, os_row, cfg=None):
+    """Açık için TÜM çalışanları değerlendir → (uygunlar sıralı, uygun olmayanlar)."""
+    cfg = cfg or cov_cfg(db)
+    tpls = grid_templates(db)
+    gap = cov_gap_info(db, os_row, tpls)
+    if not gap:
+        return [], []
+    asked = {int(r["uid"]) for r in db.execute("SELECT uid FROM cov_offers WHERE os_id=?", (int(os_row["id"]),)).fetchall()}
+    excl = set(asked)
+    if os_row["from_uid"]:
+        excl.add(int(os_row["from_uid"]))
+    ok, bad = [], []
+    for r in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1").fetchall():
+        uid = int(r["user_id"])
+        if os_row["from_uid"] and uid == int(os_row["from_uid"]):
+            continue
+        u = cov_user(db, uid)
+        if not u:
+            continue
+        ev = cov_eval(db, gap, u, cfg, tpls, exclude=asked)
+        (ok if ev["ok"] else bad).append(ev)
+    ok.sort(key=lambda x: (x["tier"], -x["score"], x["uid"]))
+    return ok, bad
+
+
+# ── Akış: açık aç → teklif dalgası → kabul/ret → yönetici ──────────────
+def cov_open_gap(db, kind, week_key, day, code, from_uid, dayoff_req_id=None, reason=""):
+    """open_shifts'e motor açığı yaz (kind: dayoff | sick | vacancy). Var olan açık varsa onu döndürür."""
+    tpls = grid_templates(db)
+    t = tpls.get(code) or {}
+    ex = db.execute("SELECT * FROM open_shifts WHERE week_key=? AND day=? AND code=? AND status IN ('open','claimed') "
+                    "AND COALESCE(from_uid,0)=?", (week_key, int(day), code, int(from_uid or 0))).fetchone()
+    if ex:
+        return ex
+    role_need = "barista"
+    if from_uid:
+        fu = cov_user(db, from_uid)
+        if fu and not cov_can_barista(db, fu):
+            role_need = "any"
+    cur = db.execute(
+        "INSERT INTO open_shifts (week_key, day, code, branch_id, from_uid, from_name, status, reason, created_at, "
+        "kind, cov, dayoff_req_id, role_need, wave) VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,0)",
+        (week_key, int(day), code, t.get("branch_id"), from_uid,
+         display_name_for(db, int(from_uid), fallback="?") if from_uid else "",
+         reason, datetime.now(TZ).isoformat(), kind, "searching", dayoff_req_id, role_need))
+    db.commit()
+    return db.execute("SELECT * FROM open_shifts WHERE id=?", (cur.lastrowid,)).fetchone()
+
+
+def cov_dispatch(db, os_id, cfg=None):
+    """Sıradaki dalga: en iyi N adaya teklif. Döner: ('offered', [offer rows]) | ('waiting', []) |
+    ('escalated', []) | ('closed', [])."""
+    cfg = cfg or cov_cfg(db)
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+    if not row or row["status"] not in ("open", "claimed") or (row["cov"] or "") in ("covered", "rejected", "cancelled", "owner"):
+        return "closed", []
+    if db.execute("SELECT 1 FROM cov_offers WHERE os_id=? AND status='sent'", (int(os_id),)).fetchone():
+        return "waiting", []
+    ok, bad = cov_candidates(db, row, cfg)
+    kind = row["kind"] or "vacancy"
+    n = int(cfg.get(f"wave_{kind}", 2) or 2)
+    pick = ok[:max(1, n)]
+    if not pick:
+        if (row["cov"] or "") != "escalated":
+            db.execute("UPDATE open_shifts SET cov='escalated', escalated_at=? WHERE id=?",
+                       (datetime.now(TZ).isoformat(), int(os_id)))
+            db.commit()
+            _n_asked = db.execute("SELECT COUNT(*) AS c FROM cov_offers WHERE os_id=?", (int(os_id),)).fetchone()["c"]
+            log_action(db, "cov_decision", 0, "Nero", row["from_uid"], row["from_name"] or "",
+                       {"request_id": row["dayoff_req_id"], "gap_id": int(os_id), "decision": "escalated",
+                        "target_branch_id": row["branch_id"], "shift_code": row["code"],
+                        "date": str(grid_day_date(row["week_key"], row["day"])),
+                        "candidates_checked": len(bad) + _n_asked, "offers_sent": _n_asked,
+                        "rejected": [{"uid": b["uid"], "why": b["why"]} for b in bad][:30]})
+            return "escalated", []
+        return "closed", []
+    wave = int(row["wave"] or 0) + 1
+    rows = []
+    now_s = datetime.now(TZ).isoformat()
+    for c in pick:
+        cur = db.execute(
+            "INSERT INTO cov_offers (os_id, uid, tier, score, kind, src_branch_id, src_before, src_after, src_need, "
+            "warn, status, ack, hours, wave, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,'sent',0,?,?,?)",
+            (int(os_id), c["uid"], c["tier"], c["score"], c["kind"], c["src"],
+             (c["src_eff"] or {}).get("before"), (c["src_eff"] or {}).get("after"), (c["src_eff"] or {}).get("need"),
+             1 if c["warn"] else 0, c["hours"], wave, now_s))
+        rows.append(db.execute("SELECT * FROM cov_offers WHERE id=?", (cur.lastrowid,)).fetchone())
+    db.execute("UPDATE open_shifts SET cov='offered', wave=? WHERE id=?", (wave, int(os_id)))
+    db.commit()
+    log_action(db, "cov_decision", 0, "Nero", row["from_uid"], row["from_name"] or "",
+               {"request_id": row["dayoff_req_id"], "gap_id": int(os_id), "decision": "offers_sent", "wave": wave,
+                "target_branch_id": row["branch_id"], "shift_code": row["code"],
+                "date": str(grid_day_date(row["week_key"], row["day"])),
+                "candidates_checked": len(ok) + len(bad),
+                "ranked": [{"uid": c["uid"], "tier": c["tier"], "score": c["score"], "kind": c["kind"],
+                            "warn": c["warn"]} for c in ok[:10]],
+                "rejected": [{"uid": b["uid"], "why": b["why"]} for b in bad][:30]})
+    return "offered", rows
+
+
+def _cov_resolve_from(db, row, actor_id, actor_name):
+    """Açık kapandı → açığı yaratan kişinin planı: izin → 'off' + talep onay; hastalık → 'sick'."""
+    d = grid_day_date(row["week_key"], row["day"])
+    kind = row["kind"] or "vacancy"
+    if row["from_uid"]:
+        if kind == "dayoff":
+            cov_set_cell(db, row["from_uid"], d, "off", actor_id, actor_name)
+            if row["dayoff_req_id"]:
+                db.execute("UPDATE dayoff_requests SET status='ok', decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                           (actor_id, actor_name, datetime.now(TZ).isoformat(), int(row["dayoff_req_id"])))
+        elif kind == "sick":
+            cov_set_cell(db, row["from_uid"], d, "sick", actor_id, actor_name)
+
+
+def cov_accept(db, offer_id, uid, ack=False):
+    """Teklif kabulü. Döner: (sonuç, bilgi). sonuç: 'ok' | 'need_ack' | 'err'."""
+    of = db.execute("SELECT * FROM cov_offers WHERE id=?", (int(offer_id),)).fetchone()
+    if not of or int(of["uid"]) != int(uid):
+        return "err", "Предложение не найдено."
+    if of["status"] != "sent":
+        return "err", ("Смену уже взял другой сотрудник." if of["status"] == "superseded"
+                       else "Предложение уже неактуально.")
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(of["os_id"]),)).fetchone()
+    if not row or row["status"] not in ("open", "claimed") or (row["cov"] or "") in ("covered", "rejected", "cancelled", "owner"):
+        db.execute("UPDATE cov_offers SET status='superseded', decided_at=? WHERE id=?", (datetime.now(TZ).isoformat(), int(offer_id)))
+        db.commit()
+        return "err", "Смена уже закрыта."
+    tpls = grid_templates(db)
+    gap = cov_gap_info(db, row, tpls)
+    u = cov_user(db, uid)
+    ev = cov_eval(db, gap, u, cov_cfg(db), tpls) if (gap and u) else {"ok": False, "why": "нет данных"}
+    if not ev["ok"]:
+        db.execute("UPDATE cov_offers SET status='expired', decided_at=? WHERE id=?", (datetime.now(TZ).isoformat(), int(offer_id)))
+        db.commit()
+        return "err", "Сейчас вы не можете взять эту смену: " + ev["why"] + "."
+    if ev["warn"] and not ack:
+        return "need_ack", ev
+    now_s = datetime.now(TZ).isoformat()
+    cov_set_cell(db, uid, gap["date"], row["code"], uid, u["nm"])
+    _cov_resolve_from(db, row, uid, u["nm"])
+    db.execute("UPDATE open_shifts SET status='done', cov='covered', claim_uid=?, claim_name=?, claim_at=?, "
+               "covered_by=?, decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+               (uid, u["nm"], now_s, uid, 0, "Nero", now_s, int(row["id"])))
+    db.execute("UPDATE cov_offers SET status='accepted', ack=?, decided_at=?, hours=? WHERE id=?",
+               (1 if ack else 0, now_s, ev["hours"], int(offer_id)))
+    db.execute("UPDATE cov_offers SET status='superseded', decided_at=? WHERE os_id=? AND status='sent' AND id!=?",
+               (now_s, int(row["id"]), int(offer_id)))
+    db.commit()
+    log_action(db, "cov_decision", uid, u["nm"], row["from_uid"], row["from_name"] or "",
+               {"request_id": row["dayoff_req_id"], "gap_id": int(row["id"]), "employee_id": uid,
+                "source_branch_id": ev["src"] if ev["kind"] == "transfer" else u["bid"],
+                "target_branch_id": gap["bid"], "shift_code": row["code"], "date": str(gap["date"]),
+                "decision": "covered", "kind": ev["kind"], "warning_shown": bool(ev["warn"]),
+                "employee_acknowledged": bool(ack), "source_branch_affected": bool(ev["warn"]),
+                "src_eff": ev["src_eff"], "manager_override": False})
+    return "ok", {"row": db.execute("SELECT * FROM open_shifts WHERE id=?", (int(row["id"]),)).fetchone(), "ev": ev}
+
+
+def cov_decline(db, offer_id, uid):
+    of = db.execute("SELECT * FROM cov_offers WHERE id=?", (int(offer_id),)).fetchone()
+    if not of or int(of["uid"]) != int(uid) or of["status"] != "sent":
+        return None
+    db.execute("UPDATE cov_offers SET status='declined', decided_at=? WHERE id=?", (datetime.now(TZ).isoformat(), int(offer_id)))
+    db.commit()
+    return int(of["os_id"])
+
+
+def cov_tick(db, now=None, cfg=None):
+    """Dakika tiki: süresi dolan teklifler 'expired' → sıradaki dalga; tarihi geçen açıklar kapanır.
+    Döner: [(os_id, 'offered', rows) | (os_id, 'escalated', [])]."""
+    cfg = cfg or cov_cfg(db)
+    now = now or datetime.now(TZ).replace(tzinfo=None)
+    events = []
+    for row in db.execute("SELECT * FROM open_shifts WHERE status IN ('open','claimed') AND kind IS NOT NULL "
+                          "AND COALESCE(cov,'') IN ('searching','offered','escalated')").fetchall():
+        d = grid_day_date(row["week_key"], row["day"])
+        if d and d < now.date():
+            db.execute("UPDATE open_shifts SET cov='cancelled', status='done', decided_at=? WHERE id=?",
+                       (now.isoformat(), int(row["id"])))
+            db.execute("UPDATE cov_offers SET status='expired', decided_at=? WHERE os_id=? AND status='sent'",
+                       (now.isoformat(), int(row["id"])))
+            db.commit()
+            continue
+        tmo = int(cfg.get(f"timeout_{row['kind']}_min", 120) or 120)
+        for of in db.execute("SELECT * FROM cov_offers WHERE os_id=? AND status='sent'", (int(row["id"]),)).fetchall():
+            try:
+                age = (now - datetime.fromisoformat(of["created_at"]).replace(tzinfo=None)).total_seconds() / 60
+            except Exception:
+                age = 0
+            if age >= tmo:
+                db.execute("UPDATE cov_offers SET status='expired', decided_at=? WHERE id=?", (now.isoformat(), int(of["id"])))
+        db.commit()
+        if (row["cov"] or "") in ("searching", "offered"):
+            st, rows = cov_dispatch(db, int(row["id"]), cfg)
+            if st in ("offered", "escalated"):
+                events.append((int(row["id"]), st, rows))
+    return events
+
+
+def cov_owner_assign(db, os_id, uid, owner_id, owner_name, reason="other", note=""):
+    """Yönetici müdahalesi: algoritmayı geçersiz kılıp doğrudan ata (uid=owner → kendisi üstlenir)."""
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+    if not row or row["status"] not in ("open", "claimed"):
+        return None, "Смена уже закрыта."
+    tpls = grid_templates(db)
+    gap = cov_gap_info(db, row, tpls)
+    if not gap:
+        return None, "Шаблон смены не найден."
+    u = cov_user(db, uid)
+    if not u:
+        return None, "Сотрудник не найден."
+    ev = cov_eval(db, gap, u, cov_cfg(db), tpls) if u["role"] != "owner" else {"ok": True, "why": "", "kind": "owner", "warn": False, "src": None, "src_eff": None, "hours": 0}
+    now_s = datetime.now(TZ).isoformat()
+    cov_set_cell(db, uid, gap["date"], row["code"], owner_id, owner_name)
+    _cov_resolve_from(db, row, owner_id, owner_name)
+    db.execute("UPDATE open_shifts SET status='done', cov=?, claim_uid=?, claim_name=?, covered_by=?, override=1, "
+               "override_reason=?, decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+               ("owner" if u["role"] == "owner" else "covered", uid, u["nm"], uid, reason,
+                owner_id, owner_name, now_s, int(os_id)))
+    db.execute("UPDATE cov_offers SET status='superseded', decided_at=? WHERE os_id=? AND status='sent'", (now_s, int(os_id)))
+    db.commit()
+    log_action(db, "cov_decision", owner_id, owner_name, uid, u["nm"],
+               {"request_id": row["dayoff_req_id"], "gap_id": int(os_id), "employee_id": uid,
+                "target_branch_id": gap["bid"], "shift_code": row["code"], "date": str(gap["date"]),
+                "decision": "owner_take" if u["role"] == "owner" else "manual_assign",
+                "manager_override": True, "manager_id": owner_id, "reason": reason,
+                "reason_text": COV_REASONS.get(reason, reason), "note": note,
+                "hard_rule_violation": "" if ev.get("ok") else ev.get("why", ""),
+                "warning_shown": bool(ev.get("warn")), "employee_acknowledged": False})
+    return db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone(), ""
+
+
+def cov_owner_reject(db, os_id, owner_id, owner_name):
+    """Yönetici izni reddeder: kişi vardiyasında kalır, açık kapanır."""
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+    if not row or row["status"] not in ("open", "claimed"):
+        return None, "Уже решено."
+    now_s = datetime.now(TZ).isoformat()
+    if row["dayoff_req_id"]:
+        db.execute("UPDATE dayoff_requests SET status='no', decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+                   (owner_id, owner_name, now_s, int(row["dayoff_req_id"])))
+    db.execute("UPDATE open_shifts SET status='done', cov='rejected', decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
+               (owner_id, owner_name, now_s, int(os_id)))
+    db.execute("UPDATE cov_offers SET status='superseded', decided_at=? WHERE os_id=? AND status='sent'", (now_s, int(os_id)))
+    db.commit()
+    log_action(db, "cov_decision", owner_id, owner_name, row["from_uid"], row["from_name"] or "",
+               {"request_id": row["dayoff_req_id"], "gap_id": int(os_id), "decision": "rejected_by_owner",
+                "manager_override": True, "manager_id": owner_id})
+    return row, ""
+
+
+def cov_removal_gaps(db, uid, date_, code):
+    """Kişi bu günkü vardiyasından çıkarsa şubede açık oluşur mu? Eksik dilimler listesi."""
+    t = grid_templates(db).get(code or "")
+    if not t:
+        return []
+    s, e = cov_window(date_, t["start"], t["end"])
+    return cov_shortfalls(db, int(t["branch_id"] or 0), s, e, remove_uid=uid)
+
+
+def cov_week_status(db, branch_id, week_off=0):
+    """Şubenin haftası: {st: green|yellow|red|none, days: [{d, short:[...]}], dayoff, gaps, sick, offers}."""
+    today = datetime.now(TZ).replace(tzinfo=None).date()
+    mon = today - timedelta(days=today.weekday()) + timedelta(days=7 * week_off)
+    tpls = grid_templates(db)
+    cells = cov_cells(db, mon - timedelta(days=1), mon + timedelta(days=7), branch_id=branch_id, tpls=tpls)
+    planned = any(mon <= c["date"] <= mon + timedelta(days=6) for c in cells)
+    days = []
+    red = False
+    for i in range(7):
+        d = mon + timedelta(days=i)
+        if d < today:
+            days.append({"d": d.isoformat(), "short": []})
+            continue
+        sh = []
+        for s, e, n, nb in cov_need_intervals(db, branch_id, d, d, tpls):
+            if s.date() != d:
+                continue
+            for x in cov_shortfalls(db, branch_id, s, e, tpls=tpls, cells=cells):
+                sh.append({"s": x["s"].strftime("%H:%M"), "e": x["e"].strftime("%H:%M"),
+                           "have": x["have"], "need": x["need"], "have_b": x["have_b"], "need_b": x["need_b"]})
+        if sh and planned:
+            red = True
+        days.append({"d": d.isoformat(), "short": sh})
+    wks = [mon.isoformat()]
+    q = ",".join("?" for _ in wks)
+    os_rows = db.execute(f"SELECT * FROM open_shifts WHERE week_key IN ({q}) AND branch_id=? AND status IN ('open','claimed')",
+                         (*wks, int(branch_id))).fetchall()
+    gaps = [r for r in os_rows if r["kind"]]
+    esc = [r for r in gaps if (r["cov"] or "") == "escalated"]
+    sick = [r for r in gaps if r["kind"] == "sick"]
+    dayoff = 0
+    try:
+        dayoff = db.execute(
+            "SELECT COUNT(*) AS c FROM dayoff_requests d JOIN users u ON u.user_id=d.user_id "
+            "WHERE d.status='pending' AND d.week_key=? AND COALESCE(u.branch_id,1)=?", (mon.isoformat(), int(branch_id))).fetchone()["c"]
+    except Exception:
+        pass
+    offers = db.execute(f"SELECT COUNT(*) AS c FROM cov_offers o JOIN open_shifts s ON s.id=o.os_id "
+                        f"WHERE o.status='sent' AND s.branch_id=? AND s.week_key IN ({q})", (int(branch_id), *wks)).fetchone()["c"]
+    if not planned:
+        st = "none"
+    elif red or esc:
+        st = "red"
+    elif gaps or dayoff:
+        st = "yellow"
+    else:
+        st = "green"
+    return {"st": st, "days": days, "dayoff": int(dayoff), "gaps": len(gaps), "esc": len(esc),
+            "sick": len(sick), "offers": int(offers), "planned": planned}
+
+
+# ── Bildirimler (Telegram) ─────────────────────────────────────────────
+def _cov_when(db, row):
+    d = grid_day_date(row["week_key"], row["day"])
+    t = grid_templates(db).get(row["code"] or "") or {}
+    br = (get_branch(db, int(row["branch_id"] or t.get("branch_id") or 0)) or {}).get("name") or ""
+    return br, f"{grid_day_label(row['day'])} {d.strftime('%d.%m') if d else ''}", f"{t.get('start', '')}–{t.get('end', '')}"
+
+
+async def cov_notify_offers(bot_obj, db, os_id, rows):
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+    if not row:
+        return
+    br, day, tm = _cov_when(db, row)
+    why = {"sick": "заболел(а)", "dayoff": "просит выходной", "vacancy": "смена свободна"}.get(row["kind"] or "", "")
+    for of in rows:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Возьму", callback_data=f"cov_ok:{int(of['id'])}"),
+                                    InlineKeyboardButton("❌ Не могу", callback_data=f"cov_no:{int(of['id'])}")]])
+        urgent = "🚨 Срочно · " if row["kind"] == "sick" else ""
+        txt = (f"📢 {urgent}Доп. смена · {br}\n{day} · {tm}\n"
+               + (f"{row['from_name']} {why}.\n" if row["from_name"] and why else "")
+               + "\nВыйдете на эту смену?")
+        try:
+            await bot_obj.send_message(int(of["uid"]), txt, reply_markup=kb)
+        except Exception as e:
+            logger.warning(f"cov offer DM {of['uid']}: {e}")
+
+
+async def cov_notify_escalated(bot_obj, db, os_id):
+    row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+    if not row:
+        return
+    br, day, tm = _cov_when(db, row)
+    asked = db.execute("SELECT COUNT(*) AS c FROM cov_offers WHERE os_id=?", (int(os_id),)).fetchone()["c"]
+    need = "бариста" if (row["role_need"] or "barista") == "barista" else "сотрудник"
+    kind_t = {"sick": "болезнь", "dayoff": "выходной", "vacancy": "свободная смена"}.get(row["kind"] or "", "")
+    btn = [[InlineKeyboardButton("🙋 Выйду сам", callback_data=f"cov_own:{int(os_id)}")]]
+    if row["kind"] == "dayoff":
+        btn.append([InlineKeyboardButton("❌ Отклонить выходной", callback_data=f"cov_rej:{int(os_id)}")])
+    txt = (f"🚨 Смену не удалось закрыть\n{br} · {day} · {tm}\nНужен: 1 {need}"
+           + (f" · {kind_t}: {row['from_name']}" if row["from_name"] else "")
+           + f"\n\nПроверено: свой филиал ✓ · другие филиалы ✓ · добровольцы ✓\nСпросили: {asked} · согласных нет."
+           + "\n\nВручную: Управление → График смен → Покрытие")
+    for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        try:
+            await bot_obj.send_message(int(_o["user_id"]), txt, reply_markup=InlineKeyboardMarkup(btn))
+        except Exception as e:
+            logger.warning(f"cov escalate DM: {e}")
+
+
+async def cov_notify_covered(bot_obj, db, row, by_uid, extra=""):
+    br, day, tm = _cov_when(db, row)
+    by = display_name_for(db, int(by_uid), fallback="?")
+    kind = row["kind"] or "vacancy"
+    if row["from_uid"] and int(row["from_uid"]) != int(by_uid):
+        msg = {"dayoff": f"✅ Ваш выходной {day} согласован — вас заменит {by}.",
+               "sick": f"🤍 Поправляйтесь. Вашу смену {day} закроет {by}."}.get(kind, f"ℹ️ Смену {day} закроет {by}.")
+        try:
+            await bot_obj.send_message(int(row["from_uid"]), msg)
+        except Exception:
+            pass
+    head = {"dayoff": f"🛋 {row['from_name']} — выходной", "sick": f"🤒 {row['from_name']} не выйдет",
+            "vacancy": "📌 Свободная смена"}.get(kind, "📌 Смена")
+    for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        if int(_o["user_id"]) == int(by_uid):
+            continue
+        try:
+            await bot_obj.send_message(int(_o["user_id"]), f"{head} · {br} · {day} {tm}\nЗакрыто: {by}." + extra)
+        except Exception:
+            pass
+
+
+async def cov_after_dispatch(bot_obj, db, os_id, st, rows, requester_uid=None):
+    """Dağıtım sonucu bildirimleri: teklif DM'leri ya da yöneticiye eskalasyon."""
+    if st == "offered":
+        await cov_notify_offers(bot_obj, db, os_id, rows)
+    elif st == "escalated":
+        await cov_notify_escalated(bot_obj, db, os_id)
+        if requester_uid:
+            row = db.execute("SELECT * FROM open_shifts WHERE id=?", (int(os_id),)).fetchone()
+            if row and row["kind"] == "dayoff":
+                try:
+                    await bot_obj.send_message(
+                        int(requester_uid),
+                        "⚠️ Сейчас этот выходной невозможен: в этот день не хватает людей, а замены нет. "
+                        "Запрос передан владельцу.")
+                except Exception:
+                    pass
+
+
+async def cov_loop(app):
+    await asyncio.sleep(70)
+    while True:
+        try:
+            db = get_db()
+            if cov_on(db):
+                for os_id, st, rows in cov_tick(db):
+                    await cov_after_dispatch(app.bot, db, os_id, st, rows)
+        except Exception as e:
+            logger.warning(f"cov_loop: {e}")
+        await asyncio.sleep(60)
+
+
+def cov_dash(db):
+    """Owner ekranı: şube durumu + açık kartları (adaylarla) + ihtiyaç tanımları + gönüllü havuzu."""
+    out = {"branches": [], "gaps": [], "needs": {}, "cfg": cov_cfg(db), "pool": []}
+    cfg = out["cfg"]
+    for b in get_branches(db, only_active=True):
+        if not branch_ready(b):
+            continue
+        ws = cov_week_status(db, b["id"])
+        ws.update({"id": b["id"], "n": b["name"]})
+        out["branches"].append(ws)
+        out["needs"][str(b["id"])] = cov_needs(db, b["id"])
+    for row in db.execute("SELECT * FROM open_shifts WHERE status IN ('open','claimed') ORDER BY week_key, day").fetchall():
+        d = grid_day_date(row["week_key"], row["day"])
+        if not d or d < datetime.now(TZ).replace(tzinfo=None).date():
+            continue
+        br, day, tm = _cov_when(db, row)
+        ok, bad = cov_candidates(db, row, cfg)
+        offers = [{"n": display_name_for(db, int(o["uid"]), fallback="?"), "st": o["status"], "warn": int(o["warn"] or 0)}
+                  for o in db.execute("SELECT * FROM cov_offers WHERE os_id=? ORDER BY id", (int(row["id"]),)).fetchall()]
+        out["gaps"].append({
+            "id": int(row["id"]), "b": br, "day": day, "tm": tm, "kind": row["kind"] or "", "cov": row["cov"] or "",
+            "from": row["from_name"] or "", "need": row["role_need"] or "barista", "date": d.isoformat(),
+            "cands": [{"uid": c["uid"], "n": c["nm"], "ok": 1, "tier": c["tier"], "warn": 1 if c["warn"] else 0,
+                       "src": (get_branch(db, c["src"]) or {}).get("name") if c["src"] else "",
+                       "eff": c["src_eff"], "kind": c["kind"], "vol": 1 if c["tier"] in (1, 3) else 0,
+                       "extra_h": c.get("extra_h", 0)} for c in ok[:6]]
+                     + [{"uid": c["uid"], "n": c["nm"], "ok": 0, "why": c["why"]} for c in bad
+                        if c["why"] not in ("не в штате",)][:6],
+            "offers": offers})
+    for r in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+                        "AND role NOT IN ('owner','observer')").fetchall():
+        u = cov_user(db, int(r["user_id"]))
+        if not u:
+            continue
+        out["pool"].append({"uid": u["uid"], "n": u["nm"], "extra": u["extra"], "work": u["work"],
+                            "role": cov_role(db, u["uid"]), "barista_ok": u["barista_ok"],
+                            "bid": u["bid"], "extra_h": cov_extra_hours(db, u["uid"])})
+    return out
+
+
+def cov_my(db, uid):
+    """Çalışan: tercihleri + bekleyen teklifleri."""
+    u = cov_user(db, uid) or {"extra": "own", "work": "normal"}
+    offers = []
+    for of in db.execute("SELECT o.*, s.week_key, s.day, s.code, s.branch_id, s.kind AS gkind, s.from_name "
+                         "FROM cov_offers o JOIN open_shifts s ON s.id=o.os_id WHERE o.uid=? AND o.status='sent' "
+                         "ORDER BY o.id DESC", (int(uid),)).fetchall():
+        br, day, tm = _cov_when(db, of)
+        offers.append({"id": int(of["id"]), "b": br, "day": day, "tm": tm, "kind": of["gkind"] or "",
+                       "from": of["from_name"] or "", "warn": int(of["warn"] or 0),
+                       "src": (get_branch(db, int(of["src_branch_id"])) or {}).get("name") if of["src_branch_id"] else "",
+                       "before": of["src_before"], "after": of["src_after"], "need": of["src_need"]})
+    # İzin istemeden ÖNCE bilinsin: bu gün kişi çıkarsa şubede açık oluşuyor mu?
+    # Anahtar «hafta-gün» (0/1 = bu/gelecek hafta), yalnız vardiyası olan günler.
+    cover = {}
+    try:
+        if cov_on(db):
+            tpls = grid_templates(db)
+            today = datetime.now(TZ).replace(tzinfo=None).date()
+            mon = today - timedelta(days=today.weekday())
+            for w in (0, 1):
+                for d in range(7):
+                    dd = mon + timedelta(days=7 * w + d)
+                    if dd < today:
+                        continue
+                    c = cov_cell_code(db, uid, dd)
+                    if c and c not in ("off", "sick") and tpls.get(c) and cov_removal_gaps(db, uid, dd, c):
+                        cover[f"{w}-{d}"] = 1
+    except Exception as e:
+        logger.warning(f"cov_my cover: {e}")
+    return {"extra": u["extra"], "work": u["work"], "offers": offers, "cover": cover, "on": 1 if cov_on(db) else 0}
+
 
 
 def grid_day_label(day):
@@ -6603,6 +7500,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _open_out = []
     parts.append(f"shift_tpl={quote(json.dumps(_tpl_out, ensure_ascii=False))}")
     parts.append(f"shift_rules={quote(json.dumps(_rules, ensure_ascii=False))}")
+    # ── Karar motoru: owner panosu / çalışanın tercih + teklifleri ──
+    try:
+        if role == "owner":
+            parts.append(f"cov_dash={quote(json.dumps(cov_dash(db), ensure_ascii=False, default=str))}")
+        parts.append(f"cov_me={quote(json.dumps(cov_my(db, user_id), ensure_ascii=False, default=str))}")
+    except Exception as _e_cov:
+        logger.warning(f"cov payload: {_e_cov}")
     parts.append(f"open_shifts={quote(json.dumps(_open_out, ensure_ascii=False))}")
     # ── Отчёт odaları için kayıtlar (owner: hepsi · barista: sadece kendi vardiya+sipariş) ──
     def _repq(sql, params=(), n=120):
@@ -8229,6 +9133,63 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "noop":
         return
+
+    # ─── KARAR MOTORU: teklif cevabı / owner eskalasyon düğmeleri ───
+    if data.split(":")[0] in ("cov_ok", "cov_ack", "cov_no", "cov_own", "cov_rej"):
+        _k, _, _v = data.partition(":")
+        try:
+            _id = int(_v)
+        except ValueError:
+            return
+        db = get_db()
+        _uid = query.from_user.id
+        async def _ed(t, kb=None):
+            try: await query.edit_message_text(t, reply_markup=kb)
+            except Exception: pass
+        if _k == "cov_no":
+            _osid = cov_decline(db, _id, _uid)
+            await _ed("❌ Вы ответили: не могу. Спасибо, спросим других.")
+            if _osid:
+                _st, _rows = cov_dispatch(db, _osid)
+                await cov_after_dispatch(context.bot, db, _osid, _st, _rows)
+            return
+        if _k in ("cov_ok", "cov_ack"):
+            _res, _info = cov_accept(db, _id, _uid, ack=(_k == "cov_ack"))
+            if _res == "err":
+                await _ed("ℹ️ " + _info); return
+            if _res == "need_ack":
+                _e = _info.get("src_eff") or {}
+                _sb = (get_branch(db, _e.get("bid") or 0) or {}).get("name", "")
+                await _ed(f"⚠️ ВНИМАНИЕ\nЕсли вы возьмёте эту смену, в вашем филиале станет меньше людей, чем нужно.\n\n"
+                          f"Филиал: {_sb}\nСейчас: {_e.get('before')}\nНужно: {_e.get('need')}\nПосле: {_e.get('after')}",
+                          InlineKeyboardMarkup([[InlineKeyboardButton("Отказаться", callback_data=f"cov_no:{_id}"),
+                                                 InlineKeyboardButton("✅ Принять и продолжить", callback_data=f"cov_ack:{_id}")]]))
+                return
+            await _ed("✅ Смена ваша. Спасибо!")
+            await cov_notify_covered(context.bot, db, _info["row"], _uid)
+            return
+        if get_role(db, _uid) != "owner":
+            await _ed("❌ Только владелец."); return
+        if _k == "cov_own":
+            _row2, _err = cov_owner_assign(db, _id, _uid, _uid, query.from_user.first_name, "short")
+            if _err:
+                await _ed("ℹ️ " + _err); return
+            await _ed("✅ Вы закрываете эту смену сами. Записано.")
+            await cov_notify_covered(context.bot, db, _row2, _uid)
+            return
+        if _k == "cov_rej":
+            _row2, _err = cov_owner_reject(db, _id, _uid, query.from_user.first_name)
+            if _err:
+                await _ed("ℹ️ " + _err); return
+            await _ed("Выходной отклонён — смена остаётся за сотрудником.")
+            if _row2["from_uid"]:
+                try:
+                    _br, _day, _tm = _cov_when(db, _row2)
+                    await context.bot.send_message(int(_row2["from_uid"]),
+                        f"❌ Выходной {_day} не получилось согласовать: замены нет. Ваша смена {_tm} остаётся.")
+                except Exception:
+                    pass
+            return
 
     # ─── Erken cagri: sменщик Telegram'dan cevap veriyor ───
     if data.startswith("ho_call_ok:") or data.startswith("ho_call_no:"):
@@ -11522,6 +12483,169 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception:
                     pass
 
+        # ─── KARAR MOTORU · çalışan ───
+        elif action == "cov_prefs_set":
+            db = get_db()
+            _ex = str(data.get("extra") or "")
+            _wk = str(data.get("work") or "")
+            if _ex in COV_EXTRA:
+                db.execute("UPDATE users SET cov_extra=? WHERE user_id=?", (_ex, user.id))
+            if _wk in COV_WORK:
+                db.execute("UPDATE users SET cov_work=? WHERE user_id=?", (_wk, user.id))
+            db.commit()
+            log_action(db, "cov_prefs_set", user.id, user.first_name, user.id, shown, {"extra": _ex, "work": _wk})
+
+        elif action == "cov_sick":
+            # «Сегодня не смогу выйти» — hastalık normal izin DEĞİL: haftalık hakkı
+            # tüketmez, kural/limit sorulmaz; acil açık oluşur.
+            db = get_db()
+            try:
+                _off = max(0, min(1, int(data.get("day_offset") or 0)))
+            except (TypeError, ValueError):
+                _off = 0
+            _dd = datetime.now(TZ).replace(tzinfo=None).date() + timedelta(days=_off)
+            _code = cov_cell_code(db, user.id, _dd)
+            if not _code or _code in ("off", "sick") or not grid_templates(db).get(_code):
+                await update.message.reply_text("ℹ️ На этот день у вас нет смены в графике."); return
+            _act = get_active_shift(db, user.id)
+            if _act and _off == 0:
+                await update.message.reply_text("ℹ️ Вы уже на смене — напишите владельцу."); return
+            _wk_s = (_dd - timedelta(days=_dd.weekday())).isoformat()
+            _gs = cov_removal_gaps(db, user.id, _dd, _code)
+            cov_set_cell(db, user.id, _dd, "sick", user.id, shown)
+            db.commit()
+            log_action(db, "cov_sick", user.id, user.first_name, user.id, shown,
+                       {"date": _dd.isoformat(), "code": _code, "gap": bool(_gs)})
+            if not _gs:
+                await update.message.reply_text("🤍 Поправляйтесь. В этот день людей хватает — замена не нужна.")
+                await grid_notify_owners(context.bot, db,
+                    f"🤒 *{md_safe(shown)}* не выйдет {grid_day_label(_dd.weekday())} {_dd.strftime('%d.%m')} (болезнь). "
+                    "Людей хватает — замена не нужна.")
+                return
+            _g = cov_open_gap(db, "sick", _wk_s, _dd.weekday(), _code, user.id, reason="болезнь")
+            await update.message.reply_text("🤍 Поправляйтесь. Nero уже ищет замену на вашу смену.")
+            _st, _rows = cov_dispatch(db, int(_g["id"]))
+            await cov_after_dispatch(context.bot, db, int(_g["id"]), _st, _rows)
+
+        elif action == "cov_offer_decide":
+            db = get_db()
+            try:
+                _oid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _oid = 0
+            if not data.get("ok"):
+                _osid = cov_decline(db, _oid, user.id)
+                await update.message.reply_text("Понял — спросим других.")
+                if _osid:
+                    _st, _rows = cov_dispatch(db, _osid)
+                    await cov_after_dispatch(context.bot, db, _osid, _st, _rows)
+                return
+            _res, _info = cov_accept(db, _oid, user.id, ack=bool(data.get("ack")))
+            if _res == "err":
+                await update.message.reply_text("ℹ️ " + _info); return
+            if _res == "need_ack":
+                _e = _info.get("src_eff") or {}
+                await update.message.reply_text(
+                    f"⚠️ Если вы возьмёте эту смену, в вашем филиале ({(get_branch(db, _e.get('bid') or 0) or {}).get('name', '')}) "
+                    f"не хватит людей: было {_e.get('before')}, нужно {_e.get('need')}, останется {_e.get('after')}.\n"
+                    "Подтвердите в Nero: «Принять и продолжить»."); return
+            await update.message.reply_text("✅ Смена ваша. Спасибо!")
+            await cov_notify_covered(context.bot, db, _info["row"], user.id)
+
+        # ─── KARAR MOTORU · owner ───
+        elif action in ("cov_needs_save", "cov_cfg_save", "cov_owner_send", "cov_owner_assign",
+                        "cov_owner_take", "cov_owner_reject", "cov_user_set"):
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец."); return
+            if action == "cov_needs_save":
+                try:
+                    _bid = int(data.get("branch_id") or 0)
+                except (TypeError, ValueError):
+                    _bid = 0
+                if not _bid or not get_branch(db, _bid):
+                    await update.message.reply_text("❌ Филиал не найден."); return
+                cov_needs_save(db, _bid, data.get("segs") or [], user.id, user.first_name)
+            elif action == "cov_cfg_save":
+                cov_cfg_save(db, data.get("cfg") or {})
+                log_action(db, "cov_cfg_save", user.id, user.first_name, None, None, data.get("cfg") or {})
+            elif action == "cov_user_set":
+                try:
+                    _tu = int(data.get("uid") or 0)
+                except (TypeError, ValueError):
+                    _tu = 0
+                if _tu:
+                    if str(data.get("extra") or "") in COV_EXTRA:
+                        db.execute("UPDATE users SET cov_extra=? WHERE user_id=?", (data.get("extra"), _tu))
+                    if str(data.get("work") or "") in COV_WORK:
+                        db.execute("UPDATE users SET cov_work=? WHERE user_id=?", (data.get("work"), _tu))
+                    if "barista_ok" in data:
+                        _bo = data.get("barista_ok")
+                        db.execute("UPDATE users SET cov_barista_ok=? WHERE user_id=?",
+                                   (None if _bo in (None, "", "auto") else (1 if int(_bo) else 0), _tu))
+                    db.commit()
+                    log_action(db, "cov_user_set", user.id, user.first_name, _tu, None,
+                               {k: data.get(k) for k in ("extra", "work", "barista_ok") if k in data})
+            else:
+                try:
+                    _gid = int(data.get("id") or 0)
+                    _tu = int(data.get("uid") or 0)
+                except (TypeError, ValueError):
+                    _gid, _tu = 0, 0
+                _gr = db.execute("SELECT * FROM open_shifts WHERE id=?", (_gid,)).fetchone() if _gid else None
+                if not _gr:
+                    await update.message.reply_text("❌ Смена не найдена."); return
+                if action == "cov_owner_send":
+                    _gap = cov_gap_info(db, _gr)
+                    _u = cov_user(db, _tu)
+                    _ev = cov_eval(db, _gap, _u) if (_gap and _u) else {"ok": False, "why": "нет данных"}
+                    if not _ev["ok"]:
+                        await update.message.reply_text(f"⚠️ {(_u or {}).get('nm', '')}: {_ev['why']}."); return
+                    if db.execute("SELECT 1 FROM cov_offers WHERE os_id=? AND uid=? AND status='sent'", (_gid, _tu)).fetchone():
+                        await update.message.reply_text("ℹ️ Уже отправлено."); return
+                    _cur = db.execute(
+                        "INSERT INTO cov_offers (os_id, uid, tier, score, kind, src_branch_id, src_before, src_after, src_need, "
+                        "warn, status, ack, hours, wave, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,'sent',0,?,?,?)",
+                        (_gid, _tu, _ev["tier"], _ev["score"], _ev["kind"], _ev["src"],
+                         (_ev["src_eff"] or {}).get("before"), (_ev["src_eff"] or {}).get("after"),
+                         (_ev["src_eff"] or {}).get("need"), 1 if _ev["warn"] else 0, _ev["hours"],
+                         int(_gr["wave"] or 0), datetime.now(TZ).isoformat()))
+                    db.execute("UPDATE open_shifts SET cov='offered' WHERE id=?", (_gid,))
+                    db.commit()
+                    log_action(db, "cov_decision", user.id, user.first_name, _tu, _u["nm"],
+                               {"gap_id": _gid, "decision": "owner_offer", "manager_override": True,
+                                "manager_id": user.id, "warning_shown": bool(_ev["warn"])})
+                    await cov_notify_offers(context.bot, db, _gid,
+                                            [db.execute("SELECT * FROM cov_offers WHERE id=?", (_cur.lastrowid,)).fetchone()])
+                    await update.message.reply_text(f"📨 Предложение отправлено: {_u['nm']}.")
+                elif action in ("cov_owner_assign", "cov_owner_take"):
+                    _who = user.id if action == "cov_owner_take" else _tu
+                    _rs = str(data.get("reason") or ("short" if action == "cov_owner_take" else "other"))
+                    _row2, _err = cov_owner_assign(db, _gid, _who, user.id, user.first_name, _rs,
+                                                   str(data.get("note") or "")[:200])
+                    if _err:
+                        await update.message.reply_text("❌ " + _err); return
+                    await update.message.reply_text("✅ Смена закрыта.")
+                    await cov_notify_covered(context.bot, db, _row2, _who)
+                    if _who != user.id:
+                        try:
+                            _br, _day, _tm = _cov_when(db, _row2)
+                            await context.bot.send_message(_who, f"🗓 Владелец поставил вас на смену: {_br} · {_day} · {_tm}.")
+                        except Exception:
+                            pass
+                elif action == "cov_owner_reject":
+                    _row2, _err = cov_owner_reject(db, _gid, user.id, user.first_name)
+                    if _err:
+                        await update.message.reply_text("ℹ️ " + _err); return
+                    await update.message.reply_text("Выходной отклонён — смена остаётся за сотрудником.")
+                    if _row2["from_uid"]:
+                        try:
+                            _br, _day, _tm = _cov_when(db, _row2)
+                            await context.bot.send_message(int(_row2["from_uid"]),
+                                f"❌ Выходной {_day} не получилось согласовать: замены нет. Ваша смена {_tm} остаётся.")
+                        except Exception:
+                            pass
+
         elif action == "set_theme":
             # Tema tercihi (sessiz — sohbete mesaj gönderilmez).
             db = get_db()
@@ -14313,6 +15437,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if not _ok2:
                     await update.message.reply_text("⚠️ " + _why2 + "\nОтправьте заявку владельцу.")
                     return
+                # KARAR MOTORU: bu gün kişinin vardiyası varsa ve onsuz şubede açık
+                # oluşuyorsa izin HEMEN yazılmaz → talep + yedek arama.
+                if cov_on(db):
+                    _dd_s = grid_day_date(wk, day)
+                    _cur_s = cov_cell_code(db, target_id, _dd_s)
+                    if _cur_s and _cur_s not in ("off", "sick") and grid_templates(db).get(_cur_s) \
+                            and cov_removal_gaps(db, target_id, _dd_s, _cur_s):
+                        if db.execute("SELECT 1 FROM dayoff_requests WHERE user_id=? AND week_key=? AND day=? "
+                                      "AND status='pending'", (target_id, wk, day)).fetchone():
+                            await update.message.reply_text("⏳ Заявка на этот день уже в работе.")
+                            return
+                        _rq = db.execute(
+                            "INSERT INTO dayoff_requests (user_id, week_key, day, note, status, created_at) "
+                            "VALUES (?,?,?,?,'pending',?)", (target_id, wk, day, "нужна замена", now.isoformat()))
+                        _gap_s = cov_open_gap(db, "dayoff", wk, day, _cur_s, target_id,
+                                              dayoff_req_id=_rq.lastrowid, reason="выходной · нужна замена")
+                        await update.message.reply_text(
+                            f"⚠️ Выходной {grid_day_label(day)} {_dd_s.strftime('%d.%m')}: без вас в этот день не хватает людей.\n"
+                            "Nero ищет замену — как только кто-то согласится, выходной встанет сам.")
+                        _st_s, _rows_s = cov_dispatch(db, int(_gap_s["id"]))
+                        await cov_after_dispatch(context.bot, db, int(_gap_s["id"]), _st_s, _rows_s,
+                                                 requester_uid=target_id)
+                        return
             db.execute(
                 "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                 "VALUES (?,?,?,?,?,?,?)",
@@ -14590,8 +15737,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not row or (row["status"] or "") != "open":
                 await update.message.reply_text("❌ Смена уже занята или отменена.")
                 return
-            # Talip olan kişi bu vardiyayı gerçekten alabiliyor mu?
-            _ok, _why = grid_check(db, row["week_key"], row["day"], user.id, row["code"])
+            # Talip olan kişi bu vardiyayı gerçekten alabiliyor mu? Motor açığında
+            # (izin/hastalık) açığı yaratan kişi takvimde hâlâ durur; kapasite
+            # sayımı onu yanlışlıkla «dolu» sayardı → motorun uygunluk kontrolü.
+            if ("kind" in row.keys()) and row["kind"]:
+                _gp = cov_gap_info(db, row)
+                _uu = cov_user(db, user.id)
+                _evc = cov_eval(db, _gp, _uu) if (_gp and _uu) else {"ok": False, "why": "нет данных"}
+                _ok, _why = _evc["ok"], ("Сейчас вы не можете взять эту смену: " + _evc["why"] + ".") if not _evc["ok"] else ""
+            else:
+                _ok, _why = grid_check(db, row["week_key"], row["day"], user.id, row["code"])
             if not _ok:
                 await update.message.reply_text("⚠️ " + _why)
                 return
@@ -14651,6 +15806,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             if not row["claim_uid"]:
                 await update.message.reply_text("❌ На эту смену никто не претендует.")
+                return
+            # Motorun açığı (izin/hastalık): onay motorun çözüm yolundan geçer —
+            # izin isteyenin talebi onaylanır/hücresi güncellenir, log tek yerde.
+            if ("kind" in row.keys()) and row["kind"]:
+                _row_k, _err_k = cov_owner_assign(db, osid, int(row["claim_uid"]), user.id, shown, "business",
+                                                  "talep (Взять смену) onaylandı")
+                if _err_k:
+                    await update.message.reply_text("❌ " + _err_k); return
+                await update.message.reply_text(
+                    f"✅ Смена {grid_day_label(row['day'])} «{md_safe(row['code'])}» закреплена за *{md_safe(row['claim_name'] or '?')}*",
+                    parse_mode="Markdown")
+                await cov_notify_covered(context.bot, db, _row_k, int(row["claim_uid"]))
+                try:
+                    await context.bot.send_message(int(row["claim_uid"]), f"✅ Ваша смена на {grid_day_label(row['day'])} подтверждена.")
+                except Exception:
+                    pass
                 return
             _ok, _why = grid_check(db, row["week_key"], row["day"], row["claim_uid"], row["code"])
             if not _ok:
@@ -14725,7 +15896,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                     "VALUES (?,?,?,?,?,?,?)",
                     (wk, day, target_id, "off", user.id, user.first_name, now.isoformat()))
-                if _wascode and _wascode != "off":
+                _cov_vac = None
+                if _wascode and _wascode != "off" and cov_on(db) and grid_templates(db).get(_wascode):
+                    # KARAR MOTORU: izin onaylandı → boşalan vardiya şubede gerçekten
+                    # açık yaratıyor mu? Yaratıyorsa motor yedek arar; yaratmıyorsa
+                    # (ihtiyaç başkalarıyla karşılanıyor) açık ilanı da açılmaz.
+                    _dd_c = grid_day_date(wk, day)
+                    _t_c = grid_templates(db).get(_wascode)
+                    _s_c, _e_c = cov_window(_dd_c, _t_c["start"], _t_c["end"])
+                    if cov_shortfalls(db, int(_t_c["branch_id"] or 0), _s_c, _e_c):
+                        _cov_vac = cov_open_gap(db, "vacancy", wk, day, _wascode, target_id,
+                                                reason="выходной согласован")
+                elif _wascode and _wascode != "off":
                     _tpl = grid_templates(db).get(_wascode) or {}
                     _dupo = db.execute(
                         "SELECT id FROM open_shifts WHERE week_key=? AND day=? AND code=? "
@@ -14741,6 +15923,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _nm = display_name_for(db, target_id, fallback="?") if target_id else "?"
             log_action(db, "dayoff_decide", user.id, user.first_name, target_id or None, _nm,
                        {"request_id": req_id, "decision": decision, "week_key": wk, "day": day})
+            try:
+                if decision == "ok" and target_id and _cov_vac is not None:
+                    _st_v, _rows_v = cov_dispatch(db, int(_cov_vac["id"]))
+                    await cov_after_dispatch(context.bot, db, int(_cov_vac["id"]), _st_v, _rows_v)
+            except NameError:
+                pass
+            except Exception as _e_cv:
+                logger.warning(f"cov vacancy: {_e_cv}")
             _dl = grid_day_label(day)
             if decision == "ok":
                 await update.message.reply_text(f"✅ Выходной согласован: *{_nm}* · {_dl}", parse_mode="Markdown")
@@ -15665,6 +16855,7 @@ async def setup_commands(app):
     asyncio.create_task(payment_reminder_loop(app))
     asyncio.create_task(shift_end_warn_loop(app))
     asyncio.create_task(handover_loop(app))
+    asyncio.create_task(cov_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
 
