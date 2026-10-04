@@ -539,7 +539,9 @@ def get_db():
                      ("reserve_off", "INTEGER"), ("adv_com", "INTEGER"),
                      # owner 2026-10-03: Reserve İPTAL (1) — birikmiş para maaşa döner,
                      # owner yeniden başlatana kadar tamamen kapalı (geçici kapatmadan ayrı).
-                     ("reserve_cancelled", "INTEGER")):
+                     ("reserve_cancelled", "INTEGER"),
+                     # owner 2026-10-04: bu kişiye otomatik gecikme cezası KAPALI (1)
+                     ("op_fine_off", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -3397,6 +3399,14 @@ def op_register(db, shift_row, why=None):
         # kesilen ceza ne kimseye gider ne bir şey düzeltir — yalnız maaşını bozar.
         if get_role(db, int(sh.get("user_id") or 0)) == "owner":
             _why.append("владелец не штрафуется"); return None
+        # Kişiye özel kapalı (owner 2026-10-04): stajyer ya da herhangi bir çalışan.
+        try:
+            _ofo = db.execute("SELECT COALESCE(op_fine_off,0) AS o FROM users WHERE user_id=?",
+                              (int(sh.get("user_id") or 0),)).fetchone()
+            if _ofo and int(_ofo["o"]):
+                _why.append("для сотрудника штраф за опоздание выключен"); return None
+        except Exception:
+            pass
         actual = datetime.fromisoformat(sh["start_time"])
         bid = int(sh.get("branch_id") or 0)
         if cfg["branches"] and bid not in [int(x) for x in cfg["branches"]]:
@@ -7624,7 +7634,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
             "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id, "
-            "salary_cat_id "
+            "salary_cat_id, COALESCE(op_fine_off,0) AS op_fine_off "
             "FROM users WHERE COALESCE(approved,0)=1 "
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
@@ -7714,6 +7724,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 # Reserve: bu ay maaştan düşen katkı + kart özeti (son 30 hareket)
                 "resd": bs.get("res_ded", 0),
                 "res": _res_card(db, b["user_id"]),
+                "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
@@ -14888,6 +14899,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "adv_inst_set", user.id, user.first_name, None, "",
                        {"max": f"{_old['max']} → {_mx}", "free": f"{_old['free']} → {_fr}"})
+
+        elif action == "op_fine_user_set":
+            # Owner: bu kişiye otomatik açılış gecikmesi cezası aç/kapat.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            if not _tid or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_tid,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            _off = 1 if int(data.get("off") or 0) else 0
+            db.execute("UPDATE users SET op_fine_off=? WHERE user_id=?", (_off or None, _tid))
+            db.commit()
+            log_action(db, "op_fine_user_set", user.id, user.first_name, _tid,
+                       display_name_for(db, _tid, fallback=f"ID {_tid}"),
+                       {"fine": "выключен" if _off else "включён"})
 
         elif action == "reserve_user_cancel":
             # Owner: kişinin Reserve'ini İPTAL et. Birikmiş tutar bu ayın maaşına
