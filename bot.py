@@ -961,6 +961,11 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN reserve_on INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # Kategori bazında otomatik gecikme cezası (owner 2026-10-04): 0 = bu kategoriye kesilmez.
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN op_fine_on INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     try:
         if not db.execute("SELECT 1 FROM meta WHERE k='reserve_cat_seeded'").fetchone():
             db.execute("UPDATE salary_categories SET reserve_on=0 "
@@ -1107,6 +1112,7 @@ def get_salary_categories(db, only_active=False):
          "COALESCE(ot_value,0) AS ot_value,"
          "COALESCE(adv_shift_h,0) AS adv_shift_h,"
          "COALESCE(reserve_on,1) AS reserve_on,"
+         "COALESCE(op_fine_on,1) AS op_fine_on,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -3405,6 +3411,17 @@ def op_register(db, shift_row, why=None):
                               (int(sh.get("user_id") or 0),)).fetchone()
             if _ofo and int(_ofo["o"]):
                 _why.append("для сотрудника штраф за опоздание выключен"); return None
+        except Exception:
+            pass
+        # Kategoriye kapalı (ör. stajyer): kişinin o şubedeki kategorisi.
+        try:
+            _cid = barista_pay_info(db, int(sh.get("user_id") or 0),
+                                    branch_id=int(sh.get("branch_id") or 0) or None).get("cat_id")
+            if _cid:
+                _cr = db.execute("SELECT name, COALESCE(op_fine_on,1) AS o FROM salary_categories WHERE id=?",
+                                 (int(_cid),)).fetchone()
+                if _cr and not int(_cr["o"]):
+                    _why.append(f"для категории «{_cr['name']}» штраф за опоздание выключен"); return None
         except Exception:
             pass
         actual = datetime.fromisoformat(sh["start_time"])
@@ -15054,7 +15071,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # ═══ RESERVE — owner işlemleri (hepsi günlüğe: eski → yeni) ═══
         elif action in ("reserve_cfg_set", "reserve_start", "reserve_stop", "reserve_user_set",
-                        "reserve_settle_open", "reserve_settle_done", "salcat_reserve"):
+                        "reserve_settle_open", "reserve_settle_done", "salcat_reserve", "salcat_opfine"):
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец.")
@@ -15146,6 +15163,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "reserve_settle_done", user.id, user.first_name, int(_st["user_id"]),
                            display_name_for(db, int(_st["user_id"]), fallback="?"), {"amount": _amt})
+            elif action == "salcat_opfine":
+                try:
+                    _cid = int(data.get("id") or 0)
+                    _on = 1 if int(data.get("on") or 0) else 0
+                except Exception:
+                    _cid, _on = 0, 0
+                _c = db.execute("SELECT name, COALESCE(op_fine_on,1) AS o FROM salary_categories WHERE id=?", (_cid,)).fetchone()
+                if not _c:
+                    await update.message.reply_text("❌ Категория не найдена.")
+                    return
+                db.execute("UPDATE salary_categories SET op_fine_on=? WHERE id=?", (_on, _cid))
+                db.commit()
+                log_action(db, "salcat_opfine", user.id, user.first_name, None, _c["name"],
+                           {"id": _cid, "on": f"{int(_c['o'])} → {_on}"})
             elif action == "salcat_reserve":
                 try:
                     _cid = int(data.get("id") or 0)
