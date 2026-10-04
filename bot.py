@@ -2617,6 +2617,71 @@ async def cov_loop(app):
         await asyncio.sleep(60)
 
 
+# ─── HAFTALIK İZİN ŞARTI: 7 gün üst üste uyarısı (owner 2026-10-04) ─────
+# «İzin kullanması şart». Cumartesi akşamı: bu hafta hiç izni (off/sick) yok
+# VE planda 7+ gün üst üste vardiyası görünen herkes owner'a tek mesajda
+# bildirilir — pazar için önlem alınabilsin (owner o gün kendisi çıkabilir).
+# Engel değil, uyarı: plan kilitlenmez. Hafta başına bir kez (meta anahtarı).
+OFF7_WEEKDAY, OFF7_HOUR = 5, 19   # Cumartesi 19:00 (Taşkent)
+
+
+def off7_scan(db, today=None):
+    """[(uid, ad, şube, gün sayısı)] — bu hafta izinsiz ve 7+ gün üst üste çalışan."""
+    today = today or datetime.now(TZ).replace(tzinfo=None).date()
+    mon = today - timedelta(days=today.weekday())
+    lo = mon - timedelta(days=7)
+    cells = {}
+    for r in db.execute("SELECT week_key, day, user_id, code FROM shift_grid WHERE week_key IN (?, ?)",
+                        (lo.isoformat(), mon.isoformat())).fetchall():
+        d = grid_day_date(r["week_key"], r["day"])
+        if d:
+            cells[(int(r["user_id"]), d)] = (r["code"] or "").strip()
+    out = []
+    for u in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+                        "AND role NOT IN ('owner','observer')").fetchall():
+        uid = int(u["user_id"])
+        week = [cells.get((uid, mon + timedelta(days=i)), "") for i in range(7)]
+        if any(c in ("off", "sick") for c in week):
+            continue
+        run = best = 0
+        for i in range(14):
+            d = lo + timedelta(days=i)
+            c = cells.get((uid, d), "")
+            run = run + 1 if (c and c not in ("off", "sick")) else 0
+            if d >= mon:
+                best = max(best, run)
+        if best >= 7:
+            bid = user_branch_id(db, uid)
+            out.append((uid, display_name_for(db, uid, fallback="?"),
+                        (get_branch(db, bid) or {}).get("name", "") if bid else "", best))
+    return out
+
+
+async def off7_loop(app):
+    await asyncio.sleep(90)
+    while True:
+        try:
+            now = datetime.now(TZ).replace(tzinfo=None)
+            if now.weekday() == OFF7_WEEKDAY and now.hour >= OFF7_HOUR:
+                db = get_db()
+                key = "off7_sent_" + (now.date() - timedelta(days=now.weekday())).isoformat()
+                if not db.execute("SELECT 1 FROM meta WHERE k=?", (key,)).fetchone():
+                    rows = off7_scan(db, now.date())
+                    db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES (?, ?)", (key, str(len(rows))))
+                    db.commit()
+                    if rows:
+                        lines = "\n".join(f"• {n}" + (f" ({b})" if b else "") + f" — {k} дней подряд"
+                                           for _u, n, b, k in rows)
+                        await grid_notify_owners(app.bot, db,
+                            "⚠️ *Без выходного на этой неделе*\n\n" + lines +
+                            "\n\nПо графику работают без выходного. Поставьте им выходной в воскресенье "
+                            "в «Графике смен» — при необходимости выйдите на смену сами.")
+                        log_action(db, "off7_alert", 0, "system", details=", ".join(n for _u, n, _b, _k in rows))
+        except Exception as e:
+            logger.warning(f"off7_loop: {e}")
+        await asyncio.sleep(300)
+
+
 def cov_dash(db):
     """Owner ekranı: şube durumu + açık kartları (adaylarla) + ihtiyaç tanımları + gönüllü havuzu."""
     out = {"branches": [], "gaps": [], "needs": {}, "cfg": cov_cfg(db), "pool": []}
@@ -17004,6 +17069,7 @@ async def setup_commands(app):
     asyncio.create_task(shift_end_warn_loop(app))
     asyncio.create_task(handover_loop(app))
     asyncio.create_task(cov_loop(app))
+    asyncio.create_task(off7_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
 
