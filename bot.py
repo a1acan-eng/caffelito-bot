@@ -5319,7 +5319,17 @@ def carry_debt(db, user_id, period=None):
 # Talep «pending» başlar ve limitten yer AYIRIR (aynı hak iki kez istenemez);
 # owner nakdi verince «active» olur ve taksit takvimi O GÜNE göre yazılır.
 ADV_LIMIT_PCT = 30      # aylık maaşın yüzdesi
-ADV_MAX_COM_PCT = 30    # limitin tamamı alınırsa komisyon yüzdesi
+ADV_MAX_COM_PCT = 30    # limitin tamamı alınırsa komisyon yüzdesi (3+ parça)
+# Parça sayısına göre tavan (owner 2026-10-05): 2 parça %20, 3 parça %30.
+ADV_COM_BY_N = {2: 20}
+
+
+def adv_com_cap(n):
+    """Bu parça sayısında limitin tamamı alınırsa komisyon %'si."""
+    try:
+        return float(ADV_COM_BY_N.get(int(n), ADV_MAX_COM_PCT))
+    except Exception:
+        return float(ADV_MAX_COM_PCT)
 ADV_MAX_COUNT = 3       # ayda en fazla avans sayısı
 ADV_INSTALLMENTS = 3    # her avans kaç taksit
 ADV_DAYS = 30           # aylık maaş hesabı gün sayısı
@@ -5450,14 +5460,15 @@ def adv_inst_allowed(db, user_id):
 
 
 def adv_quote(amount, limit, com_on=True, n=ADV_INSTALLMENTS, free=None):
-    """Tek avansın hesabı. Komisyon % = avans / limit × %30.
+    """Tek avansın hesabı. Komisyon % = avans / limit × tavan (2 parça %20, 3+ parça %30).
     Komisyon YOK: komisyon kapalıysa ya da parça sayısı ücretsiz sınırdaysa (n ≤ free)."""
     amount = int(amount or 0)
     limit = int(limit or 0)
     n = max(1, int(n or ADV_INSTALLMENTS))
     if free is not None and n <= int(free):
         com_on = False
-    pct = min(float(ADV_MAX_COM_PCT), (amount / limit * ADV_MAX_COM_PCT)) if (limit > 0 and com_on) else 0.0
+    cap = adv_com_cap(n)
+    pct = min(cap, (amount / limit * cap)) if (limit > 0 and com_on) else 0.0
     pct = max(0.0, pct)
     # Yarım yukarı yuvarlanır (Nero'daki Math.round ile aynı sonuç).
     com = int(amount * pct / 100.0 + 0.5)   # tam oranla; ekranda % yuvarlanır
