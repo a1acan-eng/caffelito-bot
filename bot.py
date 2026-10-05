@@ -541,7 +541,10 @@ def get_db():
                      # owner yeniden başlatana kadar tamamen kapalı (geçici kapatmadan ayrı).
                      ("reserve_cancelled", "INTEGER"),
                      # owner 2026-10-04: bu kişiye otomatik gecikme cezası KAPALI (1)
-                     ("op_fine_off", "INTEGER")):
+                     ("op_fine_off", "INTEGER"),
+                     # owner 2026-10-05: stajyerlik sayacının başlangıcı (YYYY-MM-DD).
+                     # NULL = ilk vardiyadan say; owner «заново» deyince bugün olur.
+                     ("intern_from", "TEXT")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -966,6 +969,15 @@ def get_db():
         db.execute("ALTER TABLE salary_categories ADD COLUMN op_fine_on INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # Stajyerlik süresi (gün, owner 2026-10-05): >0 ise bu kategori stajyerlik —
+    # çalışan ana ekranda «осталось N дней» görür. İlk eklemede adı «стаж…»
+    # olan kategorilere 30 gün konur.
+    try:
+        db.execute("ALTER TABLE salary_categories ADD COLUMN intern_days INTEGER DEFAULT 0")
+        db.execute("UPDATE salary_categories SET intern_days=30 WHERE name LIKE '%стаж%' "
+                   "OR name LIKE '%Стаж%' OR name LIKE '%СТАЖ%'")
+    except sqlite3.OperationalError:
+        pass
     try:
         if not db.execute("SELECT 1 FROM meta WHERE k='reserve_cat_seeded'").fetchone():
             db.execute("UPDATE salary_categories SET reserve_on=0 "
@@ -1113,6 +1125,7 @@ def get_salary_categories(db, only_active=False):
          "COALESCE(adv_shift_h,0) AS adv_shift_h,"
          "COALESCE(reserve_on,1) AS reserve_on,"
          "COALESCE(op_fine_on,1) AS op_fine_on,"
+         "COALESCE(intern_days,0) AS intern_days,"
          "active,sort_order "
          "FROM salary_categories")
     if only_active:
@@ -2617,6 +2630,57 @@ async def cov_loop(app):
         await asyncio.sleep(60)
 
 
+# ─── STAJYERLİK SAYACI (owner 2026-10-05) ─────────────────────────────────
+# Stajyer kategorisinde (intern_days > 0) çalışılan GÜN sayılır — takvim günü
+# değil: haftada 3 gün gelen 30 iş gününü daha geç doldurur. Gün = vardiya
+# kaydı olan tarih (aynı gün iki vardiya = 1 gün). Sınav/test burada YOK —
+# çalışana yalnız «стажировка: осталось N дней» görünür; dolunca owner'a haber.
+def intern_info(db, uid):
+    try:
+        cid = barista_pay_info(db, int(uid)).get("cat_id")
+        if not cid:
+            return None
+        c = db.execute("SELECT COALESCE(intern_days,0) AS d FROM salary_categories WHERE id=?", (cid,)).fetchone()
+        total = int(c["d"] or 0) if c else 0
+        if total <= 0:
+            return None
+        u = db.execute("SELECT intern_from FROM users WHERE user_id=?", (int(uid),)).fetchone()
+        frm = (u["intern_from"] if u else None) or ""
+        q = "SELECT DISTINCT date FROM shifts WHERE user_id=? AND COALESCE(date,'')<>''"
+        args = [int(uid)]
+        if frm:
+            q += " AND date>=?"
+            args.append(frm)
+        days = sorted(str(r["date"])[:10] for r in db.execute(q, args).fetchall())
+        done = len(days)
+        return {"total": total, "done": done, "left": max(0, total - done),
+                "from": frm or (days[0] if days else ""), "fin": 1 if done >= total else 0}
+    except Exception as e:
+        logger.warning(f"intern_info({uid}): {e}")
+        return None
+
+
+async def intern_scan(bot_obj, db):
+    """Süresini dolduran stajyer için owner'a BİR KEZ haber (başlangıç tarihi başına)."""
+    for u in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+                        "AND role NOT IN ('owner','observer')").fetchall():
+        uid = int(u["user_id"])
+        it = intern_info(db, uid)
+        if not it or not it["fin"]:
+            continue
+        key = f"intern_done_{uid}_{it['from']}"
+        if db.execute("SELECT 1 FROM meta WHERE k=?", (key,)).fetchone():
+            continue
+        db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES (?, ?)", (key, str(it["done"])))
+        db.commit()
+        nm = display_name_for(db, uid, fallback=f"ID {uid}")
+        await grid_notify_owners(bot_obj, db,
+            f"🎓 *{nm}* отработал(а) {it['done']} дн. стажировки (из {it['total']}).\n\n"
+            "Сотрудник этого сообщения не видит. Решение — за вами: перевести в другую категорию "
+            "или начать стажировку заново (карточка сотрудника → «Стажировка»).")
+        log_action(db, "intern_done", 0, "system", uid, nm, {"days": it["done"]})
+
+
 # ─── HAFTALIK İZİN ŞARTI: 7 gün üst üste uyarısı (owner 2026-10-04) ─────
 # «İzin kullanması şart». Cumartesi akşamı: bu hafta hiç izni (off/sick) yok
 # VE planda 7+ gün üst üste vardiyası görünen herkes owner'a tek mesajda
@@ -2660,6 +2724,10 @@ def off7_scan(db, today=None):
 async def off7_loop(app):
     await asyncio.sleep(90)
     while True:
+        try:
+            await intern_scan(app.bot, get_db())
+        except Exception as e:
+            logger.warning(f"intern_scan: {e}")
         try:
             now = datetime.now(TZ).replace(tzinfo=None)
             if now.weekday() == OFF7_WEEKDAY and now.hour >= OFF7_HOUR:
@@ -7473,6 +7541,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"adv_pend={quote(json.dumps(adv_pend, ensure_ascii=False))}",
         f"adv_own={quote(json.dumps(adv_own, ensure_ascii=False) if adv_own else '')}",
         f"res={quote(json.dumps(res_self, ensure_ascii=False) if res_self else '')}",
+        f"intern={quote(json.dumps(intern_info(db, user_id), ensure_ascii=False) if role != 'owner' else '')}",
         f"res_own={quote(json.dumps(res_own, ensure_ascii=False) if res_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
@@ -7807,6 +7876,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "resd": bs.get("res_ded", 0),
                 "res": _res_card(db, b["user_id"]),
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
+                "intern": intern_info(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
@@ -15002,6 +15072,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        display_name_for(db, _tid, fallback=f"ID {_tid}"),
                        {"fine": "выключен" if _off else "включён"})
 
+        elif action == "intern_restart":
+            # Owner: stajyerliği bugünden yeniden başlat (sınavı geçemedi → bir ay daha).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            if not _tid or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_tid,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            _d = datetime.now(TZ).strftime("%Y-%m-%d")
+            db.execute("UPDATE users SET intern_from=? WHERE user_id=?", (_d, _tid))
+            db.commit()
+            log_action(db, "intern_restart", user.id, user.first_name, _tid,
+                       display_name_for(db, _tid, fallback=f"ID {_tid}"), {"from": _d})
+
         elif action == "reserve_user_cancel":
             # Owner: kişinin Reserve'ini İPTAL et. Birikmiş tutar bu ayın maaşına
             # ALACAK olarak geçer (adjustments), defter sıfırlanır (reserve_tx
@@ -15136,7 +15225,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         # ═══ RESERVE — owner işlemleri (hepsi günlüğe: eski → yeni) ═══
         elif action in ("reserve_cfg_set", "reserve_start", "reserve_stop", "reserve_user_set",
-                        "reserve_settle_open", "reserve_settle_done", "salcat_reserve", "salcat_opfine"):
+                        "reserve_settle_open", "reserve_settle_done", "salcat_reserve", "salcat_opfine",
+                        "salcat_intern"):
             db = get_db()
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("❌ Только владелец.")
@@ -15228,6 +15318,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "reserve_settle_done", user.id, user.first_name, int(_st["user_id"]),
                            display_name_for(db, int(_st["user_id"]), fallback="?"), {"amount": _amt})
+            elif action == "salcat_intern":
+                try:
+                    _cid = int(data.get("id") or 0)
+                    _dd = max(0, min(365, int(data.get("days") or 0)))
+                except Exception:
+                    _cid, _dd = 0, 0
+                _c = db.execute("SELECT name, COALESCE(intern_days,0) AS d FROM salary_categories WHERE id=?", (_cid,)).fetchone()
+                if not _c:
+                    await update.message.reply_text("❌ Категория не найдена.")
+                    return
+                db.execute("UPDATE salary_categories SET intern_days=? WHERE id=?", (_dd, _cid))
+                db.commit()
+                log_action(db, "salcat_intern", user.id, user.first_name, None, _c["name"],
+                           {"id": _cid, "days": f"{int(_c['d'])} → {_dd}"})
             elif action == "salcat_opfine":
                 try:
                     _cid = int(data.get("id") or 0)
