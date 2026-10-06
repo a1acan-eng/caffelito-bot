@@ -5499,6 +5499,53 @@ def adv_schedule(from_date, n=ADV_INSTALLMENTS):
     return [from_date + timedelta(days=ADV_STEP_DAYS * k) for k in range(1, n + 1)]
 
 
+def adv_safe_due(target, amount, day_pay, booked=None):
+    """Taksit günü — «kazanmadan kesilmez» kuralı (owner 2026-10-06).
+    Maaş 10 / 20 / ay sonu ödenir; kesinti günü geldiğinde SON MAAŞ GÜNÜNDEN beri
+    kazanılan (gün × günlük kazanç) o dönemde kesilecek her şeyi (bu parça + aynı
+    döneme düşen diğer taksitler) karşılamalı. Karşılıyorsa gün aynen kalır,
+    karşılamıyorsa karşıladığı ilk güne kayar — bakiye eksiye inmez.
+    booked: {iso_tarih: tutar} — kişinin başka taksitleri.
+    Ör. günlük 198 000: 5'inde tek parça 1 782 000 → 15 değil 19'u;
+    3 parça × 772 200 → 15 / 25 / 4'ü (kaymaz)."""
+    amount, day_pay = int(amount or 0), int(day_pay or 0)
+    if day_pay <= 0 or amount <= 0:
+        return target
+    booked = booked or {}
+    d = target
+    for _ in range(400):
+        a, b = adv_decade(d)
+        earned = ((d - a).days + 1) * day_pay
+        other = sum(v for k, v in booked.items() if a.isoformat() <= k <= b.isoformat())
+        if earned >= other + amount:
+            return d
+        if d >= b:
+            # Bir dönemin kazancı bile yetmiyor (ör. rezerv açıkken limitin tamamı):
+            # en çok kazancın biriktiği gün = o dönemin maaş günü.
+            return b
+        d += timedelta(days=1)
+    return d
+
+
+def adv_day_pay(db, user_id):
+    """Avansı ödemeye kalan günlük kazanç = aylık maaş ÷ 30 (ставка × смена)
+    − rezerv katkısı (owner 2026-10-06): rezervi AÇIK ve henüz dolmamış kişide
+    her iş günü maaştan rezerve pay kesilir; taksit günü buna göre biraz kayar.
+    Rezerv kapalı / iptal / dolmuş / stajyer → kesinti yok, tam kazanç."""
+    try:
+        pay = int(round(adv_salary_info(db, user_id)["salary"] / ADV_DAYS))
+    except Exception:
+        return 0
+    try:
+        r = reserve_info(db, user_id)
+        if (r.get("live") and r.get("eligible") and not r.get("off")
+                and r.get("status") not in ("completed", "cancelled", "off")):
+            pay -= int(min(r.get("per_day") or 0, r.get("remaining") or r.get("per_day") or 0))
+    except Exception:
+        pass
+    return max(0, pay)
+
+
 def adv_closed_days(db):
     """Owner'ın avans talebine kapattığı ay günleri (1–31), sıralı liste."""
     try:
@@ -5659,8 +5706,16 @@ def adv_write_schedule(db, adv_row, from_date=None):
     q_inst[-1] = total - base * (n - 1)
     start = from_date or _adv_today()
     db.execute("DELETE FROM advance_inst WHERE advance_id=?", (adv_row["id"],))
+    # Kişinin diğer (aktif) taksitleri: aynı döneme düşenler birlikte karşılanmalı.
+    booked = {}
+    for _r in db.execute("SELECT i.due_date, i.amount FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+                         "WHERE i.user_id=? AND x.id<>? AND x.status IN ('active','done') AND i.due_date>=?",
+                         (adv_row["user_id"], adv_row["id"], adv_decade(start)[0].isoformat())).fetchall():
+        booked[_r["due_date"]] = booked.get(_r["due_date"], 0) + int(_r["amount"] or 0)
+    _dp = adv_day_pay(db, adv_row["user_id"])
     for i in range(1, n + 1):
-        due = start + timedelta(days=step * i)
+        due = adv_safe_due(start + timedelta(days=step * i), q_inst[i - 1], _dp, booked)
+        booked[due.isoformat()] = booked.get(due.isoformat(), 0) + q_inst[i - 1]
         db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) "
                    "VALUES (?,?,?,?,?,?)",
                    (adv_row["id"], adv_row["user_id"], i, due.isoformat(),
@@ -6115,6 +6170,13 @@ def adv_view(db, user_id, full=True):
         # inst_max = BU KİŞİNİN seçebileceği en fazla parça (komisyon kapalıysa ücretsiz sınır).
         "inst_max": adv_inst_allowed(db, user_id), "inst_free": adv_inst_cfg(db)["free"],
         "next_dates": [d.isoformat() for d in adv_schedule(today, adv_inst_allowed(db, user_id))],
+        # Taksit günü kazanca bağlı (adv_safe_due) — Nero aynı kuralla hesaplar.
+        "day_pay": adv_day_pay(db, user_id),
+        # Bu dönemden itibaren kesilecek/kesilmiş taksitler (aynı döneme düşenler birlikte karşılanır).
+        "booked": [{"due": r["due_date"], "amount": int(r["amount"] or 0)} for r in db.execute(
+            "SELECT i.due_date, i.amount FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+            "WHERE i.user_id=? AND x.status IN ('active','done') AND i.due_date>=?",
+            (user_id, adv_decade(today)[0].isoformat())).fetchall()],
     })
     try:
         _uc = db.execute("SELECT adv_com FROM users WHERE user_id=?", (user_id,)).fetchone()
