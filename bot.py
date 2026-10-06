@@ -1651,18 +1651,22 @@ def daily_bonus_pay_ids(db, user_id, period):
     return ids
 
 
-def gdebt_view(db):
-    """Nero: misafirler (bakiyeyle) + son hareketler."""
+def gdebt_view(db, only_bid=None):
+    """Nero: misafirler (bakiyeyle) + son hareketler. only_bid verilirse YALNIZ o
+    şubenin misafirleri (owner 2026-10-06: çalışan yalnız atandığı şubeyi görür)."""
     bal = {}
     for r in db.execute("SELECT guest_id, kind, amount FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
         v = int(r["amount"] or 0)
         bal[r["guest_id"]] = bal.get(r["guest_id"], 0) + (v if r["kind"] == "debt" else -v)
     guests = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0),
                "ph": g["phone"] or "", "note": g["note"] or "", "bal": bal.get(g["id"], 0)}
-              for g in db.execute("SELECT * FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
+              for g in db.execute("SELECT * FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
+              if not only_bid or int(g["branch_id"] or 0) == int(only_bid)]
+    _ids = {g["id"] for g in guests}
     tx = [{"id": r["id"], "g": r["guest_id"], "k": r["kind"], "a": int(r["amount"] or 0), "bid": int(r["branch_id"] or 0),
            "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or ""}
-          for r in db.execute("SELECT * FROM guest_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 200").fetchall()]
+          for r in db.execute("SELECT * FROM guest_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 400").fetchall()
+          if r["guest_id"] in _ids][:200]
     return {"guests": guests, "tx": tx}
 
 
@@ -1695,10 +1699,11 @@ def gdebt_guest_get_or_create(db, guest_id, name, branch_id, by_id, by_name):
                       (nm, int(branch_id or 0), by_id, by_name, datetime.now(TZ).isoformat())).lastrowid
 
 
-def brx_view(db):
+def brx_view(db, only_bid=None):
     return [{"id": r["id"], "f": int(r["from_bid"] or 0), "t": int(r["to_bid"] or 0), "item": r["item"] or "",
              "u": r["unit"] or "шт", "q": float(r["qty"] or 0), "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or ""}
-            for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 300").fetchall()]
+            for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 300").fetchall()
+            if not only_bid or int(only_bid) in (int(r["from_bid"] or 0), int(r["to_bid"] or 0))]
 
 
 def brx_balance(db):
@@ -7789,14 +7794,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     # Misafir borçları + şubeler arası alışveriş — HERKES görür (gözlemci hariç).
     if not is_observer(db, user_id):
         try:
-            parts.append(f"gdebt={quote(json.dumps(gdebt_view(db), ensure_ascii=False))}")
+            # Çalışan YALNIZ atandığı şubenin misafirlerini / kendi şubesinin
+            # alışverişini görür; owner hepsini (owner 2026-10-06).
+            _ob = None if role == "owner" else user_branch_id(db, user_id)
+            parts.append(f"gdebt={quote(json.dumps(gdebt_view(db, _ob), ensure_ascii=False))}")
             # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
             _nm = {}
             for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
                 _nm.setdefault(((_r["item"] or "").strip().lower(), _r["unit"] or "шт"), (_r["item"] or "").strip())
             _bal = [{"a": a, "b": b, "item": _nm.get(k, k[0]), "u": k[1], "net": v}
-                    for (a, b), d in brx_balance(db).items() for k, v in d.items() if abs(v) > 1e-9]
-            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db), 'bal': _bal}, ensure_ascii=False))}")
+                    for (a, b), d in brx_balance(db).items() for k, v in d.items()
+                    if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
+            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal}, ensure_ascii=False))}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
@@ -15882,6 +15891,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid = int(data.get("branch_id") or 0) or acting_branch_id(db, user.id)
             except Exception:
                 _bid = acting_branch_id(db, user.id)
+            # Çalışan yalnız ATANDIĞI şubede (owner 2026-10-06).
+            if not _own:
+                _bid = user_branch_id(db, user.id)
             if action == "gdebt_guest_add":
                 _gid = gdebt_guest_get_or_create(db, 0, data.get("name"), _bid, user.id, _shown)
                 if not _gid:
@@ -15902,6 +15914,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
                 if not _g or _kind not in ("debt", "pay") or _amt <= 0:
                     await update.message.reply_text("❌ Проверьте гостя и сумму.")
+                    return
+                if not _own and int(_g["branch_id"] or 0) != _bid:
+                    await update.message.reply_text("❌ Этот гость из другого филиала.")
                     return
                 gdebt_add_tx(db, _g["id"], _kind, _amt, int(_g["branch_id"] or _bid), user.id, _shown, data.get("note") or "")
                 db.commit()
@@ -15952,6 +15967,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _unit = str(data.get("unit") or "шт").strip()[:10] or "шт"
             if not _f or not _t2 or _f == _t2 or not get_branch(db, _f) or not get_branch(db, _t2):
                 await update.message.reply_text("❌ Выберите два разных филиала.")
+                return
+            if get_role(db, user.id) != "owner" and user_branch_id(db, user.id) not in (_f, _t2):
+                await update.message.reply_text("❌ Можно записывать только передачи своего филиала.")
                 return
             if not _item or _q <= 0:
                 await update.message.reply_text("❌ Укажите товар и количество.")
