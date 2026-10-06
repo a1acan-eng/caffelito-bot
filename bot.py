@@ -5499,24 +5499,28 @@ def adv_schedule(from_date, n=ADV_INSTALLMENTS):
     return [from_date + timedelta(days=ADV_STEP_DAYS * k) for k in range(1, n + 1)]
 
 
-def adv_single_due(from_date, amount, day_pay):
-    """TEK PARÇA (komisyonsuz) avansın vadesi (owner 2026-10-06).
-    +10 gün yerine MAAŞ GÜNÜ (10 / 20 / ay sonu): avansın alındığı dönem
-    kendi maaşıyla kapanır; bir SONRAKİ dönemin ilk gününden başlayarak
-    günlük kazanç (ставка × смена) avans tutarına ulaştığı günün dönem sonu.
-    Böylece kesinti, karşılığı kazanılmadan bakiyeden düşmez (eksiye inmez).
-    Ör.: ayın 5'i, 1 800 000, günlük 198 000 → 11'inden say, 10 gün → 20'si."""
+def adv_safe_due(target, amount, day_pay, booked=None):
+    """Taksit günü — «kazanmadan kesilmez» kuralı (owner 2026-10-06).
+    Maaş 10 / 20 / ay sonu ödenir; kesinti günü geldiğinde SON MAAŞ GÜNÜNDEN beri
+    kazanılan (gün × günlük kazanç) o dönemde kesilecek her şeyi (bu parça + aynı
+    döneme düşen diğer taksitler) karşılamalı. Karşılıyorsa gün aynen kalır,
+    karşılamıyorsa karşıladığı ilk güne kayar — bakiye eksiye inmez.
+    booked: {iso_tarih: tutar} — kişinin başka taksitleri.
+    Ör. günlük 198 000: 5'inde tek parça 1 782 000 → 15 değil 19'u;
+    3 parça × 772 200 → 15 / 25 / 4'ü (kaymaz)."""
     amount, day_pay = int(amount or 0), int(day_pay or 0)
     if day_pay <= 0 or amount <= 0:
-        return from_date + timedelta(days=ADV_STEP_DAYS)
-    d = adv_decade(from_date)[1] + timedelta(days=1)
-    acc = 0
+        return target
+    booked = booked or {}
+    d = target
     for _ in range(400):
-        acc += day_pay
-        if acc >= amount:
-            return adv_decade(d)[1]
+        a, b = adv_decade(d)
+        earned = ((d - a).days + 1) * day_pay
+        other = sum(v for k, v in booked.items() if a.isoformat() <= k <= b.isoformat())
+        if earned >= other + amount:
+            return d
         d += timedelta(days=1)
-    return adv_decade(d)[1]
+    return d
 
 
 def adv_day_pay(db, user_id):
@@ -5686,12 +5690,17 @@ def adv_write_schedule(db, adv_row, from_date=None):
     q_inst = [base] * n
     q_inst[-1] = total - base * (n - 1)
     start = from_date or _adv_today()
-    manual = int((adv_row["manual"] if "manual" in keys else 0) or 0)
     db.execute("DELETE FROM advance_inst WHERE advance_id=?", (adv_row["id"],))
+    # Kişinin diğer (aktif) taksitleri: aynı döneme düşenler birlikte karşılanmalı.
+    booked = {}
+    for _r in db.execute("SELECT i.due_date, i.amount FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+                         "WHERE i.user_id=? AND x.id<>? AND x.status IN ('active','done') AND i.due_date>=?",
+                         (adv_row["user_id"], adv_row["id"], adv_decade(start)[0].isoformat())).fetchall():
+        booked[_r["due_date"]] = booked.get(_r["due_date"], 0) + int(_r["amount"] or 0)
+    _dp = adv_day_pay(db, adv_row["user_id"])
     for i in range(1, n + 1):
-        due = start + timedelta(days=step * i)
-        if n == 1 and not manual:
-            due = adv_single_due(start, total, adv_day_pay(db, adv_row["user_id"]))
+        due = adv_safe_due(start + timedelta(days=step * i), q_inst[i - 1], _dp, booked)
+        booked[due.isoformat()] = booked.get(due.isoformat(), 0) + q_inst[i - 1]
         db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) "
                    "VALUES (?,?,?,?,?,?)",
                    (adv_row["id"], adv_row["user_id"], i, due.isoformat(),
@@ -6146,9 +6155,13 @@ def adv_view(db, user_id, full=True):
         # inst_max = BU KİŞİNİN seçebileceği en fazla parça (komisyon kapalıysa ücretsiz sınır).
         "inst_max": adv_inst_allowed(db, user_id), "inst_free": adv_inst_cfg(db)["free"],
         "next_dates": [d.isoformat() for d in adv_schedule(today, adv_inst_allowed(db, user_id))],
-        # Tek parça vadesi tutara bağlı (adv_single_due) — Nero aynı kuralla hesaplar.
+        # Taksit günü kazanca bağlı (adv_safe_due) — Nero aynı kuralla hesaplar.
         "day_pay": adv_day_pay(db, user_id),
-        "dec_end": adv_decade(today)[1].isoformat(),
+        # Bu dönemden itibaren kesilecek/kesilmiş taksitler (aynı döneme düşenler birlikte karşılanır).
+        "booked": [{"due": r["due_date"], "amount": int(r["amount"] or 0)} for r in db.execute(
+            "SELECT i.due_date, i.amount FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+            "WHERE i.user_id=? AND x.status IN ('active','done') AND i.due_date>=?",
+            (user_id, adv_decade(today)[0].isoformat())).fetchall()],
     })
     try:
         _uc = db.execute("SELECT adv_com FROM users WHERE user_id=?", (user_id,)).fetchone()
