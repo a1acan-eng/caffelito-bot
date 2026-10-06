@@ -7798,6 +7798,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # alışverişini görür; owner hepsini (owner 2026-10-06).
             _ob = None if role == "owner" else user_branch_id(db, user_id)
             parts.append(f"gdebt={quote(json.dumps(gdebt_view(db, _ob), ensure_ascii=False))}")
+            # Между филиалами: çalışan ŞU AN çalıştığı şubeyi görür (şube değiştirince değişir).
+            _ob = None if role == "owner" else acting_branch_id(db, user_id)
             # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
             _nm = {}
             for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
@@ -15968,9 +15970,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _f or not _t2 or _f == _t2 or not get_branch(db, _f) or not get_branch(db, _t2):
                 await update.message.reply_text("❌ Выберите два разных филиала.")
                 return
-            if get_role(db, user.id) != "owner" and user_branch_id(db, user.id) not in (_f, _t2):
-                await update.message.reply_text("❌ Можно записывать только передачи своего филиала.")
-                return
+            # Çalışan YALNIZ şu an çalıştığı şubeden GÖNDERİR (owner 2026-10-06):
+            # «aldım» kaydı yok — gönderilen, alan şubeye borç olarak düşer.
+            # Şube değiştirince (vardiya taşındı / oturum şubesi) yeni şubeden gönderir.
+            if get_role(db, user.id) != "owner":
+                _ab = acting_branch_id(db, user.id)
+                if _f != _ab:
+                    await update.message.reply_text(
+                        f"❌ Отправлять можно только со своего филиала сейчас: {(get_branch(db, _ab) or {}).get('name', '?')}.")
+                    return
             if not _item or _q <= 0:
                 await update.message.reply_text("❌ Укажите товар и количество.")
                 return
