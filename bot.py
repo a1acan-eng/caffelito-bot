@@ -573,6 +573,26 @@ def get_db():
     # week_key = o haftanın PAZARTESİ tarihi (YYYY-MM-DD) → göreli «week» offset'i
     # mutlak tarihe çevrilir (week 0 bugün ≠ week 0 gelecek hafta). day = 0 Пн … 6 Вс.
     # code = vardiya şablon anahtarı (ör. "c5m") veya "off" (выходной).
+    # ─── MİSAFİR BORÇLARI (owner 2026-10-06) — «Долги гостей» ───
+    # Şefin tanıdıkları içip sonra ödüyor; kâğıda yazılıyordu. Kişi şubeye bağlı,
+    # her hareket ayrı satır: debt (+, borç aldı) / pay (−, ödedi). Bakiye = toplam.
+    # Herkes görür (owner yokken «borcum ne kadar» sorusu cevaplansın).
+    db.execute("""CREATE TABLE IF NOT EXISTS guests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, branch_id INTEGER,
+        phone TEXT, note TEXT, created_by INTEGER, created_by_name TEXT,
+        created_at TEXT, archived INTEGER DEFAULT 0)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS guest_tx (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, guest_id INTEGER, branch_id INTEGER,
+        kind TEXT, amount INTEGER, note TEXT, report_id INTEGER,
+        by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
+    # ─── ŞUBELER ARASI MAL ALIŞVERİŞİ (owner 2026-10-06) ───
+    # Franchise: her şubenin hesabı ayrı; birinden diğerine bardak/süt/kahve
+    # verilince «kim kime ne borçlu» tutulur. Bir satır = bir teslim (from → to).
+    # Borç = (A→B) − (B→A), ürün ve birim başına; geri verilen otomatik düşer.
+    db.execute("""CREATE TABLE IF NOT EXISTS brx_tx (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, from_bid INTEGER, to_bid INTEGER,
+        item TEXT, unit TEXT, qty REAL, note TEXT,
+        by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
     db.execute("""CREATE TABLE IF NOT EXISTS shift_grid (
         week_key TEXT, day INTEGER, user_id INTEGER,
         code TEXT, updated_by INTEGER, updated_by_name TEXT, updated_at TEXT,
@@ -1629,6 +1649,83 @@ def daily_bonus_pay_ids(db, user_id, period):
     except Exception as e:
         logger.warning(f"daily_bonus_pay_ids/shift({user_id},{period}): {e}")
     return ids
+
+
+def gdebt_view(db):
+    """Nero: misafirler (bakiyeyle) + son hareketler."""
+    bal = {}
+    for r in db.execute("SELECT guest_id, kind, amount FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
+        v = int(r["amount"] or 0)
+        bal[r["guest_id"]] = bal.get(r["guest_id"], 0) + (v if r["kind"] == "debt" else -v)
+    guests = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0),
+               "ph": g["phone"] or "", "note": g["note"] or "", "bal": bal.get(g["id"], 0)}
+              for g in db.execute("SELECT * FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
+    tx = [{"id": r["id"], "g": r["guest_id"], "k": r["kind"], "a": int(r["amount"] or 0), "bid": int(r["branch_id"] or 0),
+           "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or ""}
+          for r in db.execute("SELECT * FROM guest_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 200").fetchall()]
+    return {"guests": guests, "tx": tx}
+
+
+def gdebt_add_tx(db, guest_id, kind, amount, branch_id, by_id, by_name, note="", report_id=None):
+    if kind not in ("debt", "pay") or int(amount or 0) <= 0:
+        return None
+    cur = db.execute("INSERT INTO guest_tx (guest_id, branch_id, kind, amount, note, report_id, by_id, by_name, at) "
+                     "VALUES (?,?,?,?,?,?,?,?,?)",
+                     (int(guest_id), int(branch_id or 0), kind, int(amount), (note or "")[:200], report_id,
+                      by_id, by_name, datetime.now(TZ).isoformat()))
+    return cur.lastrowid
+
+
+def gdebt_guest_get_or_create(db, guest_id, name, branch_id, by_id, by_name):
+    """id varsa o; yoksa aynı şubede aynı adla (büyük/küçük harf yok sayılır) varsa o; yoksa yeni."""
+    try:
+        gid = int(guest_id or 0)
+    except Exception:
+        gid = 0
+    if gid and db.execute("SELECT 1 FROM guests WHERE id=?", (gid,)).fetchone():
+        return gid
+    nm = " ".join(str(name or "").split())[:60]
+    if not nm:
+        return 0
+    for g in db.execute("SELECT id, name FROM guests WHERE COALESCE(archived,0)=0 AND branch_id=?",
+                        (int(branch_id or 0),)).fetchall():
+        if (g["name"] or "").strip().lower() == nm.lower():
+            return g["id"]
+    return db.execute("INSERT INTO guests (name, branch_id, created_by, created_by_name, created_at) VALUES (?,?,?,?,?)",
+                      (nm, int(branch_id or 0), by_id, by_name, datetime.now(TZ).isoformat())).lastrowid
+
+
+def brx_view(db):
+    return [{"id": r["id"], "f": int(r["from_bid"] or 0), "t": int(r["to_bid"] or 0), "item": r["item"] or "",
+             "u": r["unit"] or "шт", "q": float(r["qty"] or 0), "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or ""}
+            for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 300").fetchall()]
+
+
+def brx_balance(db):
+    """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b."""
+    out = {}
+    for r in db.execute("SELECT from_bid, to_bid, item, unit, qty FROM brx_tx WHERE COALESCE(voided,0)=0").fetchall():
+        f, t = int(r["from_bid"] or 0), int(r["to_bid"] or 0)
+        a, b, sg = (f, t, 1) if f < t else (t, f, -1)
+        k = ((r["item"] or "").strip().lower(), r["unit"] or "шт")
+        d = out.setdefault((a, b), {})
+        d[k] = round(d.get(k, 0) + sg * float(r["qty"] or 0), 3)
+    return out
+
+
+async def branch_group_say(bot_obj, db, branch_ids, text):
+    """Şube gruplarına kısa bildirim (aynı grup iki kez almaz)."""
+    seen = set()
+    for bid in branch_ids:
+        b = get_branch(db, bid) or {}
+        g = str(b.get("group_chat_id") or "").strip()
+        if not g or g in seen:
+            continue
+        seen.add(g)
+        try:
+            await bot_obj.send_message(chat_id=int(g), text=text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"branch_group_say {bid}: {e}")
 
 
 def grid_week_key(week_offset):
@@ -7689,6 +7786,19 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _reqs = []
     parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
     parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
+    # Misafir borçları + şubeler arası alışveriş — HERKES görür (gözlemci hariç).
+    if not is_observer(db, user_id):
+        try:
+            parts.append(f"gdebt={quote(json.dumps(gdebt_view(db), ensure_ascii=False))}")
+            # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
+            _nm = {}
+            for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
+                _nm.setdefault(((_r["item"] or "").strip().lower(), _r["unit"] or "шт"), (_r["item"] or "").strip())
+            _bal = [{"a": a, "b": b, "item": _nm.get(k, k[0]), "u": k[1], "net": v}
+                    for (a, b), d in brx_balance(db).items() for k, v in d.items() if abs(v) > 1e-9]
+            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db), 'bal': _bal}, ensure_ascii=False))}")
+        except Exception as e:
+            logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
     # Plan verisi (`shift_grid`, `shift_tpl`) zaten herkese gidiyordu ama isim
     # listesi (`baristas`) YALNIZCA owner'a gidiyor ve içinde maaş/bakiye var.
@@ -13822,6 +13932,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
                  json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg, _cr_branch))
             db.commit()
+            # Misafir borçları (kapanış formu «Долги гостей»): borç aldı / ödedi.
+            # «В долг» satırları masraflara zaten istemcide eklenmiş geliyor (kasa tutsun).
+            _gd_lines = []
+            try:
+                _crid = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                                   (user.id,)).fetchone()
+                for _gq in (data.get("gdebts") or [])[:30]:
+                    if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay"):
+                        continue
+                    _ga = _norm_amt(_gq.get("a", 0))
+                    _gid = gdebt_guest_get_or_create(db, _gq.get("g"), _gq.get("n"), _cr_branch, user.id, shown)
+                    if _gid and _ga:
+                        gdebt_add_tx(db, _gid, _gq["k"], _ga, _cr_branch, user.id, shown,
+                                     "закрытие смены", _crid["id"] if _crid else None)
+                        _gn = (db.execute("SELECT name FROM guests WHERE id=?", (_gid,)).fetchone() or {"name": "?"})["name"]
+                        _gd_lines.append((_gq["k"], _gn, _ga))
+                db.commit()
+            except Exception as e:
+                logger.warning(f"cash_report gdebts: {e}")
             # DENETİM İZİ. Raporun DÜZELTİLMESİ günlüğe yazılıyordu ama İLK
             # GÖNDERİLMESİ yazılmıyordu — yani paranın kaydedildiği an,
             # «kim ne yaptı» sayfasında hiç görünmüyordu. Kayıt cashreports'ta
@@ -13862,6 +13991,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         for e in exps:
                             t += f"  <b>{esc_html(str(e.get('n','')))}: {fmt_sum(int(e.get('a',0) or 0))}</b>\n"
                         t += f"  <b>Итого расходы: {fmt_sum(exp_total)} сум</b>\n"
+                    if _gd_lines:
+                        t += "━━━━━━━━━━━━━━━━━━━━\n<b>📒 Долги гостей</b>\n"
+                        for _k, _n, _a in _gd_lines:
+                            t += (f"  🔴 В долг: {esc_html(_n)} — {fmt_sum(_a)}\n" if _k == "debt"
+                                  else f"  🟢 Вернул(а) долг: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n")
                     if daily_pay:
                         t += "━━━━━━━━━━━━━━━━━━━━\n"
                         t += f"<b>💵 Дневной бонус: {fmt_sum(daily_pay)} сум</b>"
@@ -15736,6 +15870,104 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # НЕРО — eski uygulamada OLMAYAN action'lar (eski uygulama silindi).
         # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
         # ═══════════════════════════════════════════════════════════════════
+        elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del"):
+            # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
+            db = get_db()
+            if is_observer(db, user.id):
+                await update.message.reply_text("❌ Наблюдателю недоступно.")
+                return
+            _own = get_role(db, user.id) == "owner"
+            _shown = display_name_for(db, user.id, fallback=user.first_name)
+            try:
+                _bid = int(data.get("branch_id") or 0) or acting_branch_id(db, user.id)
+            except Exception:
+                _bid = acting_branch_id(db, user.id)
+            if action == "gdebt_guest_add":
+                _gid = gdebt_guest_get_or_create(db, 0, data.get("name"), _bid, user.id, _shown)
+                if not _gid:
+                    await update.message.reply_text("❌ Укажите имя.")
+                    return
+                _ph = str(data.get("phone") or "").strip()[:30]
+                if _ph:
+                    db.execute("UPDATE guests SET phone=? WHERE id=?", (_ph, _gid))
+                _a0 = _norm_amt(data.get("amount", 0))
+                if _a0:
+                    gdebt_add_tx(db, _gid, "debt", _a0, _bid, user.id, _shown, data.get("note") or "")
+                db.commit()
+                log_action(db, "gdebt_guest_add", user.id, user.first_name, None, str(data.get("name") or ""),
+                           {"guest_id": _gid, "amount": _a0})
+            elif action == "gdebt_tx":
+                _kind = data.get("kind")
+                _amt = _norm_amt(data.get("amount", 0))
+                _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
+                if not _g or _kind not in ("debt", "pay") or _amt <= 0:
+                    await update.message.reply_text("❌ Проверьте гостя и сумму.")
+                    return
+                gdebt_add_tx(db, _g["id"], _kind, _amt, int(_g["branch_id"] or _bid), user.id, _shown, data.get("note") or "")
+                db.commit()
+                log_action(db, "gdebt_tx", user.id, user.first_name, None, _g["name"] or "",
+                           {"kind": _kind, "amount": _amt})
+            elif action == "gdebt_void":
+                if not _own:
+                    await update.message.reply_text("❌ Удалить запись может только владелец.")
+                    return
+                _t = db.execute("SELECT * FROM guest_tx WHERE id=?", (int(data.get("id") or 0),)).fetchone()
+                if _t:
+                    db.execute("UPDATE guest_tx SET voided=1 WHERE id=?", (_t["id"],))
+                    db.commit()
+                    log_action(db, "gdebt_void", user.id, user.first_name, None, "",
+                               {"tx": _t["id"], "kind": _t["kind"], "amount": _t["amount"]})
+            else:
+                if not _own:
+                    await update.message.reply_text("❌ Только владелец.")
+                    return
+                db.execute("UPDATE guests SET archived=1 WHERE id=?", (int(data.get("guest_id") or 0),))
+                db.commit()
+                log_action(db, "gdebt_guest_del", user.id, user.first_name, None, "", {"guest_id": data.get("guest_id")})
+
+        elif action in ("brx_add", "brx_void"):
+            # Şubeler arası mal teslimi (owner 2026-10-06). Herkes yazar; silme owner.
+            db = get_db()
+            if is_observer(db, user.id):
+                await update.message.reply_text("❌ Наблюдателю недоступно.")
+                return
+            _shown = display_name_for(db, user.id, fallback=user.first_name)
+            if action == "brx_void":
+                if get_role(db, user.id) != "owner":
+                    await update.message.reply_text("❌ Удалить запись может только владелец.")
+                    return
+                _t = db.execute("SELECT * FROM brx_tx WHERE id=?", (int(data.get("id") or 0),)).fetchone()
+                if _t:
+                    db.execute("UPDATE brx_tx SET voided=1 WHERE id=?", (_t["id"],))
+                    db.commit()
+                    log_action(db, "brx_void", user.id, user.first_name, None, _t["item"] or "",
+                               {"tx": _t["id"], "qty": _t["qty"]})
+                return
+            try:
+                _f, _t2 = int(data.get("from") or 0), int(data.get("to") or 0)
+                _q = round(float(str(data.get("qty") or 0).replace(",", ".")), 3)
+            except Exception:
+                _f, _t2, _q = 0, 0, 0
+            _item = " ".join(str(data.get("item") or "").split())[:80]
+            _unit = str(data.get("unit") or "шт").strip()[:10] or "шт"
+            if not _f or not _t2 or _f == _t2 or not get_branch(db, _f) or not get_branch(db, _t2):
+                await update.message.reply_text("❌ Выберите два разных филиала.")
+                return
+            if not _item or _q <= 0:
+                await update.message.reply_text("❌ Укажите товар и количество.")
+                return
+            db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)",
+                       (_f, _t2, _item, _unit, _q, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat()))
+            db.commit()
+            _fn, _tn = get_branch(db, _f)["name"], get_branch(db, _t2)["name"]
+            log_action(db, "brx_add", user.id, user.first_name, None, _item,
+                       {"from": _fn, "to": _tn, "qty": _q, "unit": _unit})
+            from html import escape as esc_html
+            _qs = (str(int(_q)) if _q == int(_q) else str(_q).replace(".", ","))
+            await branch_group_say(context.bot, db, (_f, _t2),
+                f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n{esc_html(_item)} — <b>{_qs} {esc_html(_unit)}</b>\n"
+                f"передал(а): {esc_html(_shown)}")
+
         elif action == "shift_grid_copy":
             # Owner: önceki haftanın planını bu haftaya kopyala (owner 2026-10-06,
             # yeni çizelge «Скопировать прошлую неделю»). Yalnız verilen kişiler,
