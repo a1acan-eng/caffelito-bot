@@ -7,6 +7,7 @@ def check(c, m):
     print(('  ok  ' if c else '  FAIL ') + m)
     if not c: FAIL.append(m)
 D = 198000   # 22 000 × 9 saat
+_orig_day_pay = bot.adv_day_pay
 sd = lambda start, k, amt, bk=None: bot.adv_safe_due(start + timedelta(days=10 * k), amt, D, bk)
 o = date(2026, 10, 5)
 check(sd(o, 1, 1782000) == date(2026, 10, 19), 'tek parça, 5\'i → 15 değil 19 (9 gün kazanç)')
@@ -41,4 +42,23 @@ bot.adv_day_pay = lambda db, uid: 60000
 db.execute("DELETE FROM advance_inst"); db.execute("DELETE FROM advances"); db.commit()
 mk(1, 200000, date(2026, 10, 4), manual=1)
 check(mk(1, 300000, date(2026, 10, 6), manual=1) == ['2026-10-19'], 'az kazanç (60 000/gün): 500 000 için 9 gün → 19')
+# Rezerv açıksa günlük kazançtan rezerv katkısı düşer (owner 2026-10-06).
+bot.adv_day_pay = _orig_day_pay
+bot.adv_salary_info = lambda db, uid: {'salary': D * 30}
+RES = {'live': 1, 'eligible': 1, 'off': 0, 'status': 'in_progress', 'per_day': 59400, 'remaining': 2000000}
+bot.reserve_info = lambda db, uid: dict(RES)
+check(bot.adv_day_pay(db, 5) == D - 59400, 'rezerv açık → günlük kazanç − rezerv katkısı')
+dp_r = bot.adv_day_pay(db, 5)
+check(bot.adv_safe_due(date(2026, 10, 15), 900000, D) == date(2026, 10, 15), 'rezerv kapalı: 900 000 → 15 (5 gün yeter)')
+check(bot.adv_safe_due(date(2026, 10, 15), 900000, dp_r) == date(2026, 10, 17), 'rezerv açık: 900 000 → 17 (7 gün)')
+check(bot.adv_safe_due(date(2026, 10, 15), 1782000, dp_r) == date(2026, 10, 20), 'dönem kazancı yetmezse → maaş günü (20), sonsuz döngü yok')
+for st in ('completed', 'off', 'cancelled'):
+    RES['status'] = st
+    check(bot.adv_day_pay(db, 5) == D, f'rezerv {st} → tam kazanç')
+RES.update(status='in_progress', off=1)
+check(bot.adv_day_pay(db, 5) == D, 'kişiye rezerv kapalı → tam kazanç')
+RES.update(off=0, eligible=0)
+check(bot.adv_day_pay(db, 5) == D, 'stajyer (rezerv yok) → tam kazanç')
+RES.update(eligible=1, remaining=10000)
+check(bot.adv_day_pay(db, 5) == D - 10000, 'rezervin son günü: yalnız kalan tutar düşer')
 print('FAIL' if FAIL else 'ALL OK', FAIL)

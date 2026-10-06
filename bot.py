@@ -5519,16 +5519,31 @@ def adv_safe_due(target, amount, day_pay, booked=None):
         other = sum(v for k, v in booked.items() if a.isoformat() <= k <= b.isoformat())
         if earned >= other + amount:
             return d
+        if d >= b:
+            # Bir dönemin kazancı bile yetmiyor (ör. rezerv açıkken limitin tamamı):
+            # en çok kazancın biriktiği gün = o dönemin maaş günü.
+            return b
         d += timedelta(days=1)
     return d
 
 
 def adv_day_pay(db, user_id):
-    """Avans hesabındaki günlük kazanç = aylık maaş ÷ 30 (ставка × смена)."""
+    """Avansı ödemeye kalan günlük kazanç = aylık maaş ÷ 30 (ставка × смена)
+    − rezerv katkısı (owner 2026-10-06): rezervi AÇIK ve henüz dolmamış kişide
+    her iş günü maaştan rezerve pay kesilir; taksit günü buna göre biraz kayar.
+    Rezerv kapalı / iptal / dolmuş / stajyer → kesinti yok, tam kazanç."""
     try:
-        return int(round(adv_salary_info(db, user_id)["salary"] / ADV_DAYS))
+        pay = int(round(adv_salary_info(db, user_id)["salary"] / ADV_DAYS))
     except Exception:
         return 0
+    try:
+        r = reserve_info(db, user_id)
+        if (r.get("live") and r.get("eligible") and not r.get("off")
+                and r.get("status") not in ("completed", "cancelled", "off")):
+            pay -= int(min(r.get("per_day") or 0, r.get("remaining") or r.get("per_day") or 0))
+    except Exception:
+        pass
+    return max(0, pay)
 
 
 def adv_closed_days(db):
