@@ -593,6 +593,16 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, from_bid INTEGER, to_bid INTEGER,
         item TEXT, unit TEXT, qty REAL, note TEXT,
         by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
+    # Bardak transferi ↔ kapanış «Завоз» bağı (owner 2026-10-06): rep_from / rep_to =
+    # bu satırın hangi kapanış raporunda gönderen / alan şubenin «Завоз»una yansıdığı.
+    # NULL = henüz yansımadı → o şubenin sıradaki kapanışında otomatik görünür.
+    # Sütun ilk eklendiğinde mevcut satırlar 0 (yansımış sayılır; geçmiş tekrar düşmesin).
+    for _bc in ("rep_from", "rep_to"):
+        try:
+            db.execute(f"ALTER TABLE brx_tx ADD COLUMN {_bc} INTEGER")
+            db.execute(f"UPDATE brx_tx SET {_bc}=0")
+        except sqlite3.OperationalError:
+            pass
     db.execute("""CREATE TABLE IF NOT EXISTS shift_grid (
         week_key TEXT, day INTEGER, user_id INTEGER,
         code TEXT, updated_by INTEGER, updated_by_name TEXT, updated_at TEXT,
@@ -1715,6 +1725,34 @@ def brx_balance(db):
         k = ((r["item"] or "").strip().lower(), r["unit"] or "шт")
         d = out.setdefault((a, b), {})
         d[k] = round(d.get(k, 0) + sg * float(r["qty"] or 0), 3)
+    return out
+
+
+BRX_CUPS = ["Стакан 500", "Стакан 400", "Стакан 300", "Стакан 200", "Стакан 100", "Купол 400", "Купол 300"]
+
+
+def brx_cup_name(item):
+    """Ürün bir bardak türü mü → kanonik ad (büyük/küçük harf, boşluk farkı yok)."""
+    k = " ".join(str(item or "").split()).lower()
+    for c in BRX_CUPS:
+        if c.lower() == k:
+            return c
+    return None
+
+
+def brx_cup_pending(db, branch_id):
+    """Şubenin kapanışına henüz yansımamış bardak transferleri: [{id, cup, q (+geldi/−gitti), other}]."""
+    out, b = [], int(branch_id or 0)
+    for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 AND COALESCE(unit,'шт')='шт' "
+                        "AND ((from_bid=? AND rep_from IS NULL) OR (to_bid=? AND rep_to IS NULL)) ORDER BY id",
+                        (b, b)).fetchall():
+        c = brx_cup_name(r["item"])
+        if not c:
+            continue
+        out_side = int(r["from_bid"] or 0) == b
+        q = int(round(float(r["qty"] or 0)))
+        oth = get_branch(db, int(r["to_bid"] if out_side else r["from_bid"]) or 0) or {}
+        out.append({"id": r["id"], "cup": c, "q": -q if out_side else q, "other": oth.get("name", "?")})
     return out
 
 
@@ -7798,6 +7836,12 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # alışverişini görür; owner hepsini (owner 2026-10-06).
             _ob = None if role == "owner" else user_branch_id(db, user_id)
             parts.append(f"gdebt={quote(json.dumps(gdebt_view(db, _ob), ensure_ascii=False))}")
+            try:
+                parts.append(f"brx_cups={quote(json.dumps(brx_cup_pending(db, acting_branch_id(db, user_id)), ensure_ascii=False))}")
+            except Exception as e:
+                logger.warning(f"brx_cups payload: {e}")
+            # Между филиалами: çalışan ŞU AN çalıştığı şubeyi görür (şube değiştirince değişir).
+            _ob = None if role == "owner" else acting_branch_id(db, user_id)
             # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
             _nm = {}
             for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
@@ -13941,6 +13985,48 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  cups_total, itg, clk, pay, kar, term, cashless, schitano, vsh, sdachi, kassa,
                  json.dumps(exps, ensure_ascii=False), exp_total, note, daily_pay, shift_hours, shift_start, shift_end, coffee_kg, _cr_branch))
             db.commit()
+            # Bardak transferleri ↔ «Завоз» (owner 2026-10-06): formda görünen bekleyen
+            # transferler bu rapora bağlanır (tekrar düşmez); formda elle «−» yazılıp
+            # «куда» seçilen bardaklar Между филиалами'na yeni kayıt olur.
+            _brx_lines = []
+            try:
+                _crid2 = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                                    (user.id,)).fetchone()
+                _rid = _crid2["id"] if _crid2 else 0
+                for _x in (data.get("brx_used") or [])[:100]:
+                    try:
+                        _xi = int(_x)
+                    except Exception:
+                        continue
+                    db.execute("UPDATE brx_tx SET rep_from=? WHERE id=? AND from_bid=? AND rep_from IS NULL", (_rid, _xi, _cr_branch))
+                    db.execute("UPDATE brx_tx SET rep_to=? WHERE id=? AND to_bid=? AND rep_to IS NULL", (_rid, _xi, _cr_branch))
+                for _nb in (data.get("brx_new") or [])[:20]:
+                    if not isinstance(_nb, dict):
+                        continue
+                    _cup = brx_cup_name(_nb.get("item"))
+                    try:
+                        _to, _qq = int(_nb.get("to") or 0), int(_nb.get("qty") or 0)
+                    except Exception:
+                        _to, _qq = 0, 0
+                    if not _cup or _qq <= 0 or not _to or _to == _cr_branch or not get_branch(db, _to):
+                        continue
+                    db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at, rep_from) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                               (_cr_branch, _to, _cup, "шт", _qq, "из закрытия смены", user.id, shown, now.isoformat(), _rid))
+                    _brx_lines.append((_to, _cup, _qq))
+                db.commit()
+            except Exception as e:
+                logger.warning(f"cash_report brx: {e}")
+            if _brx_lines:
+                try:
+                    from html import escape as _esc_b
+                    _fnm = (get_branch(db, _cr_branch) or {}).get("name", "?")
+                    for _to, _cup, _qq in _brx_lines:
+                        await branch_group_say(context.bot, db, (_cr_branch, _to),
+                            f"📦 <b>{_esc_b(_fnm)} → {_esc_b((get_branch(db, _to) or {}).get('name', '?'))}</b>\n"
+                            f"{_esc_b(_cup)} — <b>{_qq} шт</b>\nпередал(а): {_esc_b(shown)} · из закрытия смены")
+                except Exception as e:
+                    logger.warning(f"cash_report brx notify: {e}")
             # Misafir borçları (kapanış formu «Долги гостей»): borç aldı / ödedi.
             # «В долг» satırları masraflara zaten istemcide eklenmiş geliyor (kasa tutsun).
             _gd_lines = []
@@ -15968,9 +16054,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _f or not _t2 or _f == _t2 or not get_branch(db, _f) or not get_branch(db, _t2):
                 await update.message.reply_text("❌ Выберите два разных филиала.")
                 return
-            if get_role(db, user.id) != "owner" and user_branch_id(db, user.id) not in (_f, _t2):
-                await update.message.reply_text("❌ Можно записывать только передачи своего филиала.")
-                return
+            # Çalışan YALNIZ şu an çalıştığı şubeden GÖNDERİR (owner 2026-10-06):
+            # «aldım» kaydı yok — gönderilen, alan şubeye borç olarak düşer.
+            # Şube değiştirince (vardiya taşındı / oturum şubesi) yeni şubeden gönderir.
+            if get_role(db, user.id) != "owner":
+                _ab = acting_branch_id(db, user.id)
+                if _f != _ab:
+                    await update.message.reply_text(
+                        f"❌ Отправлять можно только со своего филиала сейчас: {(get_branch(db, _ab) or {}).get('name', '?')}.")
+                    return
             if not _item or _q <= 0:
                 await update.message.reply_text("❌ Укажите товар и количество.")
                 return
