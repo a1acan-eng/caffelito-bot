@@ -7665,7 +7665,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     #    "uid-wN-day" biçimidir. Her hata yolu boş döner — payload asla patlamaz.
     try:
         _grid, _wkmap = {}, {}
-        for _w in (-1, 0, 1):
+        for _w in (-2, -1, 0, 1, 2):
             _wkmap[grid_week_key(_w)] = _w
         _gq = ",".join("?" for _ in _wkmap)
         for _r in db.execute(
@@ -15736,6 +15736,42 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # НЕРО — eski uygulamada OLMAYAN action'lar (eski uygulama silindi).
         # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
         # ═══════════════════════════════════════════════════════════════════
+        elif action == "shift_grid_copy":
+            # Owner: önceki haftanın planını bu haftaya kopyala (owner 2026-10-06,
+            # yeni çizelge «Скопировать прошлую неделю»). Yalnız verilen kişiler,
+            # yalnız BOŞ hücreler; her hücre aynı kurallardan geçer (grid_check).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _w = int(data.get("week") or 0)
+                _uids = [int(x) for x in (data.get("uids") or [])][:60]
+            except Exception:
+                _w, _uids = 0, []
+            _dst, _src = grid_week_key(_w), grid_week_key(_w - 1)
+            _n, _skip = 0, 0
+            for _u in _uids:
+                for _r in db.execute("SELECT day, code FROM shift_grid WHERE week_key=? AND user_id=?",
+                                     (_src, _u)).fetchall():
+                    _d, _c = int(_r["day"]), (_r["code"] or "")
+                    if not _c or grid_day_past(_dst, _d) or db.execute(
+                            "SELECT 1 FROM shift_grid WHERE week_key=? AND day=? AND user_id=?", (_dst, _d, _u)).fetchone():
+                        continue
+                    if _c != "off":
+                        _ok, _why = grid_check(db, _dst, _d, _u, _c)
+                        if not _ok:
+                            _skip += 1
+                            continue
+                    db.execute("INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                               "VALUES (?,?,?,?,?,?,?)", (_dst, _d, _u, _c, user.id, user.first_name, now.isoformat()))
+                    _n += 1
+            db.commit()
+            log_action(db, "shift_grid_copy", user.id, user.first_name, None, "",
+                       {"from": _src, "to": _dst, "cells": _n, "skipped": _skip})
+            await update.message.reply_text(
+                f"🗓 Скопировано смен: {_n}" + (f" · пропущено по правилам: {_skip}" if _skip else ""))
+
         elif action == "shift_grid_set":
             # График: bir güne vardiya/выходной ata. Kendine выходной koyulabilir;
             # başkasına atama SADECE owner. Göreli hafta mutlak Пн tarihine bağlanır.
