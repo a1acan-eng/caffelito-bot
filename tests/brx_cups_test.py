@@ -58,4 +58,21 @@ pay = bot.build_hash_payload(db, 10, 'Бек')
 check('%D0%A1%D0%B0%D1%85%D0%B0%D1%80' in pay, 'payload kayıtlı ürünleri taşıyor')
 act(10, {'action': 'brx_item_del', 'id': its[0]['id']})
 check(db.execute("SELECT archived FROM brx_items WHERE id=?", (its[0]['id'],)).fetchone()[0] in (0, None), 'çalışan ürünü silemez')
+print('Dış nokta (Другая точка)')
+act(10, {'action': 'cash_report', 'branch_id': 1, 'cups': [], 'expenses': [], 'note': '',
+         'brx_new': [{'to': ' Кофе  Хаус ', 'item': 'Стакан 400', 'qty': 25}]})
+ex = [dict(r) for r in db.execute("SELECT * FROM brx_ext")]
+check(len(ex) == 1 and ex[0]['name'] == 'Кофе Хаус', 'kapanıştan yeni dış nokta oluştu')
+xid = -ex[0]['id']
+check(bot.brx_balance(db)[(xid, 1)][('стакан 400', 'шт')] == -25, 'C5 → Кофе Хаус 25 (onlar bize borçlu)')
+check(not [x for x in bot.brx_cup_pending(db, 1) if x['other'] == 'Кофе Хаус'], 'kapanıştan gelen tekrar düşmez')
+act(10, {'action': 'brx_add', 'from': xid, 'to': 1, 'items': [{'item': 'Стакан 400', 'qty': 10}]})
+pc = [x for x in bot.brx_cup_pending(db, 1) if x['other'] == 'Кофе Хаус']
+check(len(pc) == 1 and pc[0]['q'] == 10 and pc[0]['other'] == 'Кофе Хаус', 'çalışan dış noktadan ALDI → kapanışta +10 «Кофе Хаус»')
+act(10, {'action': 'brx_add', 'from': xid, 'to': 2, 'items': [{'item': 'Стакан 400', 'qty': 5}]})
+check(not any(x['t'] == 2 and x['f'] == xid for x in bot.brx_view(db)), 'çalışan başka şubeye dış noktadan yazamaz')
+act(10, {'action': 'brx_add', 'from': 1, 'to': 'кофе хаус', 'items': [{'item': 'Стакан 300', 'qty': 3}]})
+check(db.execute("SELECT COUNT(*) FROM brx_ext").fetchone()[0] == 1 and any(x['t'] == xid and x['item'] == 'Стакан 300' for x in bot.brx_view(db)), 'adla gönderim aynı noktayı kullanır')
+pay = bot.build_hash_payload(db, 10, 'Бек')
+check('%D0%9A%D0%BE%D1%84%D0%B5' in pay, 'payload dış noktaları taşıyor')
 print('FAIL' if FAIL else 'ALL OK', FAIL)

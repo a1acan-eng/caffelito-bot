@@ -595,6 +595,10 @@ def get_db():
     # Franchise: her şubenin hesabı ayrı; birinden diğerine bardak/süt/kahve
     # verilince «kim kime ne borçlu» tutulur. Bir satır = bir teslim (from → to).
     # Borç = (A→B) − (B→A), ürün ve birim başına; geri verilen otomatik düşer.
+    # Bizim olmayan noktalar (owner 2026-10-07): bazen bardak alıp veriyoruz.
+    # brx_tx'te NEGATİF id (−brx_ext.id) olarak tutulur.
+    db.execute("""CREATE TABLE IF NOT EXISTS brx_ext (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, by_name TEXT, at TEXT, archived INTEGER DEFAULT 0)""")
     db.execute("""CREATE TABLE IF NOT EXISTS brx_tx (
         id INTEGER PRIMARY KEY AUTOINCREMENT, from_bid INTEGER, to_bid INTEGER,
         item TEXT, unit TEXT, qty REAL, note TEXT,
@@ -1770,6 +1774,34 @@ def brx_view(db, only_bid=None):
             if not only_bid or int(only_bid) in (int(r["from_bid"] or 0), int(r["to_bid"] or 0))]
 
 
+def brx_place(db, pid):
+    """Şube (pid > 0) ya da dış nokta (pid < 0) → {"id", "name", "ext"} / None."""
+    try:
+        pid = int(pid or 0)
+    except Exception:
+        return None
+    if pid > 0:
+        b = get_branch(db, pid)
+        return {"id": pid, "name": b.get("name", "?"), "ext": 0} if b else None
+    if pid < 0:
+        r = db.execute("SELECT * FROM brx_ext WHERE id=?", (-pid,)).fetchone()
+        return {"id": pid, "name": r["name"] or "?", "ext": 1} if r else None
+    return None
+
+
+def brx_resolve(db, v, by_name=""):
+    """Formdan gelen yer: sayı (şube / −dış nokta) ya da YENİ dış nokta adı → id (0 = geçersiz)."""
+    if isinstance(v, str) and v.strip() and not v.strip().lstrip("-").isdigit():
+        nm = " ".join(v.split())[:60]
+        for r in db.execute("SELECT id, name FROM brx_ext WHERE COALESCE(archived,0)=0").fetchall():
+            if (r["name"] or "").strip().lower() == nm.lower():
+                return -r["id"]
+        return -db.execute("INSERT INTO brx_ext (name, by_name, at) VALUES (?,?,?)",
+                           (nm, by_name, datetime.now(TZ).isoformat())).lastrowid
+    p = brx_place(db, v)
+    return p["id"] if p else 0
+
+
 def brx_balance(db):
     """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b."""
     out = {}
@@ -1805,7 +1837,7 @@ def brx_cup_pending(db, branch_id):
             continue
         out_side = int(r["from_bid"] or 0) == b
         q = int(round(float(r["qty"] or 0)))
-        oth = get_branch(db, int(r["to_bid"] if out_side else r["from_bid"]) or 0) or {}
+        oth = brx_place(db, int(r["to_bid"] if out_side else r["from_bid"]) or 0) or {}
         out.append({"id": r["id"], "cup": c, "q": -q if out_side else q, "other": oth.get("name", "?")})
     return out
 
@@ -7918,7 +7950,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
             _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт"} for r in db.execute(
                 "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
-            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its}, ensure_ascii=False))}")
+            _ext = [{"id": -r["id"], "n": r["name"] or "?"} for r in db.execute(
+                "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
+            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
@@ -14074,10 +14108,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         continue
                     _cup = brx_cup_name(_nb.get("item"))
                     try:
-                        _to, _qq = int(_nb.get("to") or 0), int(_nb.get("qty") or 0)
+                        _qq = int(_nb.get("qty") or 0)
                     except Exception:
-                        _to, _qq = 0, 0
-                    if not _cup or _qq <= 0 or not _to or _to == _cr_branch or not get_branch(db, _to):
+                        _qq = 0
+                    _to = brx_resolve(db, _nb.get("to"), shown) if (_cup and _qq > 0) else 0
+                    if not _cup or _qq <= 0 or not _to or _to == _cr_branch:
                         continue
                     db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at, rep_from) "
                                "VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -14092,7 +14127,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _fnm = (get_branch(db, _cr_branch) or {}).get("name", "?")
                     for _to, _cup, _qq in _brx_lines:
                         await branch_group_say(context.bot, db, (_cr_branch, _to),
-                            f"📦 <b>{_esc_b(_fnm)} → {_esc_b((get_branch(db, _to) or {}).get('name', '?'))}</b>\n"
+                            f"📦 <b>{_esc_b(_fnm)} → {_esc_b((brx_place(db, _to) or {}).get('name', '?'))}</b>\n"
                             f"{_esc_b(_cup)} — <b>{_qq} шт</b>\nпередал(а): {_esc_b(shown)} · из закрытия смены")
                 except Exception as e:
                     logger.warning(f"cash_report brx notify: {e}")
@@ -16186,6 +16221,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "gdebt_guest_del", user.id, user.first_name, None, "", {"guest_id": data.get("guest_id")})
 
+        elif action == "brx_ext_del":
+            db = get_db()
+            if get_role(db, user.id) == "owner":
+                try:
+                    db.execute("UPDATE brx_ext SET archived=1 WHERE id=?", (abs(int(data.get("id") or 0)),))
+                    db.commit()
+                except Exception:
+                    pass
+
         elif action in ("brx_item_add", "brx_item_del"):
             # Kaydedilmiş ürün listesi (owner 2026-10-07).
             db = get_db()
@@ -16229,14 +16273,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "brx_void", user.id, user.first_name, None, _t["item"] or "",
                                {"tx": _t["id"], "qty": _t["qty"]})
                 return
+            _f, _t2 = brx_resolve(db, data.get("from"), _shown), brx_resolve(db, data.get("to"), _shown)
             try:
-                _f, _t2 = int(data.get("from") or 0), int(data.get("to") or 0)
                 _q = round(float(str(data.get("qty") or 0).replace(",", ".")), 3)
             except Exception:
-                _f, _t2, _q = 0, 0, 0
+                _q = 0
             _item = " ".join(str(data.get("item") or "").split())[:80]
             _unit = str(data.get("unit") or "шт").strip()[:10] or "шт"
-            if not _f or not _t2 or _f == _t2 or not get_branch(db, _f) or not get_branch(db, _t2):
+            if not _f or not _t2 or _f == _t2 or (_f < 0 and _t2 < 0):
                 await update.message.reply_text("❌ Выберите два разных филиала.")
                 return
             # Çalışan YALNIZ şu an çalıştığı şubeden GÖNDERİR (owner 2026-10-06):
@@ -16244,7 +16288,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Şube değiştirince (vardiya taşındı / oturum şubesi) yeni şubeden gönderir.
             if get_role(db, user.id) != "owner":
                 _ab = acting_branch_id(db, user.id)
-                if _f != _ab:
+                # Dış noktadan ALDIK da yazılabilir (from = dış nokta, to = kendi şubesi).
+                if _f != _ab and not (_f < 0 and _t2 == _ab):
                     await update.message.reply_text(
                         f"❌ Отправлять можно только со своего филиала сейчас: {(get_branch(db, _ab) or {}).get('name', '?')}.")
                     return
@@ -16272,7 +16317,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)",
                            (_f, _t2, _nm, _un, _qq, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat()))
             db.commit()
-            _fn, _tn = get_branch(db, _f)["name"], get_branch(db, _t2)["name"]
+            _fn, _tn = brx_place(db, _f)["name"], brx_place(db, _t2)["name"]
             log_action(db, "brx_add", user.id, user.first_name, None, ", ".join(l[0] for l in _lines),
                        {"from": _fn, "to": _tn, "items": [{"item": a, "unit": b, "qty": c} for a, b, c in _lines]})
             from html import escape as esc_html
