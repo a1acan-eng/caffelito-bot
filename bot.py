@@ -1685,6 +1685,31 @@ def gdebt_view(db, only_bid=None):
     return {"guests": guests, "tx": tx}
 
 
+GDEBT_UNLOCK_H = 6          # doğru PIN sonrası liste kaç saat açık kalır
+GDEBT_PIN_TRIES = 5         # bu kadar yanlış denemeden sonra 10 dk bekleme
+
+
+def _gdebt_pin_hash(pin):
+    return hashlib.sha256(("caffelito-gdebt:" + str(pin)).encode("utf-8")).hexdigest()
+
+
+def gdebt_pin_set(db):
+    r = db.execute("SELECT val FROM meta WHERE k='gdebt_pin'").fetchone()
+    return bool(r and r["val"])
+
+
+def gdebt_unlocked(db, user_id, role=None):
+    """Misafir borç listesi bu kişiye açık mı (owner 2026-10-07: PIN'i bilen görür).
+    Owner her zaman; PIN konmamışsa herkes; yoksa doğru PIN'den sonra 6 saat."""
+    if (role or get_role(db, user_id)) == "owner" or not gdebt_pin_set(db):
+        return True
+    r = db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_unl_{int(user_id)}",)).fetchone()
+    try:
+        return bool(r and r["val"] and datetime.fromisoformat(r["val"]) > datetime.now(TZ))
+    except Exception:
+        return False
+
+
 def gdebt_add_tx(db, guest_id, kind, amount, branch_id, by_id, by_name, note="", report_id=None):
     if kind not in ("debt", "pay") or int(amount or 0) <= 0:
         return None
@@ -7839,8 +7864,16 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         try:
             # Çalışan YALNIZ atandığı şubenin misafirlerini / kendi şubesinin
             # alışverişini görür; owner hepsini (owner 2026-10-06).
-            _ob = None if role == "owner" else user_branch_id(db, user_id)
-            parts.append(f"gdebt={quote(json.dumps(gdebt_view(db, _ob), ensure_ascii=False))}")
+            # Çalışan ŞU AN çalıştığı şubenin misafirlerini görür (şube değiştirince değişir).
+            # PIN konduysa ve kişi açmadıysa liste HİÇ gönderilmez (owner 2026-10-07).
+            _ob = None if role == "owner" else acting_branch_id(db, user_id)
+            if gdebt_unlocked(db, user_id, role):
+                _gv = gdebt_view(db, _ob)
+                _gv["locked"] = 0
+            else:
+                _gv = {"guests": [], "tx": [], "locked": 1}
+            _gv["pin"] = 1 if gdebt_pin_set(db) else 0
+            parts.append(f"gdebt={quote(json.dumps(_gv, ensure_ascii=False))}")
             try:
                 parts.append(f"brx_cups={quote(json.dumps(brx_cup_pending(db, acting_branch_id(db, user_id)), ensure_ascii=False))}")
             except Exception as e:
@@ -15972,6 +16005,51 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # НЕРО — eski uygulamada OLMAYAN action'lar (eski uygulama silindi).
         # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
         # ═══════════════════════════════════════════════════════════════════
+        elif action in ("gdebt_pin_set", "gdebt_unlock", "gdebt_lock"):
+            # PIN: owner koyar/kaldırır; çalışan doğru PIN'le 6 saat açar (owner 2026-10-07).
+            db = get_db()
+            if action == "gdebt_pin_set":
+                if get_role(db, user.id) != "owner":
+                    await update.message.reply_text("❌ Только владелец.")
+                    return
+                _p = re.sub(r"[^0-9]", "", str(data.get("pin") or ""))
+                if _p and not (4 <= len(_p) <= 8):
+                    await update.message.reply_text("❌ PIN: от 4 до 8 цифр.")
+                    return
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('gdebt_pin',?)", (_gdebt_pin_hash(_p) if _p else "",))
+                db.execute("DELETE FROM meta WHERE k LIKE 'gdebt_unl_%'")   # yeni PIN → herkes yeniden girer
+                db.commit()
+                log_action(db, "gdebt_pin_set", user.id, user.first_name, None, "", {"pin": "установлен" if _p else "убран"})
+            elif action == "gdebt_lock":
+                db.execute("DELETE FROM meta WHERE k=?", (f"gdebt_unl_{user.id}",))
+                db.commit()
+            else:
+                _fk = f"gdebt_fail_{user.id}"
+                _fr = db.execute("SELECT val FROM meta WHERE k=?", (_fk,)).fetchone()
+                try:
+                    _fn, _fu = (_fr["val"] or "0|").split("|", 1) if _fr else ("0", "")
+                    _fn = int(_fn)
+                    _until = datetime.fromisoformat(_fu) if _fu else None
+                except Exception:
+                    _fn, _until = 0, None
+                if _until and _until > now:
+                    await update.message.reply_text("⏳ Слишком много попыток. Попробуйте через 10 минут.")
+                    return
+                _row = db.execute("SELECT val FROM meta WHERE k='gdebt_pin'").fetchone()
+                _p = re.sub(r"[^0-9]", "", str(data.get("pin") or ""))
+                if _row and _row["val"] and _p and hmac.compare_digest(_row["val"], _gdebt_pin_hash(_p)):
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
+                               (f"gdebt_unl_{user.id}", (now + timedelta(hours=GDEBT_UNLOCK_H)).isoformat()))
+                    db.execute("DELETE FROM meta WHERE k=?", (_fk,))
+                    db.commit()
+                    log_action(db, "gdebt_unlock", user.id, user.first_name, None, "", {})
+                else:
+                    _fn += 1
+                    _u2 = (now + timedelta(minutes=10)).isoformat() if _fn >= GDEBT_PIN_TRIES else ""
+                    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_fk, f"{0 if _u2 else _fn}|{_u2}"))
+                    db.commit()
+                    await update.message.reply_text("❌ Неверный PIN.")
+
         elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del"):
             # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
             db = get_db()
@@ -15984,9 +16062,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid = int(data.get("branch_id") or 0) or acting_branch_id(db, user.id)
             except Exception:
                 _bid = acting_branch_id(db, user.id)
-            # Çalışan yalnız ATANDIĞI şubede (owner 2026-10-06).
+            # Çalışan yalnız ŞU AN çalıştığı şubede (owner 2026-10-07: şube değiştirince
+            # o şubenin misafirleri). PIN konduysa önce açılmış olmalı.
             if not _own:
-                _bid = user_branch_id(db, user.id)
+                _bid = acting_branch_id(db, user.id)
+                if not gdebt_unlocked(db, user.id, "barista"):
+                    await update.message.reply_text("🔒 Долги гостей закрыты PIN-кодом.")
+                    return
             if action == "gdebt_guest_add":
                 _gid = gdebt_guest_get_or_create(db, 0, data.get("name"), _bid, user.id, _shown)
                 if not _gid:
