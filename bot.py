@@ -16057,7 +16057,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
 
-        elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del"):
+        elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del", "gdebt_tx_edit", "gdebt_guest_edit"):
             # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
             db = get_db()
             if is_observer(db, user.id):
@@ -16104,6 +16104,35 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "gdebt_tx", user.id, user.first_name, None, _g["name"] or "",
                            {"kind": _kind, "amount": _amt})
+            elif action in ("gdebt_tx_edit", "gdebt_guest_edit"):
+                # Kalem — yalnız owner düzeltir (owner 2026-10-07): kayıt türü/tutar/not, misafir adı/telefon.
+                if not _own:
+                    await update.message.reply_text("❌ Изменить может только владелец.")
+                    return
+                if action == "gdebt_tx_edit":
+                    _t = db.execute("SELECT * FROM guest_tx WHERE id=? AND COALESCE(voided,0)=0",
+                                    (int(data.get("id") or 0),)).fetchone()
+                    _kind = data.get("kind") or (_t["kind"] if _t else "")
+                    _amt = _norm_amt(data.get("amount", 0))
+                    if not _t or _kind not in ("debt", "pay", "dep") or _amt <= 0:
+                        await update.message.reply_text("❌ Проверьте сумму.")
+                        return
+                    db.execute("UPDATE guest_tx SET kind=?, amount=?, note=? WHERE id=?",
+                               (_kind, _amt, str(data.get("note") or "")[:200], _t["id"]))
+                    db.commit()
+                    log_action(db, "gdebt_tx_edit", user.id, user.first_name, None, "",
+                               {"tx": _t["id"], "old": [_t["kind"], _t["amount"]], "new": [_kind, _amt]})
+                else:
+                    _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
+                    _nm = " ".join(str(data.get("name") or "").split())[:60]
+                    if not _g or not _nm:
+                        await update.message.reply_text("❌ Укажите имя.")
+                        return
+                    db.execute("UPDATE guests SET name=?, phone=? WHERE id=?",
+                               (_nm, str(data.get("phone") or "").strip()[:30], _g["id"]))
+                    db.commit()
+                    log_action(db, "gdebt_guest_edit", user.id, user.first_name, None, _nm,
+                               {"guest_id": _g["id"], "old": _g["name"]})
             elif action == "gdebt_void":
                 if not _own:
                     await update.message.reply_text("❌ Удалить запись может только владелец.")
