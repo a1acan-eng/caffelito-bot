@@ -585,6 +585,12 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, guest_id INTEGER, branch_id INTEGER,
         kind TEXT, amount INTEGER, note TEXT, report_id INTEGER,
         by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
+    # owner 2026-10-07: «Свой» (sahibin/şefin akrabası) — aldığı borç sayılmaz (free),
+    # yalnız ne kadar gittiği görülür.
+    try:
+        db.execute("ALTER TABLE guests ADD COLUMN free INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     # ─── ŞUBELER ARASI MAL ALIŞVERİŞİ (owner 2026-10-06) ───
     # Franchise: her şubenin hesabı ayrı; birinden diğerine bardak/süt/kahve
     # verilince «kim kime ne borçlu» tutulur. Bir satır = bir teslim (from → to).
@@ -1669,12 +1675,19 @@ def daily_bonus_pay_ids(db, user_id, period):
 def gdebt_view(db, only_bid=None):
     """Nero: misafirler (bakiyeyle) + son hareketler. only_bid verilirse YALNIZ o
     şubenin misafirleri (owner 2026-10-06: çalışan yalnız atandığı şubeyi görür)."""
-    bal = {}
-    for r in db.execute("SELECT guest_id, kind, amount FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
-        v = int(r["amount"] or 0)
-        bal[r["guest_id"]] = bal.get(r["guest_id"], 0) + (v if r["kind"] == "debt" else -v)
+    bal, fm, ft = {}, {}, {}
+    _m0 = datetime.now(TZ).strftime("%Y-%m")
+    for r in db.execute("SELECT guest_id, kind, amount, at FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
+        v, gi = int(r["amount"] or 0), r["guest_id"]
+        if r["kind"] == "free":     # «Свой»: borç değil — yalnız toplam (bu ay / hepsi)
+            ft[gi] = ft.get(gi, 0) + v
+            if str(r["at"] or "")[:7] == _m0:
+                fm[gi] = fm.get(gi, 0) + v
+            continue
+        bal[gi] = bal.get(gi, 0) + (v if r["kind"] == "debt" else -v)
     guests = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0),
-               "ph": g["phone"] or "", "note": g["note"] or "", "bal": bal.get(g["id"], 0)}
+               "ph": g["phone"] or "", "note": g["note"] or "", "bal": bal.get(g["id"], 0),
+               "fr": 1 if g["free"] else 0, "fm": fm.get(g["id"], 0), "ft": ft.get(g["id"], 0)}
               for g in db.execute("SELECT * FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
               if not only_bid or int(g["branch_id"] or 0) == int(only_bid)]
     _ids = {g["id"] for g in guests}
@@ -1710,9 +1723,19 @@ def gdebt_unlocked(db, user_id, role=None):
         return False
 
 
+def gdebt_kind_for(db, guest_id, kind):
+    """«Свой» misafir (akraba) «Взял» → free: borca yazılmaz, yalnız sayılır."""
+    if kind in ("debt", "free"):
+        g = db.execute("SELECT free FROM guests WHERE id=?", (int(guest_id or 0),)).fetchone()
+        return "free" if (g and g["free"]) else "debt"
+    return kind
+
+
 def gdebt_add_tx(db, guest_id, kind, amount, branch_id, by_id, by_name, note="", report_id=None):
     # dep = depozit (misafir önceden para bıraktı) — bakiyeyi pay gibi azaltır (eksi = depozit).
-    if kind not in ("debt", "pay", "dep") or int(amount or 0) <= 0:
+    # free = «Свой» misafirin aldığı (borç değil); «Свой» işaretliyse debt → free.
+    kind = gdebt_kind_for(db, guest_id, kind)
+    if kind not in ("debt", "pay", "dep", "free") or int(amount or 0) <= 0:
         return None
     cur = db.execute("INSERT INTO guest_tx (guest_id, branch_id, kind, amount, note, report_id, by_id, by_name, at) "
                      "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -7876,8 +7899,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _gv["pin"] = 1 if gdebt_pin_set(db) else 0
             # Kapanış formunda arama için o şubenin misafir ADLARI — tutar yok, PIN'siz
             # (owner 2026-10-07: «şubenin borçluları tüm elemanlara görünsün, aramada bulunsun»).
-            _gv["names"] = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0)}
-                            for g in db.execute("SELECT id, name, branch_id FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
+            _gv["names"] = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0), "f": 1 if g["free"] else 0}
+                            for g in db.execute("SELECT id, name, branch_id, free FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
                             if not _ob or int(g["branch_id"] or 0) == int(_ob)]
             parts.append(f"gdebt={quote(json.dumps(_gv, ensure_ascii=False))}")
             try:
@@ -14080,7 +14103,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _crid = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
                                    (user.id,)).fetchone()
                 for _gq in (data.get("gdebts") or [])[:30]:
-                    if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay", "dep"):
+                    if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay", "dep", "free"):
                         continue
                     _ga = _norm_amt(_gq.get("a", 0))
                     _gid = gdebt_guest_get_or_create(db, _gq.get("g"), _gq.get("n"), _cr_branch, user.id, shown)
@@ -14088,7 +14111,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         gdebt_add_tx(db, _gid, _gq["k"], _ga, _cr_branch, user.id, shown,
                                      "закрытие смены", _crid["id"] if _crid else None)
                         _gn = (db.execute("SELECT name FROM guests WHERE id=?", (_gid,)).fetchone() or {"name": "?"})["name"]
-                        _gd_lines.append((_gq["k"], _gn, _ga))
+                        _gd_lines.append((gdebt_kind_for(db, _gid, _gq["k"]), _gn, _ga))
                 db.commit()
             except Exception as e:
                 logger.warning(f"cash_report gdebts: {e}")
@@ -14135,7 +14158,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     if _gd_lines:
                         t += "━━━━━━━━━━━━━━━━━━━━\n<b>📒 Долги гостей</b>\n"
                         for _k, _n, _a in _gd_lines:
-                            t += (f"  🔴 В долг: {esc_html(_n)} — {fmt_sum(_a)}\n" if _k == "debt"
+                            t += (f"  🎁 Свои (бесплатно): {esc_html(_n)} — {fmt_sum(_a)}\n" if _k == "free" else
+                                  f"  🔴 В долг: {esc_html(_n)} — {fmt_sum(_a)}\n" if _k == "debt"
                                   else (f"  🟢 Депозит: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n" if _k == "dep"
                                         else f"  🟢 Вернул(а) долг: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n"))
                     if daily_pay:
@@ -16057,7 +16081,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
 
-        elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del", "gdebt_tx_edit", "gdebt_guest_edit"):
+        elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del", "gdebt_tx_edit", "gdebt_guest_edit", "gdebt_guest_free"):
             # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
             db = get_db()
             if is_observer(db, user.id):
@@ -16104,7 +16128,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "gdebt_tx", user.id, user.first_name, None, _g["name"] or "",
                            {"kind": _kind, "amount": _amt})
-            elif action in ("gdebt_tx_edit", "gdebt_guest_edit"):
+            elif action in ("gdebt_tx_edit", "gdebt_guest_edit", "gdebt_guest_free"):
                 # Kalem — yalnız owner düzeltir (owner 2026-10-07): kayıt türü/tutar/not, misafir adı/telefon.
                 if not _own:
                     await update.message.reply_text("❌ Изменить может только владелец.")
@@ -16112,9 +16136,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if action == "gdebt_tx_edit":
                     _t = db.execute("SELECT * FROM guest_tx WHERE id=? AND COALESCE(voided,0)=0",
                                     (int(data.get("id") or 0),)).fetchone()
-                    _kind = data.get("kind") or (_t["kind"] if _t else "")
+                    _kind = gdebt_kind_for(db, _t["guest_id"], data.get("kind") or _t["kind"]) if _t else ""
                     _amt = _norm_amt(data.get("amount", 0))
-                    if not _t or _kind not in ("debt", "pay", "dep") or _amt <= 0:
+                    if not _t or _kind not in ("debt", "pay", "dep", "free") or _amt <= 0:
                         await update.message.reply_text("❌ Проверьте сумму.")
                         return
                     db.execute("UPDATE guest_tx SET kind=?, amount=?, note=? WHERE id=?",
@@ -16122,6 +16146,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.commit()
                     log_action(db, "gdebt_tx_edit", user.id, user.first_name, None, "",
                                {"tx": _t["id"], "old": [_t["kind"], _t["amount"]], "new": [_kind, _amt]})
+                elif action == "gdebt_guest_free":
+                    # Aç/kapa: «Свой». Eski «Взял» kayıtları da birlikte döner
+                    # (akrabanın geçmiş borcu borç değil, ya da tersi).
+                    _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
+                    if _g:
+                        _on = 1 if data.get("free") else 0
+                        db.execute("UPDATE guests SET free=? WHERE id=?", (_on, _g["id"]))
+                        db.execute("UPDATE guest_tx SET kind=? WHERE guest_id=? AND kind=?",
+                                   ("free", _g["id"], "debt") if _on else ("debt", _g["id"], "free"))
+                        db.commit()
+                        log_action(db, "gdebt_guest_free", user.id, user.first_name, None, _g["name"] or "", {"free": _on})
                 else:
                     _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
                     _nm = " ".join(str(data.get("name") or "").split())[:60]
