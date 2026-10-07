@@ -1711,7 +1711,8 @@ def gdebt_unlocked(db, user_id, role=None):
 
 
 def gdebt_add_tx(db, guest_id, kind, amount, branch_id, by_id, by_name, note="", report_id=None):
-    if kind not in ("debt", "pay") or int(amount or 0) <= 0:
+    # dep = depozit (misafir önceden para bıraktı) — bakiyeyi pay gibi azaltır (eksi = depozit).
+    if kind not in ("debt", "pay", "dep") or int(amount or 0) <= 0:
         return None
     cur = db.execute("INSERT INTO guest_tx (guest_id, branch_id, kind, amount, note, report_id, by_id, by_name, at) "
                      "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -7873,6 +7874,11 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             else:
                 _gv = {"guests": [], "tx": [], "locked": 1}
             _gv["pin"] = 1 if gdebt_pin_set(db) else 0
+            # Kapanış formunda arama için o şubenin misafir ADLARI — tutar yok, PIN'siz
+            # (owner 2026-10-07: «şubenin borçluları tüm elemanlara görünsün, aramada bulunsun»).
+            _gv["names"] = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0)}
+                            for g in db.execute("SELECT id, name, branch_id FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
+                            if not _ob or int(g["branch_id"] or 0) == int(_ob)]
             parts.append(f"gdebt={quote(json.dumps(_gv, ensure_ascii=False))}")
             try:
                 parts.append(f"brx_cups={quote(json.dumps(brx_cup_pending(db, acting_branch_id(db, user_id)), ensure_ascii=False))}")
@@ -14074,7 +14080,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _crid = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
                                    (user.id,)).fetchone()
                 for _gq in (data.get("gdebts") or [])[:30]:
-                    if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay"):
+                    if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay", "dep"):
                         continue
                     _ga = _norm_amt(_gq.get("a", 0))
                     _gid = gdebt_guest_get_or_create(db, _gq.get("g"), _gq.get("n"), _cr_branch, user.id, shown)
@@ -14130,7 +14136,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         t += "━━━━━━━━━━━━━━━━━━━━\n<b>📒 Долги гостей</b>\n"
                         for _k, _n, _a in _gd_lines:
                             t += (f"  🔴 В долг: {esc_html(_n)} — {fmt_sum(_a)}\n" if _k == "debt"
-                                  else f"  🟢 Вернул(а) долг: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n")
+                                  else (f"  🟢 Депозит: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n" if _k == "dep"
+                                        else f"  🟢 Вернул(а) долг: {esc_html(_n)} — {fmt_sum(_a)} (в кассе)\n"))
                     if daily_pay:
                         t += "━━━━━━━━━━━━━━━━━━━━\n"
                         t += f"<b>💵 Дневной бонус: {fmt_sum(daily_pay)} сум</b>"
@@ -16087,7 +16094,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _kind = data.get("kind")
                 _amt = _norm_amt(data.get("amount", 0))
                 _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
-                if not _g or _kind not in ("debt", "pay") or _amt <= 0:
+                if not _g or _kind not in ("debt", "pay", "dep") or _amt <= 0:
                     await update.message.reply_text("❌ Проверьте гостя и сумму.")
                     return
                 if not _own and int(_g["branch_id"] or 0) != _bid:
