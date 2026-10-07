@@ -1774,6 +1774,75 @@ def brx_view(db, only_bid=None):
             if not only_bid or int(only_bid) in (int(r["from_bid"] or 0), int(r["to_bid"] or 0))]
 
 
+EXP_SKIP = ("в долг · ", "свои · ")   # misafir borcu / akraba — «Долги гостей»da ayrıca
+
+
+def exp_items(raw):
+    """cashreports.expenses JSON → [(ad, tutar)] (misafir borcu satırları hariç)."""
+    try:
+        arr = json.loads(raw or "[]")
+    except Exception:
+        return []
+    out = []
+    for e in arr if isinstance(arr, list) else []:
+        if not isinstance(e, dict):
+            continue
+        n = " ".join(str(e.get("n") or "").split())[:80]
+        try:
+            a = int(e.get("a") or 0)
+        except Exception:
+            a = 0
+        if a <= 0 or n.lower().startswith(EXP_SKIP):
+            continue
+        out.append((n or "Без названия", a))
+    return out
+
+
+def exp_view(db, days=62):
+    """Owner «Расходы» (owner 2026-10-07): her kapanışın masrafları günlük + bu ayın
+    kalemleri (ad bazında, büyük/küçük harf yok sayılır). Yalnız owner'a gider."""
+    now = datetime.now(TZ)
+    since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+    m0, m1 = now.strftime("%Y-%m"), (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    days_map, names, mtot, ptot = {}, {}, {}, {}
+    for r in db.execute("SELECT id, user_id, user_name, date, branch_id, expenses FROM cashreports "
+                        "WHERE date>=? ORDER BY id DESC", (since,)).fetchall():
+        its = exp_items(r["expenses"])
+        if not its:
+            continue
+        d, bid = str(r["date"] or "")[:10], int(r["branch_id"] or 0)
+        by = display_name_for(db, r["user_id"], fallback=r["user_name"] or "")
+        day = days_map.setdefault(d, {"d": d, "it": []})
+        for n, a in its:
+            day["it"].append({"n": n, "a": a, "b": bid, "by": by})
+            if d[:7] == m0:
+                k = (n.lower(), bid)
+                x = names.setdefault(k, {"n": n, "b": bid, "a": 0, "c": 0})
+                x["a"] += a
+                x["c"] += 1
+                mtot[bid] = mtot.get(bid, 0) + a
+            elif d[:7] == m1:
+                ptot[bid] = ptot.get(bid, 0) + a
+    return {"days": sorted(days_map.values(), key=lambda x: x["d"], reverse=True),
+            "names": sorted(names.values(), key=lambda x: -x["a"]),
+            "mtot": mtot, "ptot": ptot, "m": m0}
+
+
+def exp_names(db, limit=80):
+    """Kapanış formunda masraf adı önerileri (herkese — tutar yok)."""
+    seen, out = set(), []
+    for r in db.execute("SELECT expenses FROM cashreports WHERE expenses IS NOT NULL AND expenses!='[]' "
+                        "ORDER BY id DESC LIMIT 400").fetchall():
+        for n, _a in exp_items(r["expenses"]):
+            k = n.lower()
+            if k not in seen and n != "Без названия":
+                seen.add(k)
+                out.append(n)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
 def brx_place(db, pid):
     """Şube (pid > 0) ya da dış nokta (pid < 0) → {"id", "name", "ext"} / None."""
     try:
@@ -7953,6 +8022,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _ext = [{"id": -r["id"], "n": r["name"] or "?"} for r in db.execute(
                 "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
+            parts.append(f"exp_names={quote(json.dumps(exp_names(db), ensure_ascii=False))}")
+            # «Расходы» — yalnız owner (owner 2026-10-07)
+            if role == "owner":
+                parts.append(f"expv={quote(json.dumps(exp_view(db), ensure_ascii=False))}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
