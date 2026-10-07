@@ -1685,7 +1685,7 @@ def gdebt_view(db, only_bid=None):
     return {"guests": guests, "tx": tx}
 
 
-GDEBT_UNLOCK_H = 6          # doğru PIN sonrası liste kaç saat açık kalır
+GDEBT_UNLOCK_H = 0.25       # doğru PIN sonrası en fazla 15 dk açık (ekrandan çıkınca hemen kilitlenir)
 GDEBT_PIN_TRIES = 5         # bu kadar yanlış denemeden sonra 10 dk bekleme
 
 
