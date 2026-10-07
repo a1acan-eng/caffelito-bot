@@ -8046,6 +8046,18 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         logger.warning(f"roster: {e}")
         _roster = []
     parts.append(f"roster={quote(json.dumps(_roster, ensure_ascii=False))}")
+    # ── Gerçek giriş / çıkış (owner 2026-10-07, yeni çizelge «Сегодня»): son ~2 günün
+    # vardiya kayıtları — kim ne zaman başladı/bitirdi. Para yok; herkese.
+    try:
+        _att_since = (datetime.now(TZ) - timedelta(hours=40)).isoformat()
+        _att = [{"uid": r["user_id"], "bid": int(r["branch_id"] or 1), "in": r["start_time"], "out": r["end_time"]}
+                for r in db.execute("SELECT user_id, branch_id, start_time, end_time FROM shifts "
+                                    "WHERE start_time IS NOT NULL AND start_time>=? ORDER BY start_time",
+                                    (_att_since,)).fetchall()]
+    except Exception as e:
+        logger.warning(f"att: {e}")
+        _att = []
+    parts.append(f"att={quote(json.dumps(_att, ensure_ascii=False))}")
     # ── Vardiya şablonları · plan kuralları · açık vardiyalar ──
     # Üçü de eskiden YALNIZCA uygulamanın içinde sabitti (ya da hiç yoktu):
     # owner değiştiremiyordu ve uygulama yenilenince kayboluyordu.
