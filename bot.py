@@ -593,6 +593,11 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, from_bid INTEGER, to_bid INTEGER,
         item TEXT, unit TEXT, qty REAL, note TEXT,
         by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
+    # Kaydedilmiş ürünler (owner 2026-10-07): «+ Добавить» ile bir kez eklenen ürün
+    # listede kalır (ad + birim); herkes ekler, owner siler.
+    db.execute("""CREATE TABLE IF NOT EXISTS brx_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, unit TEXT,
+        by_name TEXT, at TEXT, archived INTEGER DEFAULT 0)""")
     # Bardak transferi ↔ kapanış «Завоз» bağı (owner 2026-10-06): rep_from / rep_to =
     # bu satırın hangi kapanış raporunda gönderen / alan şubenin «Завоз»una yansıdığı.
     # NULL = henüz yansımadı → o şubenin sıradaki kapanışında otomatik görünür.
@@ -7849,7 +7854,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _bal = [{"a": a, "b": b, "item": _nm.get(k, k[0]), "u": k[1], "net": v}
                     for (a, b), d in brx_balance(db).items() for k, v in d.items()
                     if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
-            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal}, ensure_ascii=False))}")
+            _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт"} for r in db.execute(
+                "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
+            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its}, ensure_ascii=False))}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
@@ -16026,6 +16033,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 log_action(db, "gdebt_guest_del", user.id, user.first_name, None, "", {"guest_id": data.get("guest_id")})
 
+        elif action in ("brx_item_add", "brx_item_del"):
+            # Kaydedilmiş ürün listesi (owner 2026-10-07).
+            db = get_db()
+            if is_observer(db, user.id):
+                await update.message.reply_text("❌ Наблюдателю недоступно.")
+                return
+            if action == "brx_item_del":
+                if get_role(db, user.id) != "owner":
+                    await update.message.reply_text("❌ Только владелец.")
+                    return
+                db.execute("UPDATE brx_items SET archived=1 WHERE id=?", (int(data.get("id") or 0),))
+                db.commit()
+                return
+            _nm = " ".join(str(data.get("name") or "").split())[:80]
+            _un = str(data.get("unit") or "шт").strip()[:10] or "шт"
+            if not _nm:
+                await update.message.reply_text("❌ Укажите название товара.")
+                return
+            if not any((r["name"] or "").strip().lower() == _nm.lower() for r in db.execute(
+                    "SELECT name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()) and not brx_cup_name(_nm):
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at) VALUES (?,?,?,?)",
+                           (_nm, _un, display_name_for(db, user.id, fallback=user.first_name), now.isoformat()))
+                db.commit()
+                log_action(db, "brx_item_add", user.id, user.first_name, None, _nm, {"unit": _un})
+
         elif action in ("brx_add", "brx_void"):
             # Şubeler arası mal teslimi (owner 2026-10-06). Herkes yazar; silme owner.
             db = get_db()
@@ -16063,20 +16095,39 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await update.message.reply_text(
                         f"❌ Отправлять можно только со своего филиала сейчас: {(get_branch(db, _ab) or {}).get('name', '?')}.")
                     return
-            if not _item or _q <= 0:
+            # Bir gönderimde BİRDEN ÇOK ürün (owner 2026-10-07): items=[{item,unit,qty}];
+            # eski tekil biçim (item/unit/qty) de kabul.
+            _lines = []
+            for _it in ((data.get("items") or []) if isinstance(data.get("items"), list) else [{"item": _item, "unit": _unit, "qty": _q}])[:40]:
+                if not isinstance(_it, dict):
+                    continue
+                _nm = " ".join(str(_it.get("item") or "").split())[:80]
+                _un = str(_it.get("unit") or "шт").strip()[:10] or "шт"
+                try:
+                    _qq = round(float(str(_it.get("qty") or 0).replace(",", ".")), 3)
+                except Exception:
+                    _qq = 0
+                _cn = brx_cup_name(_nm)
+                if _cn:
+                    _nm, _un = _cn, "шт"
+                if _nm and _qq > 0:
+                    _lines.append((_nm, _un, _qq))
+            if not _lines:
                 await update.message.reply_text("❌ Укажите товар и количество.")
                 return
-            db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)",
-                       (_f, _t2, _item, _unit, _q, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat()))
+            for _nm, _un, _qq in _lines:
+                db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)",
+                           (_f, _t2, _nm, _un, _qq, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat()))
             db.commit()
             _fn, _tn = get_branch(db, _f)["name"], get_branch(db, _t2)["name"]
-            log_action(db, "brx_add", user.id, user.first_name, None, _item,
-                       {"from": _fn, "to": _tn, "qty": _q, "unit": _unit})
+            log_action(db, "brx_add", user.id, user.first_name, None, ", ".join(l[0] for l in _lines),
+                       {"from": _fn, "to": _tn, "items": [{"item": a, "unit": b, "qty": c} for a, b, c in _lines]})
             from html import escape as esc_html
-            _qs = (str(int(_q)) if _q == int(_q) else str(_q).replace(".", ","))
+            _qf = lambda v: (str(int(v)) if v == int(v) else str(v).replace(".", ","))
             await branch_group_say(context.bot, db, (_f, _t2),
-                f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n{esc_html(_item)} — <b>{_qs} {esc_html(_unit)}</b>\n"
-                f"передал(а): {esc_html(_shown)}")
+                f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n"
+                + "\n".join(f"• {esc_html(a)} — <b>{_qf(c)} {esc_html(b)}</b>" for a, b, c in _lines)
+                + f"\nпередал(а): {esc_html(_shown)}")
 
         elif action == "shift_grid_copy":
             # Owner: önceki haftanın planını bu haftaya kopyala (owner 2026-10-06,
