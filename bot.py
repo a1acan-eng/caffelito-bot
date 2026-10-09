@@ -1843,6 +1843,41 @@ def exp_names(db, limit=80):
     return out
 
 
+# Franchise «Осень-Зима 26» (owner 2026-10-09): yeni ürünler sipariş kataloğuna.
+# Owner kataloğu düzenlemişse (meta snapshot) eksikler BİR KEZ eklenir; yaz
+# sezonu ürünleri silinmez, «прошлый сезон» notu alır.
+CAT_SEASON_OW26 = [
+    ("Сиропы", "it200", "Пюре Lucky клубника-йогурт", "сезон Осень-Зима 26"),
+    ("Сиропы", "it201", "Пюре Lucky ананас-груша", "сезон Осень-Зима 26"),
+    ("Сиропы", "it202", "Пюре Lucky малина-персик", "сезон Осень-Зима 26"),
+    ("Бакалея", "it203", "Порошок со вкусом сыра (для сырной пенки)", "сезон Осень-Зима 26"),
+]
+CAT_OLD_SUMMER = ("it26", "it27", "it28", "it33")
+
+
+def order_catalog_season_mig(db):
+    if db.execute("SELECT 1 FROM meta WHERE k='cat_mig_ow26' AND val='1'").fetchone():
+        return
+    r = db.execute("SELECT val FROM meta WHERE k='order_catalog'").fetchone()
+    if r and r["val"]:
+        cats = json.loads(r["val"])
+        if isinstance(cats, list) and cats:
+            names = {str(it.get("n", "")).strip().lower() for c in cats for it in (c.get("items") or [])}
+            for key, iid, nm, note in CAT_SEASON_OW26:
+                if nm.lower() in names:
+                    continue
+                cat = next((c for c in cats if key.lower() in str(c.get("n", "")).lower()), cats[0])
+                cat.setdefault("items", []).append({"id": iid, "n": nm, "note": note})
+            for c in cats:
+                for it in c.get("items") or []:
+                    if it.get("id") in CAT_OLD_SUMMER and not it.get("note"):
+                        it["note"] = "прошлый сезон (Лето 26)"
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('order_catalog', ?)",
+                       (json.dumps(cats, ensure_ascii=False),))
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cat_mig_ow26', '1')")
+    db.commit()
+
+
 def brx_place(db, pid):
     """Şube (pid > 0) ya da dış nokta (pid < 0) → {"id", "name", "ext"} / None."""
     try:
@@ -7776,6 +7811,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
     # girince değişiklikler kayboluyordu. Artık tam snapshot meta'da JSON olarak
     # saklanır ve payload ile döner; yoksa boş gider, client statik varsayılanı
     # gösterir ve ilk düzenlemede snapshot'ı kaydeder.
+    try:
+        order_catalog_season_mig(db)
+    except Exception as e:
+        logger.warning(f"order catalog season mig: {e}")
     try:
         _ocrow = db.execute("SELECT val FROM meta WHERE k='order_catalog'").fetchone()
         _order_catalog = (_ocrow["val"] if (_ocrow and _ocrow["val"]) else "[]")
