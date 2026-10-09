@@ -4443,7 +4443,7 @@ def ho_draft_save(db, row, data):
     keep = {k: data.get(k) for k in ("cups", "expenses", "note", "daily_pay", "hours",
                                      "start_time", "branch", "branch_id", "coffee_kg",
                                      "itogo", "click", "payme", "karta", "terminal",
-                                     "vyshlo", "na_sdachi", "drinks") if k in data}
+                                     "vyshlo", "na_sdachi", "drinks", "gdebts") if k in data}
     db.execute("UPDATE handover SET draft=?, draft_at=? WHERE id=?",
                (json.dumps(keep, ensure_ascii=False), datetime.now(TZ).isoformat(), int(row["id"])))
     db.commit()
