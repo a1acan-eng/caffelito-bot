@@ -17017,16 +17017,23 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute(
                     "UPDATE dayoff_requests SET status=?, decided_by=?, decided_by_name=?, decided_at=? WHERE id=?",
                     (decision, user.id, user.first_name, now.isoformat(), req_id))
-                if not target_id:
-                    target_id = _ex["user_id"]
-                if not wk:
-                    wk = _ex["week_key"]
+                # Kayıttaki kişi/hafta/gün esastır: client ekranda başka haftaya
+                # bakarken karar verirse yanlış haftaya yazmasın.
+                target_id = _ex["user_id"] or target_id
+                wk = _ex["week_key"] or wk
+                day = int(_ex["day"] if _ex["day"] is not None else day)
             elif req_id:
                 db.execute(
                     "INSERT OR REPLACE INTO dayoff_requests "
                     "(id, user_id, week_key, day, note, status, decided_by, decided_by_name, decided_at, created_at) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (req_id, target_id, wk, day, "", decision, user.id, user.first_name, now.isoformat(), now.isoformat()))
+            if decision == "no" and req_id:
+                # Reddedilen заявка için karar motorunun açtığı açık da kapanır —
+                # yoksa motor yedek aramaya devam ediyordu (owner 2026-10-09).
+                for _og in db.execute("SELECT id FROM open_shifts WHERE dayoff_req_id=? "
+                                      "AND status IN ('open','claimed')", (req_id,)).fetchall():
+                    cov_owner_reject(db, int(_og["id"]), user.id, user.first_name)
             if decision == "ok" and target_id:
                 # Onaydan ÖNCEKİ vardiya kodunu al: boşalan vardiya AÇIK VARDİYA
                 # olarak ilan edilsin, kimse görmeden kaybolmasın.
