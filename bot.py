@@ -1847,16 +1847,36 @@ def exp_names(db, limit=80):
 # Owner kataloğu düzenlemişse (meta snapshot) eksikler BİR KEZ eklenir; yaz
 # sezonu ürünleri silinmez, «прошлый сезон» notu alır.
 CAT_SEASON_OW26 = [
-    ("Сиропы", "it200", "Пюре Lucky клубника-йогурт", "сезон Осень-Зима 26"),
-    ("Сиропы", "it201", "Пюре Lucky ананас-груша", "сезон Осень-Зима 26"),
-    ("Сиропы", "it202", "Пюре Lucky малина-персик", "сезон Осень-Зима 26"),
+    ("Сиропы", "it200", "Пюре Lucky клубника-йогурт (1 л)", "сезон Осень-Зима 26"),
+    ("Сиропы", "it201", "Пюре Lucky ананас-груша (1 л)", "сезон Осень-Зима 26"),
+    ("Сиропы", "it202", "Пюре Lucky малина-персик (1 л)", "сезон Осень-Зима 26"),
     ("Бакалея", "it203", "Порошок со вкусом сыра (для сырной пенки)", "сезон Осень-Зима 26"),
 ]
 CAT_OLD_SUMMER = ("it26", "it27", "it28", "it33")
 
 
+def order_catalog_lucky_1l_mig(db):
+    """Пюре Lucky ambalajı 1 л (owner 2026-10-09): kayıtlı katalogdaki adlara eklenir — bir kez."""
+    if db.execute("SELECT 1 FROM meta WHERE k='cat_mig_lucky1l' AND val='1'").fetchone():
+        return
+    r = db.execute("SELECT val FROM meta WHERE k='order_catalog'").fetchone()
+    if r and r["val"]:
+        cats = json.loads(r["val"])
+        if isinstance(cats, list):
+            for c in cats:
+                for it in c.get("items") or []:
+                    nm = str(it.get("n", ""))
+                    if it.get("id") in ("it200", "it201", "it202") and nm.startswith("Пюре Lucky") and "(" not in nm:
+                        it["n"] = nm.rstrip() + " (1 л)"
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('order_catalog', ?)",
+                       (json.dumps(cats, ensure_ascii=False),))
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cat_mig_lucky1l', '1')")
+    db.commit()
+
+
 def order_catalog_season_mig(db):
     if db.execute("SELECT 1 FROM meta WHERE k='cat_mig_ow26' AND val='1'").fetchone():
+        order_catalog_lucky_1l_mig(db)
         return
     r = db.execute("SELECT val FROM meta WHERE k='order_catalog'").fetchone()
     if r and r["val"]:
@@ -1876,6 +1896,7 @@ def order_catalog_season_mig(db):
                        (json.dumps(cats, ensure_ascii=False),))
     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cat_mig_ow26', '1')")
     db.commit()
+    order_catalog_lucky_1l_mig(db)
 
 
 def brx_place(db, pid):
