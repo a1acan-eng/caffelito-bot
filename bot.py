@@ -612,6 +612,15 @@ def get_db():
     # bu satırın hangi kapanış raporunda gönderen / alan şubenin «Завоз»una yansıdığı.
     # NULL = henüz yansımadı → o şubenin sıradaki kapanışında otomatik görünür.
     # Sütun ilk eklendiğinde mevcut satırlar 0 (yansımış sayılır; geçmiş tekrar düşmesin).
+    # Paket boyutu (owner 2026-10-10): «пачка» kaç adet — owner ayarlar; giriş
+    # пачка ya da шт ile yapılabilir, bakiye adette toplanır.
+    # Dış nokta türü: own=1 → bizim (sistemde şube değil), 0 → başka sahibin.
+    for _tb, _cl in (("brx_items", "pack INTEGER"), ("brx_ext", "own INTEGER DEFAULT 0"),
+                     ("brx_tx", "edited_by TEXT"), ("brx_tx", "edited_at TEXT")):
+        try:
+            db.execute(f"ALTER TABLE {_tb} ADD COLUMN {_cl}")
+        except sqlite3.OperationalError:
+            pass
     for _bc in ("rep_from", "rep_to"):
         try:
             db.execute(f"ALTER TABLE brx_tx ADD COLUMN {_bc} INTEGER")
@@ -1769,7 +1778,8 @@ def gdebt_guest_get_or_create(db, guest_id, name, branch_id, by_id, by_name):
 
 def brx_view(db, only_bid=None):
     return [{"id": r["id"], "f": int(r["from_bid"] or 0), "t": int(r["to_bid"] or 0), "item": r["item"] or "",
-             "u": r["unit"] or "шт", "q": float(r["qty"] or 0), "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or ""}
+             "u": r["unit"] or "шт", "q": float(r["qty"] or 0), "note": r["note"] or "", "by": r["by_name"] or "", "at": r["at"] or "",
+             "bid": int(r["by_id"] or 0), "ed": r["edited_by"] or ""}
             for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id DESC LIMIT 300").fetchall()
             if not only_bid or int(only_bid) in (int(r["from_bid"] or 0), int(r["to_bid"] or 0))]
 
@@ -1915,27 +1925,57 @@ def brx_place(db, pid):
 
 
 def brx_resolve(db, v, by_name=""):
-    """Formdan gelen yer: sayı (şube / −dış nokta) ya da YENİ dış nokta adı → id (0 = geçersiz)."""
+    """Formdan gelen yer: sayı (şube / −dış nokta) ya da YENİ dış nokta adı → id (0 = geçersiz).
+    Yeni nokta {"n": ad, "own": 0|1} olarak da gelebilir (bizim / başka sahibin)."""
+    _own = 0
+    if isinstance(v, dict):
+        _own = 1 if v.get("own") else 0
+        v = str(v.get("n") or "")
     if isinstance(v, str) and v.strip() and not v.strip().lstrip("-").isdigit():
         nm = " ".join(v.split())[:60]
         for r in db.execute("SELECT id, name FROM brx_ext WHERE COALESCE(archived,0)=0").fetchall():
             if (r["name"] or "").strip().lower() == nm.lower():
                 return -r["id"]
-        return -db.execute("INSERT INTO brx_ext (name, by_name, at) VALUES (?,?,?)",
-                           (nm, by_name, datetime.now(TZ).isoformat())).lastrowid
+        return -db.execute("INSERT INTO brx_ext (name, by_name, at, own) VALUES (?,?,?,?)",
+                           (nm, by_name, datetime.now(TZ).isoformat(), _own)).lastrowid
     p = brx_place(db, v)
     return p["id"] if p else 0
 
 
+BRX_PACK_UNITS = ("пачка", "уп")
+
+
+def brx_packs(db):
+    """{ürün adı (küçük harf): adet/paket} — owner'ın ayarladığı paket boyutları."""
+    out = {}
+    try:
+        for r in db.execute("SELECT name, pack FROM brx_items WHERE COALESCE(archived,0)=0 AND COALESCE(pack,0)>0").fetchall():
+            out[(r["name"] or "").strip().lower()] = int(r["pack"])
+    except Exception:
+        pass
+    return out
+
+
+def brx_norm(packs, item, unit, qty):
+    """Paket boyutu biliniyorsa пачка/уп → шт (bakiye adette toplansın)."""
+    k = (item or "").strip().lower()
+    u = unit or "шт"
+    q = float(qty or 0)
+    if u in BRX_PACK_UNITS and packs.get(k):
+        return k, "шт", q * packs[k]
+    return k, u, q
+
+
 def brx_balance(db):
     """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b."""
-    out = {}
+    out, packs = {}, brx_packs(db)
     for r in db.execute("SELECT from_bid, to_bid, item, unit, qty FROM brx_tx WHERE COALESCE(voided,0)=0").fetchall():
         f, t = int(r["from_bid"] or 0), int(r["to_bid"] or 0)
         a, b, sg = (f, t, 1) if f < t else (t, f, -1)
-        k = ((r["item"] or "").strip().lower(), r["unit"] or "шт")
+        ik, u, q = brx_norm(packs, r["item"], r["unit"], r["qty"])
+        k = (ik, u)
         d = out.setdefault((a, b), {})
-        d[k] = round(d.get(k, 0) + sg * float(r["qty"] or 0), 3)
+        d[k] = round(d.get(k, 0) + sg * q, 3)
     return out
 
 
@@ -8077,9 +8117,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _bal = [{"a": a, "b": b, "item": _nm.get(k, k[0]), "u": k[1], "net": v}
                     for (a, b), d in brx_balance(db).items() for k, v in d.items()
                     if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
-            _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт"} for r in db.execute(
+            _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт", "pk": int(r["pack"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
-            _ext = [{"id": -r["id"], "n": r["name"] or "?"} for r in db.execute(
+            _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
             parts.append(f"exp_names={quote(json.dumps(exp_names(db), ensure_ascii=False))}")
@@ -16375,6 +16415,60 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception:
                     pass
 
+        elif action == "brx_item_pack":
+            # Owner: ürünün paket boyutu (owner 2026-10-10: «kolede kaç tane — ben ayarlayayım»).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _nm = " ".join(str(data.get("name") or "").split())[:80]
+            try:
+                _pk = max(0, min(100000, int(float(str(data.get("pack") or 0).replace(",", ".")))))
+            except Exception:
+                _pk = 0
+            if not _nm:
+                return
+            _r = next((r for r in db.execute("SELECT id, name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()
+                       if (r["name"] or "").strip().lower() == _nm.lower()), None)
+            if _r:
+                db.execute("UPDATE brx_items SET pack=? WHERE id=?", (_pk or None, _r["id"]))
+            else:
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                           (_nm, "шт", display_name_for(db, user.id, fallback=user.first_name), now.isoformat(), _pk or None))
+            db.commit()
+            log_action(db, "brx_item_pack", user.id, user.first_name, None, _nm, {"pack": _pk})
+
+        elif action == "brx_edit":
+            # Yanlış girilen kaydı düzelt (owner 2026-10-10: «100 пачка yazmışım, 1 olacaktı»).
+            # Owner her kaydı; yazan kişi kendi kaydını 24 saat içinde.
+            db = get_db()
+            _t = db.execute("SELECT * FROM brx_tx WHERE id=? AND COALESCE(voided,0)=0", (int(data.get("id") or 0),)).fetchone()
+            if not _t:
+                await update.message.reply_text("❌ Запись не найдена.")
+                return
+            _own = get_role(db, user.id) == "owner"
+            try:
+                _fresh = datetime.now(TZ) - datetime.fromisoformat(_t["at"]) < timedelta(hours=24)
+            except Exception:
+                _fresh = False
+            if not _own and not (int(_t["by_id"] or 0) == user.id and _fresh):
+                await update.message.reply_text("❌ Изменить запись может владелец или автор (24 часа).")
+                return
+            try:
+                _q = round(float(str(data.get("qty") or 0).replace(",", ".")), 3)
+            except Exception:
+                _q = 0
+            _un = str(data.get("unit") or _t["unit"] or "шт").strip()[:10] or "шт"
+            if _q <= 0:
+                await update.message.reply_text("❌ Укажите количество.")
+                return
+            _shown = display_name_for(db, user.id, fallback=user.first_name)
+            db.execute("UPDATE brx_tx SET qty=?, unit=?, edited_by=?, edited_at=? WHERE id=?",
+                       (_q, _un, _shown, now.isoformat(), _t["id"]))
+            db.commit()
+            log_action(db, "brx_edit", user.id, user.first_name, None, _t["item"] or "",
+                       {"tx": _t["id"], "old": f"{_t['qty']} {_t['unit']}", "new": f"{_q} {_un}"})
+
         elif action in ("brx_item_add", "brx_item_del"):
             # Kaydedilmiş ürün listesi (owner 2026-10-07).
             db = get_db()
@@ -16395,8 +16489,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             if not any((r["name"] or "").strip().lower() == _nm.lower() for r in db.execute(
                     "SELECT name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()) and not brx_cup_name(_nm):
-                db.execute("INSERT INTO brx_items (name, unit, by_name, at) VALUES (?,?,?,?)",
-                           (_nm, _un, display_name_for(db, user.id, fallback=user.first_name), now.isoformat()))
+                try:
+                    _pk = int(float(str(data.get("pack") or 0).replace(",", "."))) if get_role(db, user.id) == "owner" else 0
+                except Exception:
+                    _pk = 0
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                           (_nm, _un, display_name_for(db, user.id, fallback=user.first_name), now.isoformat(), _pk or None))
                 db.commit()
                 log_action(db, "brx_item_add", user.id, user.first_name, None, _nm, {"unit": _un})
 
