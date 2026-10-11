@@ -1974,10 +1974,14 @@ async def ava_loop(app):
         try:
             db = get_db()
             lim = (datetime.now(TZ) - timedelta(hours=AVA_TTL_H)).isoformat()
+            # Fotoğrafı görünmeyenler (gizlilik ayarı) daha sık denenir: ayarı açınca
+            # birkaç saat içinde gelsin (owner 2026-10-11, Хасанбей).
+            lim_none = (datetime.now(TZ) - timedelta(hours=2)).isoformat()
             for r in db.execute(
                     "SELECT u.user_id FROM users u LEFT JOIN avatars a ON a.user_id=u.user_id "
                     "WHERE COALESCE(u.archived,0)=0 AND COALESCE(u.approved,0)=1 "
-                    "AND (a.user_id IS NULL OR a.fetched_at IS NULL OR a.fetched_at < ?)", (lim,)).fetchall():
+                    "AND (a.user_id IS NULL OR a.fetched_at IS NULL OR a.fetched_at < ? "
+                    "OR (COALESCE(a.none,0)=1 AND a.fetched_at < ?))", (lim, lim_none)).fetchall():
                 await ava_fetch(app.bot, db, r["user_id"])
                 await asyncio.sleep(0.5)
         except Exception as e:
