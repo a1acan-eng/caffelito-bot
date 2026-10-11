@@ -1723,17 +1723,33 @@ def _gdebt_pin_hash(pin):
     return hashlib.sha256(("caffelito-gdebt:" + str(pin)).encode("utf-8")).hexdigest()
 
 
-def gdebt_pin_set(db):
+def gdebt_pin_hash_for(db, bid=None):
+    """Şubenin PIN özeti (owner 2026-10-11: HER ŞUBEYE AYRI PIN — aynı PIN'le şube
+    değiştirip başka şubenin misafir borçları görülüyordu). Şubeye PIN konmamışsa
+    eski ortak PIN geçerli (geçişte hiçbir şube kendiliğinden açılmasın)."""
+    if bid:
+        r = db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_pin_b{int(bid)}",)).fetchone()
+        if r and r["val"]:
+            return r["val"]
     r = db.execute("SELECT val FROM meta WHERE k='gdebt_pin'").fetchone()
-    return bool(r and r["val"])
+    return (r["val"] if r else "") or ""
 
 
-def gdebt_unlocked(db, user_id, role=None):
-    """Misafir borç listesi bu kişiye açık mı (owner 2026-10-07: PIN'i bilen görür).
-    Owner her zaman; PIN konmamışsa herkes; yoksa doğru PIN'den sonra 6 saat."""
-    if (role or get_role(db, user_id)) == "owner" or not gdebt_pin_set(db):
+def gdebt_pin_set(db, bid=None):
+    return bool(gdebt_pin_hash_for(db, bid))
+
+
+def gdebt_unlocked(db, user_id, role=None, bid=None):
+    """Misafir borç listesi bu kişiye açık mı. Owner her zaman; o şubenin PIN'i yoksa
+    herkes; yoksa O ŞUBENİN PIN'i girildikten sonra kısa süre. Açılış ŞUBEYE bağlı:
+    şube değiştiren kişi yeni şubenin PIN'ini girmeden listeyi göremez."""
+    if (role or get_role(db, user_id)) == "owner":
         return True
-    r = db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_unl_{int(user_id)}",)).fetchone()
+    if bid is None:
+        bid = acting_branch_id(db, user_id)
+    if not gdebt_pin_set(db, bid):
+        return True
+    r = db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_unl_{int(user_id)}_{int(bid or 0)}",)).fetchone()
     try:
         return bool(r and r["val"] and datetime.fromisoformat(r["val"]) > datetime.now(TZ))
     except Exception:
@@ -8222,7 +8238,11 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _gv["locked"] = 0
             else:
                 _gv = {"guests": [], "tx": [], "locked": 1}
-            _gv["pin"] = 1 if gdebt_pin_set(db) else 0
+            _gv["pin"] = 1 if gdebt_pin_set(db, None if role == "owner" else acting_branch_id(db, user_id)) else 0
+            if role == "owner":
+                _gv["pins"] = {str(b["id"]): 1 for b in db.execute("SELECT id FROM branches").fetchall()
+                               if (db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_pin_b{b['id']}",)).fetchone() or {"val": ""})["val"]}
+                _gv["gpin"] = 1 if gdebt_pin_set(db) else 0
             # Kapanış formunda arama için o şubenin misafir ADLARI — tutar yok, PIN'siz
             # (owner 2026-10-07: «şubenin borçluları tüm elemanlara görünsün, aramada bulunsun»).
             _gv["names"] = [{"id": g["id"], "n": g["name"] or "?", "bid": int(g["branch_id"] or 0), "f": 1 if g["free"] else 0}
@@ -16393,12 +16413,28 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if _p and not (4 <= len(_p) <= 8):
                     await update.message.reply_text("❌ PIN: от 4 до 8 цифр.")
                     return
-                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('gdebt_pin',?)", (_gdebt_pin_hash(_p) if _p else "",))
-                db.execute("DELETE FROM meta WHERE k LIKE 'gdebt_unl_%'")   # yeni PIN → herkes yeniden girer
+                try:
+                    _pb = int(data.get("branch_id") or 0)
+                except Exception:
+                    _pb = 0
+                if _p:
+                    # Aynı PIN iki şubede olmasın — yoksa şube değiştirip diğerini açarlar.
+                    _h = _gdebt_pin_hash(_p)
+                    for _b in db.execute("SELECT id, name FROM branches").fetchall():
+                        if int(_b["id"]) != _pb:
+                            _o = db.execute("SELECT val FROM meta WHERE k=?", (f"gdebt_pin_b{_b['id']}",)).fetchone()
+                            if _o and _o["val"] == _h:
+                                await update.message.reply_text(f"❌ Такой PIN уже у филиала {_b['name']}. Нужен другой.")
+                                return
+                _key = f"gdebt_pin_b{_pb}" if _pb else "gdebt_pin"
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_key, _gdebt_pin_hash(_p) if _p else ""))
+                # yeni PIN → o şubede herkes yeniden girer
+                db.execute("DELETE FROM meta WHERE k LIKE ?", (f"gdebt_unl_%_{_pb}",) if _pb else ("gdebt_unl_%",))
                 db.commit()
-                log_action(db, "gdebt_pin_set", user.id, user.first_name, None, "", {"pin": "установлен" if _p else "убран"})
+                log_action(db, "gdebt_pin_set", user.id, user.first_name, None, (get_branch(db, _pb) or {}).get("name", "") if _pb else "",
+                           {"pin": "установлен" if _p else "убран", "branch_id": _pb})
             elif action == "gdebt_lock":
-                db.execute("DELETE FROM meta WHERE k=?", (f"gdebt_unl_{user.id}",))
+                db.execute("DELETE FROM meta WHERE k=? OR k LIKE ?", (f"gdebt_unl_{user.id}", f"gdebt_unl_{user.id}_%"))
                 db.commit()
             else:
                 _fk = f"gdebt_fail_{user.id}"
@@ -16412,11 +16448,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if _until and _until > now:
                     await update.message.reply_text("⏳ Слишком много попыток. Попробуйте через 10 минут.")
                     return
-                _row = db.execute("SELECT val FROM meta WHERE k='gdebt_pin'").fetchone()
+                _ub = acting_branch_id(db, user.id)
+                _row = gdebt_pin_hash_for(db, _ub)
                 _p = re.sub(r"[^0-9]", "", str(data.get("pin") or ""))
-                if _row and _row["val"] and _p and hmac.compare_digest(_row["val"], _gdebt_pin_hash(_p)):
+                if _row and _p and hmac.compare_digest(_row, _gdebt_pin_hash(_p)):
                     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
-                               (f"gdebt_unl_{user.id}", (now + timedelta(hours=GDEBT_UNLOCK_H)).isoformat()))
+                               (f"gdebt_unl_{user.id}_{int(_ub or 0)}", (now + timedelta(hours=GDEBT_UNLOCK_H)).isoformat()))
                     db.execute("DELETE FROM meta WHERE k=?", (_fk,))
                     db.commit()
                     log_action(db, "gdebt_unlock", user.id, user.first_name, None, "", {})
