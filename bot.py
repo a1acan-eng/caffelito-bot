@@ -631,6 +631,12 @@ def get_db():
             db.execute(f"UPDATE brx_tx SET {_bc}=0")
         except sqlite3.OperationalError:
             pass
+    # Owner'ın çizelge değişiklikleri çalışana HEMEN gitmez (owner 2026-10-11): ilk
+    # değişiklikten önceki kod `orig`te saklanır; «Отправить уведомления» ile her
+    # çalışana tek özet gider. Değişip eski hâline dönen gün bildirilmez.
+    db.execute("""CREATE TABLE IF NOT EXISTS grid_pending (
+        user_id INTEGER, week_key TEXT, day INTEGER, orig TEXT, at TEXT,
+        PRIMARY KEY (user_id, week_key, day))""")
     db.execute("""CREATE TABLE IF NOT EXISTS shift_grid (
         week_key TEXT, day INTEGER, user_id INTEGER,
         code TEXT, updated_by INTEGER, updated_by_name TEXT, updated_at TEXT,
@@ -2189,6 +2195,44 @@ def grid_templates(db):
     except Exception:
         pass
     return out
+
+
+def grid_mark_pending(db, uid, wk, day):
+    """Owner bir çalışanın gününü değiştirmeden ÖNCE çağrılır: ilk değeri saklar."""
+    try:
+        cur = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                         (wk, int(day), int(uid))).fetchone()
+        db.execute("INSERT OR IGNORE INTO grid_pending (user_id, week_key, day, orig, at) VALUES (?,?,?,?,?)",
+                   (int(uid), wk, int(day), (cur["code"] if cur else "") or "", datetime.now(TZ).isoformat()))
+    except Exception as e:
+        logger.warning(f"grid_mark_pending: {e}")
+
+
+def grid_pending_changes(db):
+    """{uid: [(week_key, day, orig, now)]} — yalnız GERÇEKTEN değişmiş günler."""
+    out = {}
+    for r in db.execute("SELECT p.user_id, p.week_key, p.day, p.orig, g.code FROM grid_pending p "
+                        "LEFT JOIN shift_grid g ON g.user_id=p.user_id AND g.week_key=p.week_key AND g.day=p.day "
+                        "ORDER BY p.user_id, p.week_key, p.day").fetchall():
+        o, n = r["orig"] or "", r["code"] or ""
+        if o != n:
+            out.setdefault(int(r["user_id"]), []).append((r["week_key"], int(r["day"]), o, n))
+    return out
+
+
+def grid_code_text(db, code, tpls=None):
+    """Hücre kodunun okunur hâli: «07:00–17:30 · C5» / «выходной» / «смена не назначена»."""
+    if not code:
+        return "смена не назначена"
+    if code == "off":
+        return "выходной"
+    if code == "sick":
+        return "больничный"
+    t = (tpls if tpls is not None else grid_templates(db)).get(code)
+    if not t:
+        return f"смена «{code}»"
+    bn = (get_branch(db, t.get("branch_id")) or {}).get("name", "")
+    return f"{t.get('start', '')}–{t.get('end', '')}" + (f" · {bn}" if bn else "")
 
 
 def _mins(hhmm):
@@ -8223,6 +8267,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _reqs = []
     parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
     parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
+    if role == "owner":
+        try:
+            _gp = grid_pending_changes(db)
+            parts.append("grid_pend=" + quote(json.dumps(
+                [{"uid": u, "n": display_name_for(db, u, fallback="?"), "d": len(v)} for u, v in _gp.items()], ensure_ascii=False)))
+        except Exception as e:
+            logger.warning(f"grid_pend payload: {e}")
     if not is_observer(db, user_id):
         parts.append(f"ava={quote(json.dumps(ava_map(db), ensure_ascii=False))}")
     # Misafir borçları + şubeler arası alışveriş — HERKES görür (gözlemci hariç).
@@ -16740,6 +16791,38 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 + (f"\nпричина: {esc_html(_nt)}" if (_wst and _nt) else "")
                 + (f"\nсписал(а): {esc_html(_shown)}" if _wst else f"\nпередал(а): {esc_html(_shown)}"))
 
+        elif action in ("grid_notify_send", "grid_notify_drop"):
+            # Owner: biriken çizelge değişikliklerini çalışanlara TEK özetle gönder
+            # (ya da göndermeden temizle). Geri alınmış günler zaten listede yok.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _ch = grid_pending_changes(db)
+            _sent = 0
+            if action == "grid_notify_send":
+                _tp = grid_templates(db)
+                for _uid, _rows in _ch.items():
+                    _lines = []
+                    for _wk, _d, _o, _nw in _rows:
+                        _dd = grid_day_date(_wk, _d)
+                        _lines.append(f"• {grid_day_label(_d)}" + (f" {_dd.strftime('%d.%m')}" if _dd else "")
+                                      + f" — {grid_code_text(db, _nw, _tp)}"
+                                      + (f"  (было: {grid_code_text(db, _o, _tp)})" if _o else ""))
+                    try:
+                        await context.bot.send_message(chat_id=_uid, text="🗓 Ваш график обновлён:\n" + "\n".join(_lines)
+                                                       + "\n\nПодробно — в Nero → Расписание.")
+                        _sent += 1
+                    except Exception as e:
+                        logger.warning(f"grid_notify_send {_uid}: {e}")
+            db.execute("DELETE FROM grid_pending")
+            db.commit()
+            log_action(db, action, user.id, user.first_name, None, "",
+                       {"people": len(_ch), "days": sum(len(v) for v in _ch.values()), "sent": _sent})
+            await update.message.reply_text(
+                f"📨 Уведомления отправлены: {_sent} сотр." if action == "grid_notify_send"
+                else "🗑 Изменения сохранены без уведомлений.")
+
         elif action == "shift_grid_clear_week":
             # Owner: bir kişinin haftasını tek seferde temizle (owner 2026-10-11:
             # «iptal olan izinleri tek tek değil, tek seferde silebileyim»).
@@ -16756,6 +16839,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _only = 1 if data.get("only_off") else 0
             if not target_id:
                 return
+            for _r in db.execute("SELECT day FROM shift_grid WHERE week_key=? AND user_id=?" + (" AND code='off'" if _only else ""),
+                                 (wk, target_id)).fetchall():
+                grid_mark_pending(db, target_id, wk, _r["day"])
             _q = "DELETE FROM shift_grid WHERE week_key=? AND user_id=?" + (" AND code='off'" if _only else "")
             _n = db.execute(_q, (wk, target_id)).rowcount
             db.commit()
@@ -16767,13 +16853,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _rng = f"{_a.strftime('%d.%m')}–{(_a + timedelta(days=6)).strftime('%d.%m')}"
             except Exception:
                 _rng = wk
-            await update.message.reply_text(f"🗓 {_nm} · {_rng}: " + ("выходные сняты" if _only else "неделя очищена") + f" ({_n}).")
-            if _n and target_id != user.id:
-                try:
-                    await context.bot.send_message(chat_id=target_id, text=(
-                        f"🗓 Ваш график {_rng}: " + ("выходные сняты владельцем." if _only else "неделя очищена владельцем.")))
-                except Exception:
-                    pass
+            # (owner'a ayrıca bot mesajı yok — uygulama gösteriyor)
+            # Bildirim «Отправить уведомления» ile (owner 2026-10-11).
 
         elif action == "shift_grid_copy":
             # Owner: önceki haftanın planını bu haftaya kopyala (owner 2026-10-06,
@@ -16802,14 +16883,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if not _ok:
                             _skip += 1
                             continue
+                    grid_mark_pending(db, _u, _dst, _d)
                     db.execute("INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                                "VALUES (?,?,?,?,?,?,?)", (_dst, _d, _u, _c, user.id, user.first_name, now.isoformat()))
                     _n += 1
             db.commit()
             log_action(db, "shift_grid_copy", user.id, user.first_name, None, "",
                        {"from": _src, "to": _dst, "cells": _n, "skipped": _skip})
-            await update.message.reply_text(
-                f"🗓 Скопировано смен: {_n}" + (f" · пропущено по правилам: {_skip}" if _skip else ""))
+            if _skip:
+                await update.message.reply_text(f"🗓 Скопировано смен: {_n} · пропущено по правилам: {_skip}")
 
         elif action == "shift_grid_set":
             # График: bir güne vardiya/выходной ata. Kendine выходной koyulabilir;
@@ -16857,6 +16939,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     day0 = int(data.get("day"))
                 except Exception:
                     day0 = 0
+                if target_id != user.id and get_role(db, user.id) == "owner":
+                    grid_mark_pending(db, target_id, wk0, day0)
                 db.execute("DELETE FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
                            (wk0, day0, target_id))
                 db.commit()
@@ -16864,10 +16948,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 log_action(db, "shift_grid_set", user.id, user.first_name, target_id, _nm0,
                            {"week_key": wk0, "day": day0, "code": "none"})
                 _dl0 = grid_day_label(day0)
-                await update.message.reply_text(
-                    f"🗓 {md_safe(_nm0)} · {_dl0} — день освобождён (смена не назначена).",
-                    parse_mode="Markdown")
-                if target_id != user.id:
+                # Owner'a her hücre için bot mesajı yok — uygulama zaten gösteriyor (owner 2026-10-11).
+                if get_role(db, user.id) != "owner":
+                    await update.message.reply_text(
+                        f"🗓 {md_safe(_nm0)} · {_dl0} — день освобождён (смена не назначена).",
+                        parse_mode="Markdown")
+                if target_id != user.id and get_role(db, user.id) != "owner":
                     try:
                         await context.bot.send_message(
                             chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl0} — смена не назначена.")
@@ -16928,6 +17014,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         await cov_after_dispatch(context.bot, db, int(_gap_s["id"]), _st_s, _rows_s,
                                                  requester_uid=target_id)
                         return
+            if target_id != user.id and get_role(db, user.id) == "owner":
+                grid_mark_pending(db, target_id, wk, day)
             db.execute(
                 "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
                 "VALUES (?,?,?,?,?,?,?)",
@@ -16949,9 +17037,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"week_key": wk, "day": day, "code": code})
             _dl = grid_day_label(day)
             _what = "выходной" if code == "off" else f"смена «{code}»"
-            await update.message.reply_text(
-                f"🗓 График обновлён: *{_nm}* · {_dl} → {_what}", parse_mode="Markdown")
-            if target_id != user.id:
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text(
+                    f"🗓 График обновлён: *{_nm}* · {_dl} → {_what}", parse_mode="Markdown")
+            if target_id != user.id and get_role(db, user.id) != "owner":
                 try:
                     await context.bot.send_message(
                         chat_id=target_id, text=f"🗓 Ваш график изменён: {_dl} — {_what}.")
@@ -16999,6 +17088,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.commit()
                 await update.message.reply_text("⚠️ " + _why)
                 return
+            for _uid in (from_id, to_id):
+                grid_mark_pending(db, _uid, wk, day)
             for _uid, _c in ((from_id, "off"), (to_id, code)):
                 db.execute(
                     "INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
@@ -17010,14 +17101,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "shift_reassign", user.id, user.first_name, to_id, _tn,
                        {"week_key": wk, "day": day, "code": code, "from": from_id})
             _dl = grid_day_label(day)
-            await update.message.reply_text(
-                f"🔄 Смена передана: {_dl} · *{_fn}* → *{_tn}*", parse_mode="Markdown")
-            for _uid, _txt in ((from_id, f"🔄 Ваша смена {_dl} передана {_tn}. У вас выходной."),
-                               (to_id, f"🔄 Вам передали смену {_dl} (смена «{code}»).")):
-                try:
-                    await context.bot.send_message(chat_id=_uid, text=_txt)
-                except Exception:
-                    pass
+            # (owner'a ayrıca bot mesajı yok — uygulama gösteriyor)
+            # Çalışanlara bildirim «Отправить уведомления» ile gider (owner 2026-10-11).
 
         # ─── Vardiya ŞABLONU kaydet/sil (owner) ───
         elif action == "shift_tpl_save":
