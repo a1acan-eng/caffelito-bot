@@ -93,12 +93,14 @@ check(gpay(10)['locked'] == 1 and any('Неверный PIN' in (t or '') for c,
 act(10, {'action': 'gdebt_unlock', 'pin': '4321'})
 check(gpay(10)['locked'] == 0 and all(g['bid'] == 1 for g in gpay(10)['guests']), 'doğru PIN → açılır (kendi şubesi)')
 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cur_branch_10','2')"); db.commit()
-check(gpay(10)['guests'] and all(g['bid'] == 2 for g in gpay(10)['guests']), 'şube değiştirince (Magic) o şubenin misafirleri')
+check(gpay(10)['locked'] == 1 and gpay(10)['guests'] == [], 'şube değiştirince (Magic) liste yeniden kilitli — PIN o şube için tekrar girilir (owner 2026-10-11)')
+act(10, {'action': 'gdebt_unlock', 'pin': '4321'})
+check(gpay(10)['guests'] and all(g['bid'] == 2 for g in gpay(10)['guests']), 'Magic için PIN girilince o şubenin misafirleri')
 db.execute("DELETE FROM meta WHERE k='cur_branch_10'"); db.commit()
 act(10, {'action': 'gdebt_lock'})
 check(gpay(10)['locked'] == 1, 'ekrandan çıkınca (gdebt_lock) hemen kilitlenir')
 act(10, {'action': 'gdebt_unlock', 'pin': '4321'})
-_u = db.execute("SELECT val FROM meta WHERE k='gdebt_unl_10'").fetchone()[0]
+_u = db.execute("SELECT val FROM meta WHERE k LIKE 'gdebt_unl_10_%'").fetchone()[0]
 from datetime import datetime as _dt
 check((_dt.fromisoformat(_u) - _dt.now(bot.TZ)).total_seconds() <= 15 * 60 + 5, 'açık kalma en fazla 15 dk')
 act(1, {'action': 'gdebt_pin_set', 'pin': '9999'})
