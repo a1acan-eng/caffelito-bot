@@ -16853,7 +16853,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _rng = f"{_a.strftime('%d.%m')}–{(_a + timedelta(days=6)).strftime('%d.%m')}"
             except Exception:
                 _rng = wk
-            await update.message.reply_text(f"🗓 {_nm} · {_rng}: " + ("выходные сняты" if _only else "неделя очищена") + f" ({_n}).")
+            # (owner'a ayrıca bot mesajı yok — uygulama gösteriyor)
             # Bildirim «Отправить уведомления» ile (owner 2026-10-11).
 
         elif action == "shift_grid_copy":
@@ -16890,8 +16890,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "shift_grid_copy", user.id, user.first_name, None, "",
                        {"from": _src, "to": _dst, "cells": _n, "skipped": _skip})
-            await update.message.reply_text(
-                f"🗓 Скопировано смен: {_n}" + (f" · пропущено по правилам: {_skip}" if _skip else ""))
+            if _skip:
+                await update.message.reply_text(f"🗓 Скопировано смен: {_n} · пропущено по правилам: {_skip}")
 
         elif action == "shift_grid_set":
             # График: bir güne vardiya/выходной ata. Kendine выходной koyulabilir;
@@ -16948,9 +16948,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 log_action(db, "shift_grid_set", user.id, user.first_name, target_id, _nm0,
                            {"week_key": wk0, "day": day0, "code": "none"})
                 _dl0 = grid_day_label(day0)
-                await update.message.reply_text(
-                    f"🗓 {md_safe(_nm0)} · {_dl0} — день освобождён (смена не назначена).",
-                    parse_mode="Markdown")
+                # Owner'a her hücre için bot mesajı yok — uygulama zaten gösteriyor (owner 2026-10-11).
+                if get_role(db, user.id) != "owner":
+                    await update.message.reply_text(
+                        f"🗓 {md_safe(_nm0)} · {_dl0} — день освобождён (смена не назначена).",
+                        parse_mode="Markdown")
                 if target_id != user.id and get_role(db, user.id) != "owner":
                     try:
                         await context.bot.send_message(
@@ -17035,8 +17037,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"week_key": wk, "day": day, "code": code})
             _dl = grid_day_label(day)
             _what = "выходной" if code == "off" else f"смена «{code}»"
-            await update.message.reply_text(
-                f"🗓 График обновлён: *{_nm}* · {_dl} → {_what}", parse_mode="Markdown")
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text(
+                    f"🗓 График обновлён: *{_nm}* · {_dl} → {_what}", parse_mode="Markdown")
             if target_id != user.id and get_role(db, user.id) != "owner":
                 try:
                     await context.bot.send_message(
@@ -17098,8 +17101,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "shift_reassign", user.id, user.first_name, to_id, _tn,
                        {"week_key": wk, "day": day, "code": code, "from": from_id})
             _dl = grid_day_label(day)
-            await update.message.reply_text(
-                f"🔄 Смена передана: {_dl} · *{_fn}* → *{_tn}*", parse_mode="Markdown")
+            # (owner'a ayrıca bot mesajı yok — uygulama gösteriyor)
             # Çalışanlara bildirim «Отправить уведомления» ile gider (owner 2026-10-11).
 
         # ─── Vardiya ŞABLONU kaydet/sil (owner) ───
