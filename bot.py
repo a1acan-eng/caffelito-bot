@@ -5,7 +5,7 @@ CAFFELITO TELEGRAM BOT ☕
 
 import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64, tempfile
 from datetime import datetime, timezone, timedelta
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -597,6 +597,10 @@ def get_db():
     # Borç = (A→B) − (B→A), ürün ve birim başına; geri verilen otomatik düşer.
     # Bizim olmayan noktalar (owner 2026-10-07): bazen bardak alıp veriyoruz.
     # brx_tx'te NEGATİF id (−brx_ext.id) olarak tutulur.
+    # Telegram profil fotoğrafı (owner 2026-10-11): çizelgede baş harf yerine kişinin
+    # kendi Telegram avatarı. none=1 → fotoğrafı yok / gizli (baş harf kalır).
+    db.execute("""CREATE TABLE IF NOT EXISTS avatars (
+        user_id INTEGER PRIMARY KEY, data BLOB, mime TEXT, uid_file TEXT, none INTEGER DEFAULT 0, fetched_at TEXT)""")
     db.execute("""CREATE TABLE IF NOT EXISTS brx_ext (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, by_name TEXT, at TEXT, archived INTEGER DEFAULT 0)""")
     db.execute("""CREATE TABLE IF NOT EXISTS brx_tx (
@@ -1907,6 +1911,78 @@ def order_catalog_season_mig(db):
     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('cat_mig_ow26', '1')")
     db.commit()
     order_catalog_lucky_1l_mig(db)
+
+
+AVA_TTL_H = 24          # avatar bu kadar saatte bir tazelenir
+
+
+def ava_sig(uid):
+    """Avatar bağlantısı imzası — başkası id deneyerek fotoğraf toplayamasın."""
+    return hmac.new(("nero-ava:" + str(BOT_TOKEN)).encode(), str(int(uid)).encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def ava_map(db):
+    """{uid: "/ava/<uid>.jpg?v=..&s=.."} — yalnız fotoğrafı olanlar."""
+    out = {}
+    try:
+        for r in db.execute("SELECT user_id, fetched_at, uid_file FROM avatars WHERE COALESCE(none,0)=0 AND data IS NOT NULL").fetchall():
+            v = (r["uid_file"] or r["fetched_at"] or "")[-10:]
+            out[str(r["user_id"])] = f"/ava/{int(r['user_id'])}.jpg?v={quote(v)}&s={ava_sig(r['user_id'])}"
+    except Exception as e:
+        logger.warning(f"ava_map: {e}")
+    return out
+
+
+async def ava_fetch(bot_obj, db, uid):
+    """Kişinin Telegram profil fotoğrafını (en küçük boy ≥ 160px) indir ve sakla."""
+    now_s = datetime.now(TZ).isoformat()
+    try:
+        ph = await bot_obj.get_user_profile_photos(int(uid), limit=1)
+        if not ph or not ph.photos:
+            db.execute("INSERT OR REPLACE INTO avatars (user_id, data, mime, uid_file, none, fetched_at) VALUES (?,NULL,NULL,NULL,1,?)",
+                       (int(uid), now_s))
+            db.commit()
+            return False
+        sizes = sorted(ph.photos[0], key=lambda z: (z.width or 0))
+        pick = next((z for z in sizes if (z.width or 0) >= 160), sizes[-1])
+        old = db.execute("SELECT uid_file FROM avatars WHERE user_id=?", (int(uid),)).fetchone()
+        if old and old["uid_file"] == pick.file_unique_id:
+            db.execute("UPDATE avatars SET fetched_at=?, none=0 WHERE user_id=?", (now_s, int(uid)))
+            db.commit()
+            return True
+        f = await bot_obj.get_file(pick.file_id)
+        data = bytes(await f.download_as_bytearray())
+        db.execute("INSERT OR REPLACE INTO avatars (user_id, data, mime, uid_file, none, fetched_at) VALUES (?,?,?,?,0,?)",
+                   (int(uid), sqlite3.Binary(data), "image/jpeg", pick.file_unique_id, now_s))
+        db.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"ava_fetch {uid}: {e}")
+        try:
+            db.execute("INSERT OR IGNORE INTO avatars (user_id, none, fetched_at) VALUES (?,1,?)", (int(uid), now_s))
+            db.execute("UPDATE avatars SET fetched_at=? WHERE user_id=?", (now_s, int(uid)))
+            db.commit()
+        except Exception:
+            pass
+        return False
+
+
+async def ava_loop(app):
+    """Onaylı çalışanların avatarlarını günde bir tazele (yeni foto koyan da görünsün)."""
+    await asyncio.sleep(25)
+    while True:
+        try:
+            db = get_db()
+            lim = (datetime.now(TZ) - timedelta(hours=AVA_TTL_H)).isoformat()
+            for r in db.execute(
+                    "SELECT u.user_id FROM users u LEFT JOIN avatars a ON a.user_id=u.user_id "
+                    "WHERE COALESCE(u.archived,0)=0 AND COALESCE(u.approved,0)=1 "
+                    "AND (a.user_id IS NULL OR a.fetched_at IS NULL OR a.fetched_at < ?)", (lim,)).fetchall():
+                await ava_fetch(app.bot, db, r["user_id"])
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"ava_loop: {e}")
+        await asyncio.sleep(3600)
 
 
 def brx_place(db, pid):
@@ -8084,6 +8160,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _reqs = []
     parts.append(f"shift_grid={quote(json.dumps(_grid, ensure_ascii=False))}")
     parts.append(f"dayoff_reqs={quote(json.dumps(_reqs, ensure_ascii=False))}")
+    if not is_observer(db, user_id):
+        parts.append(f"ava={quote(json.dumps(ava_map(db), ensure_ascii=False))}")
     # Misafir borçları + şubeler arası alışveriş — HERKES görür (gözlemci hariç).
     if not is_observer(db, user_id):
         try:
@@ -18126,6 +18204,7 @@ async def setup_commands(app):
     asyncio.create_task(off7_loop(app))
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
+    asyncio.create_task(ava_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -18321,6 +18400,21 @@ async def web_image(request):
     if not os.path.exists(path):
         return web.Response(status=404)
     return web.FileResponse(path)
+
+
+async def web_ava(request):
+    """/ava/<uid>.jpg?s=<imza> — çalışanın Telegram avatarı (önbellekten)."""
+    try:
+        uid = int(request.match_info.get("uid", "0"))
+    except Exception:
+        return web.Response(status=404)
+    if not hmac.compare_digest(str(request.query.get("s", "")), ava_sig(uid)):
+        return web.Response(status=403)
+    r = get_db().execute("SELECT data, mime FROM avatars WHERE user_id=? AND COALESCE(none,0)=0", (uid,)).fetchone()
+    if not r or not r["data"]:
+        return web.Response(status=404)
+    return web.Response(body=bytes(r["data"]), content_type=r["mime"] or "image/jpeg",
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 async def web_health(request):
@@ -18862,6 +18956,7 @@ async def start_web_server(app):
         web.get("/", web_index),
         web.get("/index.html", web_index),
         web.get("/health", web_health),
+        web.get("/ava/{uid:\\d+}.jpg", web_ava),
         web.get("/app", web_app_current),
         web.get("/nero/{path:.+}", web_nero),
         web.get("/{fname:.+\\.jpg}", web_image),
