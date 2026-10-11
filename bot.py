@@ -619,7 +619,7 @@ def get_db():
     # Paket boyutu (owner 2026-10-10): «пачка» kaç adet — owner ayarlar; giriş
     # пачка ya da шт ile yapılabilir, bakiye adette toplanır.
     # Dış nokta türü: own=1 → bizim (sistemde şube değil), 0 → başka sahibin.
-    for _tb, _cl in (("brx_items", "pack INTEGER"), ("brx_ext", "own INTEGER DEFAULT 0"),
+    for _tb, _cl in (("brx_items", "pack INTEGER"), ("brx_ext", "own INTEGER DEFAULT 0"), ("brx_ext", "waste INTEGER DEFAULT 0"),
                      ("brx_tx", "edited_by TEXT"), ("brx_tx", "edited_at TEXT")):
         try:
             db.execute(f"ALTER TABLE {_tb} ADD COLUMN {_cl}")
@@ -2046,11 +2046,40 @@ def brx_norm(packs, item, unit, qty):
     return k, u, q
 
 
+def brx_waste_ids(db):
+    """«Брак / списание» noktalarının (negatif) id'leri. Adı «брак» olan eski noktalar da
+    sayılır ve işaretlenir (owner 2026-10-11: брак borç değil, kimse geri getirmez)."""
+    try:
+        # SQLite LOWER() Kiril harfleri küçültmez → eşleme Python'da.
+        _mark = [r["id"] for r in db.execute("SELECT id, name FROM brx_ext WHERE COALESCE(waste,0)=0").fetchall()
+                 if " ".join(str(r["name"] or "").split()).lower() in ("брак", "brak", "списание")]
+        if _mark:
+            db.execute(f"UPDATE brx_ext SET waste=1 WHERE id IN ({','.join('?' for _ in _mark)})", tuple(_mark))
+            db.commit()
+        return {-int(r["id"]) for r in db.execute("SELECT id FROM brx_ext WHERE COALESCE(waste,0)=1").fetchall()}
+    except Exception:
+        return set()
+
+
+def brx_waste_id(db):
+    """Tek «Брак» noktası (yoksa oluşturulur) → negatif id."""
+    ids = brx_waste_ids(db)
+    if ids:
+        return max(ids)        # en eski (id'si en küçük) → negatifte en büyük
+    _id = db.execute("INSERT INTO brx_ext (name, by_name, at, own, waste) VALUES ('Брак','Nero',?,1,1)",
+                     (datetime.now(TZ).isoformat(),)).lastrowid
+    db.commit()
+    return -_id
+
+
 def brx_balance(db):
-    """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b."""
-    out, packs = {}, brx_packs(db)
+    """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b.
+    Брак/списание kayıtları borç DEĞİLDİR — bakiyeye girmez."""
+    out, packs, waste = {}, brx_packs(db), brx_waste_ids(db)
     for r in db.execute("SELECT from_bid, to_bid, item, unit, qty FROM brx_tx WHERE COALESCE(voided,0)=0").fetchall():
         f, t = int(r["from_bid"] or 0), int(r["to_bid"] or 0)
+        if f in waste or t in waste:
+            continue
         a, b, sg = (f, t, 1) if f < t else (t, f, -1)
         ik, u, q = brx_norm(packs, r["item"], r["unit"], r["qty"])
         k = (ik, u)
@@ -8215,7 +8244,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
             _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт", "pk": int(r["pack"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
-            _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0)} for r in db.execute(
+            brx_waste_id(db)
+            _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0), "w": int(r["waste"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
             parts.append(f"exp_names={quote(json.dumps(exp_names(db), ensure_ascii=False))}")
@@ -16612,7 +16642,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "brx_void", user.id, user.first_name, None, _t["item"] or "",
                                {"tx": _t["id"], "qty": _t["qty"]})
                 return
-            _f, _t2 = brx_resolve(db, data.get("from"), _shown), brx_resolve(db, data.get("to"), _shown)
+            _f = brx_resolve(db, data.get("from"), _shown)
+            _t2 = brx_waste_id(db) if data.get("to") == "waste" else brx_resolve(db, data.get("to"), _shown)
+            if _f in brx_waste_ids(db):
+                await update.message.reply_text("❌ Из брака ничего не возвращается.")
+                return
             try:
                 _q = round(float(str(data.get("qty") or 0).replace(",", ".")), 3)
             except Exception:
@@ -16661,10 +16695,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        {"from": _fn, "to": _tn, "items": [{"item": a, "unit": b, "qty": c} for a, b, c in _lines]})
             from html import escape as esc_html
             _qf = lambda v: (str(int(v)) if v == int(v) else str(v).replace(".", ","))
+            _wst = _t2 in brx_waste_ids(db)
+            _nt = str(data.get("note") or "").strip()
             await branch_group_say(context.bot, db, (_f, _t2),
-                f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n"
+                (f"🗑 <b>{esc_html(_fn)} · брак / списание</b>\n" if _wst else f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n")
                 + "\n".join(f"• {esc_html(a)} — <b>{_qf(c)} {esc_html(b)}</b>" for a, b, c in _lines)
-                + f"\nпередал(а): {esc_html(_shown)}")
+                + (f"\nпричина: {esc_html(_nt)}" if (_wst and _nt) else "")
+                + (f"\nсписал(а): {esc_html(_shown)}" if _wst else f"\nпередал(а): {esc_html(_shown)}"))
 
         elif action == "shift_grid_clear_week":
             # Owner: bir kişinin haftasını tek seferde temizle (owner 2026-10-11:
