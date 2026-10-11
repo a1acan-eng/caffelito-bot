@@ -2115,6 +2115,20 @@ def grid_week_key(week_offset):
     return monday.isoformat()
 
 
+def grid_off_week_msg(wk):
+    """Çalışan kendine izin YALNIZ GELECEK HAFTAYA alır (owner 2026-10-11): bu hafta
+    başladıysa izin yok, iki hafta sonrası da henüz açık değil. Uygunsa '' döner."""
+    nxt = grid_week_key(1)
+    if wk == nxt:
+        return ""
+    try:
+        a = datetime.fromisoformat(nxt).date()
+        rng = f"{a.strftime('%d.%m')}–{(a + timedelta(days=6)).strftime('%d.%m')}"
+    except Exception:
+        rng = ""
+    return f"Выходной можно взять только на следующую неделю ({rng})."
+
+
 # ─── VARDİYA PLANI KURAL MOTORU ─────────────────────────────────────────────
 # Tek kaynak: hem eylemler hem testler buradan geçer. Kurallar iki yerde ayrı
 # yazılırsa er ya da geç ayrışır ve plan sessizce tutarsız hâle gelir.
@@ -16652,6 +16666,41 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 + "\n".join(f"• {esc_html(a)} — <b>{_qf(c)} {esc_html(b)}</b>" for a, b, c in _lines)
                 + f"\nпередал(а): {esc_html(_shown)}")
 
+        elif action == "shift_grid_clear_week":
+            # Owner: bir kişinin haftasını tek seferde temizle (owner 2026-10-11:
+            # «iptal olan izinleri tek tek değil, tek seferde silebileyim»).
+            # only_off=1 → yalnız OFF'lar; aksi → o haftadaki tüm hücreler. Tek bildirim.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target_uid") or 0)
+            except Exception:
+                target_id = 0
+            wk = grid_week_key(data.get("week"))
+            _only = 1 if data.get("only_off") else 0
+            if not target_id:
+                return
+            _q = "DELETE FROM shift_grid WHERE week_key=? AND user_id=?" + (" AND code='off'" if _only else "")
+            _n = db.execute(_q, (wk, target_id)).rowcount
+            db.commit()
+            _nm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "shift_grid_clear_week", user.id, user.first_name, target_id, _nm,
+                       {"week_key": wk, "only_off": _only, "cells": _n})
+            try:
+                _a = datetime.fromisoformat(wk).date()
+                _rng = f"{_a.strftime('%d.%m')}–{(_a + timedelta(days=6)).strftime('%d.%m')}"
+            except Exception:
+                _rng = wk
+            await update.message.reply_text(f"🗓 {_nm} · {_rng}: " + ("выходные сняты" if _only else "неделя очищена") + f" ({_n}).")
+            if _n and target_id != user.id:
+                try:
+                    await context.bot.send_message(chat_id=target_id, text=(
+                        f"🗓 Ваш график {_rng}: " + ("выходные сняты владельцем." if _only else "неделя очищена владельцем.")))
+                except Exception:
+                    pass
+
         elif action == "shift_grid_copy":
             # Owner: önceki haftanın planını bu haftaya kopyala (owner 2026-10-06,
             # yeni çizelge «Скопировать прошлую неделю»). Yalnız verilen kişiler,
@@ -16773,6 +16822,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # biri hastalandığında ya da acil bir durumda owner üçüncü izni
             # veremiyordu. Owner sınırın üstünde de atayabilir — sorumluluk onda.
             if code == "off" and get_role(db, user.id) != "owner":
+                if grid_off_week_msg(wk):
+                    await update.message.reply_text("⚠️ " + grid_off_week_msg(wk))
+                    return
                 _ok2, _why2 = grid_off_allowed(db, wk, target_id, day)
                 if _ok2:
                     _ok2, _why2, _ = grid_off_gap(db, wk, target_id, day)
@@ -17026,6 +17078,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # kuralın aşıldığı yazılır.
             if grid_day_past(wk, day):
                 await update.message.reply_text("⚠️ Этот день уже прошёл.")
+                return
+            if get_role(db, user.id) != "owner" and grid_off_week_msg(wk):
+                await update.message.reply_text("⚠️ " + grid_off_week_msg(wk))
                 return
             _over = []
             _ok, _why = grid_off_allowed(db, wk, user.id, day)
