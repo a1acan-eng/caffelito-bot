@@ -4203,8 +4203,12 @@ def op_register(db, shift_row, why=None):
         # en yakin baslamis pencere»ye bakar ve anlasip ERKEN gelen kisi 1.
         # vardiyaya saatlerce «gec kalmis» sayilirdi (owner 2026-09-22).
         sched = _pend = _src = None
+        # PARALEL VARDİYA (owner 2026-10-13): pozisyon doluyken açılan ek vardiya
+        # şube penceresine «geç kalmış» SAYILMAZ (öğlen gelen yardımcı 07:00'ye
+        # 5 saat geç değildir). Yalnız kişinin KENDİ График planı ölçülür; yoksa ceza yok.
+        _par = "параллель" in str(sh.get("note") or "")
         try:
-            if ho_enabled(cfg) and not ho_solo(db, bid, actual) and ho_shift_is_barista(db, sh):
+            if not _par and ho_enabled(cfg) and not ho_solo(db, bid, actual) and ho_shift_is_barista(db, sh):
                 ho_void_non_barista(db)
                 _hr2 = db.execute(
                     "SELECT b2_start, sched_end FROM handover WHERE branch_id=? AND finalized=0 "
@@ -4218,7 +4222,10 @@ def op_register(db, shift_row, why=None):
             logger.warning(f"op_register handover plan: {_e_hs}")
             sched = None
         if sched is None:
-            sched, _pend, _src = op_planned(db, cfg, int(sh.get("user_id") or 0), bid, actual)
+            sched, _pend, _src = op_planned(db, (dict(cfg, windows={}) if _par else cfg),
+                                            int(sh.get("user_id") or 0), bid, actual)
+        if not sched and _par:
+            _why.append("параллельная смена — в Графике нет своего плана, опозданием не считается"); return None
         if not sched:
             _haswin = bool((cfg.get("windows") or {}).get(str(bid)))
             _why.append("смены филиала не заданы в настройках (нажмите Сохранить в «Смены по филиалам»)"
@@ -7065,7 +7072,7 @@ def _parse_user_time(s):
     return None
 
 
-def start_shift(db, user_id, custom_start=None, branch_id=None):
+def start_shift(db, user_id, custom_start=None, branch_id=None, note=""):
     """
     Aktif vardiya yoksa yeni başlat. Varsa onu döner.
     custom_start: ISO string veya 'HH:MM' (telefon kapanmışsa geriye dönük başlatma).
@@ -7128,7 +7135,7 @@ def start_shift(db, user_id, custom_start=None, branch_id=None):
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, 0.0, json.dumps({}), 0, 0, 0,
          start_dt.strftime("%Y-%m-%d"), period, now.isoformat(),
-         start_dt.isoformat(), None, "", bid,
+         start_dt.isoformat(), None, str(note or ""), bid,
          _role, _pi.get("cat_id"), _pi.get("cat_name") or "", int(_pi.get("rate") or 0)))
     db.commit()
     _row = db.execute("SELECT * FROM shifts WHERE id=?", (cur.lastrowid,)).fetchone()
@@ -10871,7 +10878,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             _early_plan = _b2s
             except Exception as _e_er:
                 logger.warning(f"handover early arrival: {_e_er}")
-            sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch)
+            sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch,
+                             note=("параллельная смена" if _mode == "parallel" else ""))
             if _early_real is not None:
                 # Vardiya GERCEK saatte acilir, sonra baslangic PLANA cekilir.
                 # (start_shift gelecek saati kabul etmez — «erken geldim, ucret
@@ -13190,10 +13198,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # start_shift doğrular: gelecek clamp + AYNI ROL devir klampesi (önceki bitişten
             # önceye yazılamaz) + rol/kategori/ставка şube-etkin konfigürasyondan SNAPSHOT.
             _req_st = data.get("start_time") or None
-            sh = start_shift(db, target_id, custom_start=_req_st, branch_id=_fbid)
+            _fpar = bool(_blk)          # pozisyon dolu → paralel (gecikme şube penceresinden ölçülmez)
+            sh = start_shift(db, target_id, custom_start=_req_st, branch_id=_fbid,
+                             note=("параллельная смена" if _fpar else ""))
             # Audit: owner-elle-başlatma vardiya notuna da işlensin (log_action'a ek)
             try:
-                db.execute("UPDATE shifts SET note=? WHERE id=?", ("начато владельцем", sh["id"]))
+                db.execute("UPDATE shifts SET note=? WHERE id=?",
+                           ("начато владельцем" + (" · параллельная смена" if _fpar else ""), sh["id"]))
                 db.commit()
             except Exception:
                 pass
