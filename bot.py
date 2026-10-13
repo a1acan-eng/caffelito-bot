@@ -591,6 +591,13 @@ def get_db():
         db.execute("ALTER TABLE guests ADD COLUMN free INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    # Сейф долгов (2026-10-13): kapanışta yazılan kayıt HEMEN saklanır; hangi vardiyada
+    # yazıldığı (shift_id) ve çift gönderimi önleyen istemci kimliği (rid) tutulur.
+    for _gc in ("shift_id INTEGER", "rid TEXT"):
+        try:
+            db.execute(f"ALTER TABLE guest_tx ADD COLUMN {_gc}")
+        except sqlite3.OperationalError:
+            pass
     # ─── ŞUBELER ARASI MAL ALIŞVERİŞİ (owner 2026-10-06) ───
     # Franchise: her şubenin hesabı ayrı; birinden diğerine bardak/süt/kahve
     # verilince «kim kime ne borçlu» tutulur. Bir satır = bir teslim (from → to).
@@ -1781,6 +1788,20 @@ def gdebt_add_tx(db, guest_id, kind, amount, branch_id, by_id, by_name, note="",
                      (int(guest_id), int(branch_id or 0), kind, int(amount), (note or "")[:200], report_id,
                       by_id, by_name, datetime.now(TZ).isoformat()))
     return cur.lastrowid
+
+
+GDEBT_SAFE_MAX = 100_000_000      # tek kayıt üst sınırı (yanlış sıfır eklemeye karşı)
+
+
+def gdebt_shift_rows(db, user_id, shift_id):
+    """Kişinin O VARDİYADA сейфe yazdığı kayıtlar — yalnız kendi kayıtları (ad, tür, tutar)."""
+    if not shift_id:
+        return []
+    return [{"id": r["id"], "n": r["name"] or "?", "k": r["kind"], "a": int(r["amount"] or 0),
+             "note": r["note"] or "", "at": r["at"] or ""}
+            for r in db.execute("SELECT t.id, t.kind, t.amount, t.note, t.at, g.name FROM guest_tx t "
+                                "LEFT JOIN guests g ON g.id=t.guest_id WHERE t.by_id=? AND t.shift_id=? "
+                                "AND COALESCE(t.voided,0)=0 ORDER BY t.id", (int(user_id), int(shift_id))).fetchall()]
 
 
 def gdebt_guest_get_or_create(db, guest_id, name, branch_id, by_id, by_name):
@@ -8300,6 +8321,13 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                             for g in db.execute("SELECT id, name, branch_id, free FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
                             if not _ob or int(g["branch_id"] or 0) == int(_ob)]
             parts.append(f"gdebt={quote(json.dumps(_gv, ensure_ascii=False))}")
+            # Сейф: kişinin BU açık vardiyada yazdığı kendi kayıtları (kapanış ekranı listesi).
+            try:
+                _ash = get_active_shift(db, user_id)
+                parts.append("gd_shift=" + quote(json.dumps(
+                    gdebt_shift_rows(db, user_id, _ash["id"] if _ash else 0), ensure_ascii=False)))
+            except Exception as e:
+                logger.warning(f"gd_shift payload: {e}")
             try:
                 parts.append(f"brx_cups={quote(json.dumps(brx_cup_pending(db, acting_branch_id(db, user_id)), ensure_ascii=False))}")
             except Exception as e:
@@ -14519,6 +14547,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 _crid = db.execute("SELECT id FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
                                    (user.id,)).fetchone()
+                # Сейф: vardiya içinde ZATEN kaydedilmiş satırlar rapora eklenir (tekrar yazılmaz).
+                _lsh = db.execute("SELECT id FROM shifts WHERE user_id=? ORDER BY id DESC LIMIT 1", (user.id,)).fetchone()
+                if _lsh:
+                    for _sr in gdebt_shift_rows(db, user.id, _lsh["id"]):
+                        _gd_lines.append((_sr["k"], _sr["n"], _sr["a"]))
+                    if _crid:
+                        db.execute("UPDATE guest_tx SET report_id=? WHERE by_id=? AND shift_id=? AND report_id IS NULL",
+                                   (_crid["id"], user.id, _lsh["id"]))
                 for _gq in (data.get("gdebts") or [])[:30]:
                     if not isinstance(_gq, dict) or _gq.get("k") not in ("debt", "pay", "dep", "free"):
                         continue
@@ -16514,6 +16550,86 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_fk, f"{0 if _u2 else _fn}|{_u2}"))
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
+
+        elif action in ("gdebt_safe_add", "gdebt_safe_void"):
+            # СЕЙФ ДОЛГОВ (2026-10-13): kapanış ekranından kayıt — HEMEN saklanır,
+            # vardiyayı/raporu KAPATMAZ. Yalnız YAZMA: liste, bakiye, kasa döndürülmez.
+            # Yetki SUNUCUDA: gözlemci yok; çalışan yalnız AÇIK vardiyası varken ve
+            # yalnız ŞU AN çalıştığı şubeye yazar (istemcinin şube/misafir id'si güvenilmez).
+            db = get_db()
+            def _res(ok, **kw):
+                try:
+                    context.result = dict({"ok": bool(ok)}, **kw)
+                except Exception:
+                    pass
+            if is_observer(db, user.id):
+                _res(False, error="Наблюдателю недоступно.")
+                return
+            _own = get_role(db, user.id) == "owner"
+            _sh = get_active_shift(db, user.id)
+            if not _sh and not _own:
+                _res(False, error="Нет открытой смены — записать в сейф можно только во время смены.")
+                return
+            _sid = int(_sh["id"]) if _sh else None
+            _bid = int((_sh["branch_id"] if _sh and _sh["branch_id"] else 0) or acting_branch_id(db, user.id) or 0)
+            _shown = display_name_for(db, user.id, fallback=user.first_name)
+            if action == "gdebt_safe_void":
+                try:
+                    _tid = int(data.get("id") or 0)
+                except Exception:
+                    _tid = 0
+                _t = db.execute("SELECT * FROM guest_tx WHERE id=? AND COALESCE(voided,0)=0", (_tid,)).fetchone()
+                # Yalnız KENDİ kaydını ve yalnız AYNI açık vardiyada geri alabilir.
+                if not _t or int(_t["by_id"] or 0) != user.id or not _sid or int(_t["shift_id"] or 0) != _sid:
+                    _res(False, error="Эту запись удалить нельзя.")
+                    return
+                db.execute("UPDATE guest_tx SET voided=1 WHERE id=?", (_tid,))
+                db.commit()
+                log_action(db, "gdebt_safe_void", user.id, user.first_name, None, "", {"tx": _tid, "amount": _t["amount"]})
+                _res(True, rows=gdebt_shift_rows(db, user.id, _sid))
+                return
+            _rid = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("rid") or ""))[:40]
+            if _rid:
+                _dup = db.execute("SELECT id FROM guest_tx WHERE by_id=? AND rid=?", (user.id, _rid)).fetchone()
+                if _dup:   # aynı form iki kez gönderildi → ikinci kayıt YOK
+                    _res(True, dup=True, rows=gdebt_shift_rows(db, user.id, _sid))
+                    return
+            _k = str(data.get("k") or "")
+            if _k not in ("debt", "pay", "dep"):
+                _res(False, error="Выберите тип записи.")
+                return
+            _nm = " ".join(str(data.get("n") or "").split())[:60]
+            if not _nm:
+                _res(False, error="Укажите имя гостя.")
+                return
+            try:
+                _a = int(str(data.get("a") or "0").replace(" ", "").replace(".", ""))
+            except Exception:
+                _a = 0
+            if _a <= 0 or _a > GDEBT_SAFE_MAX:
+                _res(False, error="Неверная сумма.")
+                return
+            _note = " ".join(str(data.get("note") or "").split())[:200]
+            # Misafir: verilen id yalnız AYNI şubenin misafiriyse; yoksa adla bul/oluştur.
+            try:
+                _gid = int(data.get("g") or 0)
+            except Exception:
+                _gid = 0
+            if _gid:
+                _g = db.execute("SELECT id, branch_id FROM guests WHERE id=? AND COALESCE(archived,0)=0", (_gid,)).fetchone()
+                if not _g or (not _own and int(_g["branch_id"] or 0) != _bid):
+                    _gid = 0
+            if not _gid:
+                _gid = gdebt_guest_get_or_create(db, 0, _nm, _bid, user.id, _shown)
+            _txid = gdebt_add_tx(db, _gid, _k, _a, _bid, user.id, _shown, _note)
+            if not _txid:
+                _res(False, error="Не удалось сохранить.")
+                return
+            db.execute("UPDATE guest_tx SET shift_id=?, rid=? WHERE id=?", (_sid, _rid or None, _txid))
+            db.commit()
+            log_action(db, "gdebt_safe_add", user.id, user.first_name, None, _nm,
+                       {"tx": _txid, "kind": gdebt_kind_for(db, _gid, _k), "amount": _a, "shift_id": _sid, "branch_id": _bid})
+            _res(True, rows=gdebt_shift_rows(db, user.id, _sid))
 
         elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del", "gdebt_tx_edit", "gdebt_guest_edit", "gdebt_guest_free"):
             # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
@@ -18581,6 +18697,7 @@ class _ShimContext:
         except Exception:
             self.user_data = {}
         self.chat_data = {}
+        self.result = None        # eylem sonucunu istemciye döndürmek isteyenler doldurur
 
 
 def _cors(resp):
@@ -19137,6 +19254,10 @@ async def api_action(request):
         # gerçek istisnası görünsün. İstemci sessizce başarılı sanmasın diye 500.
         logger.exception(f"api_action handle_webapp_data FAILED uid={user.get('id')} data={str(data_str)[:200]}")
         return _cors(web.json_response({"error": str(e)}, status=500))
+    # Bazı eylemler (Сейф долгов) sonucu doğrudan döner: ok/hata/kayıt.
+    _res = getattr(shim_context, "result", None)
+    if isinstance(_res, dict):
+        return _cors(web.json_response(_res))
     return _cors(web.json_response({"ok": True}))
 
 
