@@ -31,6 +31,8 @@ check(a21 is not None and a21['note'] == 'параллельная смена', 
 check(not any('должен завершить' in (t or '') for c, t in sent), '«…должен завершить» mesajı yok')
 check(any('параллельно' in (t or '') and 'U20' in (t or '') for c, t in sent), 'kime paralel olduğu söylendi (shim adı U20)')
 check(bot.get_active_shift(db, 20) is not None, 'Акмаль\'ın vardiyası açık kaldı')
+on = bot.on_now_rows(db, 21)
+check([x['nm'] for x in on] == ['U20'] and 'rate' not in on[0], 'on_now: Убай şubede Акмаль\'ı görür (kendisi ve para yok)')
 # «Нет позиции ассистента» (owner ayarı) hâlâ engel
 cid = db.execute("INSERT INTO salary_categories (name, hourly_rate, slot_role, does_kasa, active) VALUES ('Стажёр X', 15000, 'assistant', 0, 1)").lastrowid
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized,salary_cat_id) VALUES (22,'Стаж','barista',2,1,1,?)", (cid,))

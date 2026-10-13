@@ -1397,6 +1397,25 @@ def slot_occupant(db, branch_id, role):
         return None
 
 
+def on_now_rows(db, user_id):
+    """Kişinin (oturum) şubesinde ŞU AN açık başka vardiyalar — yalnız ad, saat, rol.
+    Para alanı YOK. Çalışan «kim vardiyada» görsün diye (owner 2026-10-13)."""
+    try:
+        bid = int(acting_branch_id(db, user_id) or 0)
+        if not bid:
+            return []
+        return [{"nm": r["nm"] or "?", "st": r["st"] or "", "role": r["role"] or "barista"}
+                for r in db.execute(
+                    "SELECT COALESCE(u.display_name,u.name,'?') AS nm, s.start_time AS st, "
+                    "COALESCE(s.shift_role,'barista') AS role FROM shifts s "
+                    "LEFT JOIN users u ON u.user_id=s.user_id "
+                    "WHERE s.end_time IS NULL AND s.start_time IS NOT NULL "
+                    "AND COALESCE(s.branch_id,1)=? AND s.user_id!=? ORDER BY s.start_time",
+                    (bid, int(user_id))).fetchall()]
+    except Exception:
+        return []
+
+
 def slot_block_reason(db, user_id, branch_id):
     """Kullanıcı bu şubede vardiya başlatabilir mi? None=serbest, str=dostça engel mesajı.
     ROL her zaman kişinin (şube-etkin) kategorisinden gelir — toggle rolü değiştirmez.
@@ -8277,6 +8296,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"prod_report={quote(json.dumps(get_product_report(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
         f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
+        f"on_now={quote(json.dumps(on_now_rows(db, user_id), ensure_ascii=False))}",
         f"ts={ts}",
     ]
     # ── График смен: kaydedilen plan + выходной заявкаları geri gönderilir.
