@@ -45,4 +45,19 @@ db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,a
 db.commit()
 act(1, {'action': 'force_start_shift', 'target': 23, 'branch_id': 2})
 check(bot.get_active_shift(db, 23) is not None, 'owner üçüncü kişiyi de başlatabildi')
+# График esas: owner kişiyi bugün Magic'e koyduysa — uygulama C5 gönderse bile Magic'te,
+# asistan pozisyonu kapalı olsa bile açılır.
+from datetime import datetime, timedelta
+now = datetime.now(bot.TZ).replace(tzinfo=None)
+d = now.date() if now.hour >= 6 else now.date()
+mon = d - timedelta(days=d.weekday())
+db.execute("INSERT OR REPLACE INTO shift_templates (code, branch_id, start_t, end_t, active) VALUES ('MG', 2, '08:00', '20:00', 1)")
+db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized,salary_cat_id) VALUES (24,'Стаж2','barista',1,1,1,?)", (cid,))
+db.execute("INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code) VALUES (?,?,?,?)", (mon.isoformat(), d.weekday(), 24, 'MG'))
+db.commit()
+check(bot.grid_branch_for(db, 24, now) == 2, 'grid_branch_for: bugün Magic')
+act(24, {'action': 'shift_start', 'branch_id': 1})
+a24 = bot.get_active_shift(db, 24)
+check(a24 is not None, 'grafikteki stajyer açtı (asistan pozisyonu kapalıyken bile)')
+check(a24 is not None and int(a24['branch_id'] or 0) == 2, 'vardiya grafikteki şubede (Magic) açıldı')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)

@@ -4039,6 +4039,27 @@ def op_scheduled(db, user_id, when_dt, tpls=None):
         return None, ""
 
 
+def grid_branch_for(db, user_id, when_dt):
+    """График'te bu kişinin BUGÜNKÜ vardiyasının şubesi (yoksa None).
+    Gece yarısından sonra (06:00'ya kadar) dünkü vardiyaya da bakılır."""
+    try:
+        tpls = grid_templates(db)
+        days = [when_dt.date()] + ([when_dt.date() - timedelta(days=1)] if when_dt.hour < 6 else [])
+        for d in days:
+            monday = d - timedelta(days=d.weekday())
+            row = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                             (monday.isoformat(), int(d.weekday()), int(user_id))).fetchone()
+            code = row["code"] if row else ""
+            if not code or code in ("off", "sick"):
+                continue
+            t = tpls.get(code) or {}
+            if t.get("branch_id"):
+                return int(t["branch_id"])
+    except Exception as e:
+        logger.warning(f"grid_branch_for: {e}")
+    return None
+
+
 def op_window_for(cfg, branch_id, when_dt, early_tol=60):
     """Şube pencerelerinden bu başlangıca uyan vardiya → (planlı_başlangıç, planlı_bitiş).
 
@@ -10725,6 +10746,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid_chk = None
             if not _bid_chk:
                 _bid_chk = user_branch_id(db, user.id)
+            # ── GRAFİK ESAS (owner 2026-10-13): owner bugün kişiyi hangi şubeye koyduysa
+            # vardiya ORADA açılır ve pozisyon/asistan engeline takılmaz (paralel açılır).
+            _grid_bid = grid_branch_for(db, user.id, datetime.now(TZ).replace(tzinfo=None))
+            if _grid_bid and get_branch(db, _grid_bid):
+                if int(_grid_bid) != int(_bid_chk or 0):
+                    sel_branch = _grid_bid
+                _bid_chk = int(_grid_bid)
+            else:
+                _grid_bid = None
             # ── PARALEL VARDİYA: aynı rol pozisyonu DOLUYSA artık otomatik engellemez.
             # Kullanıcı client'ta seçti (shift_mode=takeover|parallel) → "занята" engeli
             # bypass edilir; her ikisi de BAĞIMSIZ yeni vardiya başlatır (kayıt birleşmez,
@@ -10781,6 +10811,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # PARALEL açılır (her biri kendi vardiyasını kapatır); kişiye bilgi verilir.
             # Yalnız «Нет позиции ассистента» (owner ayarı) hâlâ engeldir.
             _par_note = ""
+            if _blk and _grid_bid and "Нет позиции" in _blk:
+                _blk = None     # графиkte bu şubeye konmuş → pozisyon ayarı engel değil
             if _blk and "Нет позиции" not in _blk and _mode not in ("takeover", "parallel") and not _solo_bypass:
                 _occ = None
                 try:
