@@ -10746,14 +10746,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid_chk = None
             if not _bid_chk:
                 _bid_chk = user_branch_id(db, user.id)
-            # ── GRAFİK ESAS (owner 2026-10-13): owner bugün kişiyi hangi şubeye koyduysa
-            # vardiya ORADA açılır ve pozisyon/asistan engeline takılmaz (paralel açılır).
+            # ── GRAFİK = EK İZİN (owner 2026-10-13): şubeyi DEĞİŞTİRMEZ. Kişi bugün
+            # графикте bu şubeye konmuşsa pozisyon/asistan kuralına takılmadan açar
+            # (paralel). Başka şubede açıyorsa normal kurallar geçerli.
             _grid_bid = grid_branch_for(db, user.id, datetime.now(TZ).replace(tzinfo=None))
-            if _grid_bid and get_branch(db, _grid_bid):
-                if int(_grid_bid) != int(_bid_chk or 0):
-                    sel_branch = _grid_bid
-                _bid_chk = int(_grid_bid)
-            else:
+            if not (_grid_bid and int(_grid_bid) == int(_bid_chk or 0)):
                 _grid_bid = None
             # ── PARALEL VARDİYA: aynı rol pozisyonu DOLUYSA artık otomatik engellemez.
             # Kullanıcı client'ta seçti (shift_mode=takeover|parallel) → "занята" engeli
