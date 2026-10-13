@@ -10774,6 +10774,23 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             _mode = "takeover"
             except Exception as _e_hb:
                 logger.warning(f"handover slot bypass: {_e_hb}")
+            # POZİSYON DOLU artık ENGEL DEĞİL (owner 2026-10-13, canli: Magic'te stajyer
+            # Убай, Акмаль açıkken açamadı). Çalışanın uygulaması başkalarının açık
+            # vardiyasını görmüyordu → «параллельно?» sorulmadan 'single' gidiyor ve
+            # «Текущий бариста должен завершить…» ile reddediliyordu. Şimdi kendiliğinden
+            # PARALEL açılır (her biri kendi vardiyasını kapatır); kişiye bilgi verilir.
+            # Yalnız «Нет позиции ассистента» (owner ayarı) hâlâ engeldir.
+            _par_note = ""
+            if _blk and "Нет позиции" not in _blk and _mode not in ("takeover", "parallel") and not _solo_bypass:
+                _occ = None
+                try:
+                    _occ = slot_occupant(db, int(_bid_chk or 1),
+                                         barista_pay_info(db, user.id, branch_id=_bid_chk).get("slot_role") or "barista")
+                except Exception:
+                    _occ = None
+                _mode = "parallel"
+                _par_note = ("ℹ️ Сейчас на смене также " + ((_occ or {}).get("nm") or "другой сотрудник")
+                             + " — смены идут параллельно, каждый закрывает свою.")
             if _blk:
                 _bypass = (_mode in ("takeover", "parallel") or _solo_bypass) and ("Нет позиции" not in _blk)
                 if not _bypass:
@@ -10834,6 +10851,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.execute("UPDATE shifts SET note=? WHERE id=?",
                                ("параллельная смена" if _mode == "parallel" else "передача смены", sh["id"]))
                     db.commit()
+                except Exception:
+                    pass
+            if _par_note:
+                try:
+                    await update.message.reply_text(_par_note)
                 except Exception:
                     pass
             # Vardiya artık açık → duyuru bu vardiyanın şubesinin grubuna gitsin.
@@ -13111,7 +13133,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _fbid:
                 _fbid = user_branch_id(db, target_id)
             _blk = slot_block_reason(db, target_id, _fbid)
-            if _blk:
+            # Owner başlatıyorsa «pozisyon dolu» engel değil (paralel açılır); yalnız «Нет позиции».
+            if _blk and "Нет позиции" in _blk:
                 await update.message.reply_text(_blk)
                 return
             # Opsiyonel başlangıç saati (çalışan Nero'yu açmayı unuttuysa gerçek geliş saati).
