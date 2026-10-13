@@ -4039,6 +4039,27 @@ def op_scheduled(db, user_id, when_dt, tpls=None):
         return None, ""
 
 
+def grid_branch_for(db, user_id, when_dt):
+    """График'te bu kişinin BUGÜNKÜ vardiyasının şubesi (yoksa None).
+    Gece yarısından sonra (06:00'ya kadar) dünkü vardiyaya da bakılır."""
+    try:
+        tpls = grid_templates(db)
+        days = [when_dt.date()] + ([when_dt.date() - timedelta(days=1)] if when_dt.hour < 6 else [])
+        for d in days:
+            monday = d - timedelta(days=d.weekday())
+            row = db.execute("SELECT code FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                             (monday.isoformat(), int(d.weekday()), int(user_id))).fetchone()
+            code = row["code"] if row else ""
+            if not code or code in ("off", "sick"):
+                continue
+            t = tpls.get(code) or {}
+            if t.get("branch_id"):
+                return int(t["branch_id"])
+    except Exception as e:
+        logger.warning(f"grid_branch_for: {e}")
+    return None
+
+
 def op_window_for(cfg, branch_id, when_dt, early_tol=60):
     """Şube pencerelerinden bu başlangıca uyan vardiya → (planlı_başlangıç, planlı_bitiş).
 
@@ -10725,6 +10746,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid_chk = None
             if not _bid_chk:
                 _bid_chk = user_branch_id(db, user.id)
+            # ── GRAFİK = EK İZİN (owner 2026-10-13): şubeyi DEĞİŞTİRMEZ. Kişi bugün
+            # графикте bu şubeye konmuşsa pozisyon/asistan kuralına takılmadan açar
+            # (paralel). Başka şubede açıyorsa normal kurallar geçerli.
+            _grid_bid = grid_branch_for(db, user.id, datetime.now(TZ).replace(tzinfo=None))
+            if not (_grid_bid and int(_grid_bid) == int(_bid_chk or 0)):
+                _grid_bid = None
             # ── PARALEL VARDİYA: aynı rol pozisyonu DOLUYSA artık otomatik engellemez.
             # Kullanıcı client'ta seçti (shift_mode=takeover|parallel) → "занята" engeli
             # bypass edilir; her ikisi de BAĞIMSIZ yeni vardiya başlatır (kayıt birleşmez,
@@ -10774,6 +10801,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             _mode = "takeover"
             except Exception as _e_hb:
                 logger.warning(f"handover slot bypass: {_e_hb}")
+            # POZİSYON DOLU artık ENGEL DEĞİL (owner 2026-10-13, canli: Magic'te stajyer
+            # Убай, Акмаль açıkken açamadı). Çalışanın uygulaması başkalarının açık
+            # vardiyasını görmüyordu → «параллельно?» sorulmadan 'single' gidiyor ve
+            # «Текущий бариста должен завершить…» ile reddediliyordu. Şimdi kendiliğinden
+            # PARALEL açılır (her biri kendi vardiyasını kapatır); kişiye bilgi verilir.
+            # Yalnız «Нет позиции ассистента» (owner ayarı) hâlâ engeldir.
+            _par_note = ""
+            if _blk and _grid_bid and "Нет позиции" in _blk:
+                _blk = None     # графиkte bu şubeye konmuş → pozisyon ayarı engel değil
+            if _blk and "Нет позиции" not in _blk and _mode not in ("takeover", "parallel") and not _solo_bypass:
+                _occ = None
+                try:
+                    _occ = slot_occupant(db, int(_bid_chk or 1),
+                                         barista_pay_info(db, user.id, branch_id=_bid_chk).get("slot_role") or "barista")
+                except Exception:
+                    _occ = None
+                _mode = "parallel"
+                _par_note = ("ℹ️ Сейчас на смене также " + ((_occ or {}).get("nm") or "другой сотрудник")
+                             + " — смены идут параллельно, каждый закрывает свою.")
             if _blk:
                 _bypass = (_mode in ("takeover", "parallel") or _solo_bypass) and ("Нет позиции" not in _blk)
                 if not _bypass:
@@ -10834,6 +10880,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.execute("UPDATE shifts SET note=? WHERE id=?",
                                ("параллельная смена" if _mode == "parallel" else "передача смены", sh["id"]))
                     db.commit()
+                except Exception:
+                    pass
+            if _par_note:
+                try:
+                    await update.message.reply_text(_par_note)
                 except Exception:
                     pass
             # Vardiya artık açık → duyuru bu vardiyanın şubesinin grubuna gitsin.
@@ -13111,7 +13162,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _fbid:
                 _fbid = user_branch_id(db, target_id)
             _blk = slot_block_reason(db, target_id, _fbid)
-            if _blk:
+            # Owner başlatıyorsa «pozisyon dolu» engel değil (paralel açılır); yalnız «Нет позиции».
+            if _blk and "Нет позиции" in _blk:
                 await update.message.reply_text(_blk)
                 return
             # Opsiyonel başlangıç saati (çalışan Nero'yu açmayı unuttuysa gerçek geliş saati).
