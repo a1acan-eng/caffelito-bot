@@ -2144,7 +2144,7 @@ def brx_cup_name(item):
 
 
 def brx_cup_pending(db, branch_id):
-    """Şubenin kapanışına henüz yansımamış bardak transferleri: [{id, cup, q (+geldi/−gitti), other}]."""
+    """Şubenin kapanışına henüz yansımamış bardak transferleri: [{id, cup, q (+geldi/−gitti), other, by, at, note}]."""
     out, b = [], int(branch_id or 0)
     for r in db.execute("SELECT * FROM brx_tx WHERE COALESCE(voided,0)=0 AND COALESCE(unit,'шт')='шт' "
                         "AND ((from_bid=? AND rep_from IS NULL) OR (to_bid=? AND rep_to IS NULL)) ORDER BY id",
@@ -2155,7 +2155,8 @@ def brx_cup_pending(db, branch_id):
         out_side = int(r["from_bid"] or 0) == b
         q = int(round(float(r["qty"] or 0)))
         oth = brx_place(db, int(r["to_bid"] if out_side else r["from_bid"]) or 0) or {}
-        out.append({"id": r["id"], "cup": c, "q": -q if out_side else q, "other": oth.get("name", "?")})
+        out.append({"id": r["id"], "cup": c, "q": -q if out_side else q, "other": oth.get("name", "?"),
+                    "by": r["by_name"] or "", "at": r["at"] or "", "note": r["note"] or ""})
     return out
 
 
