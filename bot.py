@@ -7815,6 +7815,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "active": s["active"],
         "adv_ded": s.get("adv_ded", 0),
         "res_ded": s.get("res_ded", 0),
+        # Maaş kartı fişi (2026-10-15): net'e giren HER kalem gönderilir — yoksa
+        # «Из чего сложилось» toplanınca tutmuyordu (düzeltme / borç devri ve aylık
+        # fazla mesai eksikti).
+        "adjustments": s.get("adjustments", 0),
+        "adjustments_list": [{"amount": x.get("amount"), "note": x.get("note") or ""}
+                             for x in (s.get("adjustments_list") or [])][-20:],
+        "ot_month": s.get("ot_month", 0),
+        "ot_month_hours": s.get("ot_month_hours", 0),
     }
     # Yeni avans sistemi — herkesin kendi görünümü; owner'a bekleyen talepler.
     try:
