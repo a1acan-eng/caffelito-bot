@@ -8413,7 +8413,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _bal = [{"a": a, "b": b, "item": _nm.get(k, k[0]), "u": k[1], "net": v}
                     for (a, b), d in brx_balance(db).items() for k, v in d.items()
                     if abs(v) > 1e-9 and (not _ob or _ob in (a, b))]
-            _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт", "pk": int(r["pack"] or 0)} for r in db.execute(
+            _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт", "pk": int(r["pack"] or 0), "at": r["at"] or ""} for r in db.execute(
                 "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             brx_waste_id(db)
             brx_supply_ids(db)
@@ -16994,6 +16994,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _cn = brx_cup_name(_nm)
                 if _cn:
                     _nm, _un = _cn, "шт"
+                # Katalogdan gelen paket boyutu (owner 2026-10-20: «упак, 27 шт»): ürünün paket
+                # boyutu henüz yoksa kaydedilir → уп ile girilen miktar bakiyede adede çevrilir.
+                try:
+                    _pki = int(float(str(_it.get("pk") or 0)))
+                except Exception:
+                    _pki = 0
+                if _nm and _un in BRX_PACK_UNITS and 0 < _pki <= 100000 and not brx_packs(db).get(_nm.lower()):
+                    db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                               (_nm, _un, "каталог", now.isoformat(), _pki))
                 if _nm and _qq > 0:
                     _lines.append((_nm, _un, _qq))
             if not _lines:
