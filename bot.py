@@ -626,7 +626,7 @@ def get_db():
     # Paket boyutu (owner 2026-10-10): «пачка» kaç adet — owner ayarlar; giriş
     # пачка ya da шт ile yapılabilir, bakiye adette toplanır.
     # Dış nokta türü: own=1 → bizim (sistemde şube değil), 0 → başka sahibin.
-    for _tb, _cl in (("brx_items", "pack INTEGER"), ("brx_ext", "own INTEGER DEFAULT 0"), ("brx_ext", "waste INTEGER DEFAULT 0"),
+    for _tb, _cl in (("brx_items", "pack INTEGER"), ("brx_ext", "own INTEGER DEFAULT 0"), ("brx_ext", "waste INTEGER DEFAULT 0"), ("brx_ext", "supply INTEGER DEFAULT 0"),
                      ("brx_tx", "edited_by TEXT"), ("brx_tx", "edited_at TEXT")):
         try:
             db.execute(f"ALTER TABLE {_tb} ADD COLUMN {_cl}")
@@ -2123,6 +2123,20 @@ def brx_waste_ids(db):
         return set()
 
 
+def brx_supply_ids(db):
+    """«Склад» (depo/tedarik) noktalarının negatif id'leri (owner 2026-10-20: depodan gelen
+    mal BORÇ DEĞİL). Adında «склад» geçen noktalar otomatik işaretlenir."""
+    try:
+        _mark = [r["id"] for r in db.execute("SELECT id, name FROM brx_ext WHERE COALESCE(supply,0)=0").fetchall()
+                 if any(w in " ".join(str(r["name"] or "").split()).lower() for w in ("склад", "sklad", "ombor"))]
+        if _mark:
+            db.execute(f"UPDATE brx_ext SET supply=1 WHERE id IN ({','.join('?' for _ in _mark)})", tuple(_mark))
+            db.commit()
+        return {-int(r["id"]) for r in db.execute("SELECT id FROM brx_ext WHERE COALESCE(supply,0)=1").fetchall()}
+    except Exception:
+        return set()
+
+
 def brx_waste_id(db):
     """Tek «Брак» noktası (yoksa oluşturulur) → negatif id."""
     ids = brx_waste_ids(db)
@@ -2136,8 +2150,9 @@ def brx_waste_id(db):
 
 def brx_balance(db):
     """{(a,b): {(item,unit): net}} — net > 0: b, a'ya borçlu (a daha çok verdi). a < b.
-    Брак/списание kayıtları borç DEĞİLDİR — bakiyeye girmez."""
-    out, packs, waste = {}, brx_packs(db), brx_waste_ids(db)
+    Брак/списание ve «Склад» (depo) kayıtları borç DEĞİLDİR — bakiyeye girmez."""
+    out, packs = {}, brx_packs(db)
+    waste = brx_waste_ids(db) | brx_supply_ids(db)
     for r in db.execute("SELECT from_bid, to_bid, item, unit, qty FROM brx_tx WHERE COALESCE(voided,0)=0").fetchall():
         f, t = int(r["from_bid"] or 0), int(r["to_bid"] or 0)
         if f in waste or t in waste:
@@ -8401,7 +8416,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _its = [{"id": r["id"], "n": r["name"], "u": r["unit"] or "шт", "pk": int(r["pack"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             brx_waste_id(db)
-            _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0), "w": int(r["waste"] or 0)} for r in db.execute(
+            brx_supply_ids(db)
+            _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0), "w": int(r["waste"] or 0),
+                     "s": int(r["supply"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
             parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
             parts.append(f"exp_names={quote(json.dumps(exp_names(db), ensure_ascii=False))}")
