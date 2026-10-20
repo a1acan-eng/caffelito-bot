@@ -2168,6 +2168,64 @@ def brx_balance(db):
 BRX_CUPS = ["Стакан 500", "Стакан 400", "Стакан 300", "Стакан 200", "Стакан 100", "Купол 400", "Купол 300"]
 
 
+def _brx_num(v):
+    try:
+        return float(str(v).replace(",", "."))
+    except Exception:
+        return None
+
+
+def brx_fix_one(item, unit, qty):
+    """Eski «Ad (paket bilgisi)» kaydı → (yeni ad, birim, miktar, not) ya da None.
+    Owner 2026-10-21: katalog adları sadeleşti («Молоко 3,2% (упак, 12 л)» → «Молоко 3,2%»);
+    eski kayıtlar yenileriyle AYNI satırda toplansın diye ad ve birim eşleştirilir.
+    Kurallar (katalogla aynı):
+      · «(упак, N шт)» → birim «уп» (paket boyutu katalogdan); шт/уп/пачка miktarı korunur
+      · diğer paketler («упак, 0,25 кг», «1 л», «12 л») → birim «шт» (1 paket = 1 шт):
+        уп/пачка/шт → aynı sayı; кг/л → miktar ÷ paket boyutu (2 кг ÷ 1 кг = 2 шт)
+      · çevrilemeyen (ör. boyutu bilinmeyen кг) → None (elle bakılır)."""
+    import re as _re
+    m = _re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", " ".join(str(item or "").split()))
+    if not m or not m.group(1).strip():
+        return None
+    base, par = m.group(1).strip(), m.group(2).strip()
+    u = (unit or "шт").strip()
+    q = float(qty or 0)
+    pcs = _re.search(r"(\d+)\s*шт", par, _re.I)
+    if _re.match(r"^\s*упак", par, _re.I) and pcs:
+        if u in ("уп", "пачка"):
+            return base, "уп", q, "уп"
+        if u == "шт":
+            return base, "шт", q, "шт"
+        return None
+    size = _re.search(r"([\d.,]+)\s*(кг|л|г|мл)\b", par, _re.I)
+    if u in ("уп", "пачка", "шт"):
+        return base, "шт", q, "1 упаковка = 1 шт"
+    if size and u in ("кг", "л"):
+        sv, su = _brx_num(size.group(1)), size.group(2).lower()
+        if su == "г":
+            sv, su = (sv or 0) / 1000.0, "кг"
+        elif su == "мл":
+            sv, su = (sv or 0) / 1000.0, "л"
+        if sv and su == u:
+            return base, "шт", round(q / sv, 3), f"{q:g} {u} ÷ {sv:g} {u}"
+    return None
+
+
+def brx_fix_plan(db):
+    """Değişecek kayıtlar: [{id, old, ou, oq, new, nu, nq, why}] + çevrilemeyenler [{id, old, ou, oq}]."""
+    ok, bad = [], []
+    for r in db.execute("SELECT id, item, unit, qty FROM brx_tx WHERE COALESCE(voided,0)=0 AND item LIKE '%(%' ORDER BY id").fetchall():
+        fx = brx_fix_one(r["item"], r["unit"], r["qty"])
+        row = {"id": r["id"], "old": r["item"], "ou": r["unit"] or "шт", "oq": float(r["qty"] or 0)}
+        if fx:
+            row.update({"new": fx[0], "nu": fx[1], "nq": fx[2], "why": fx[3]})
+            ok.append(row)
+        else:
+            bad.append(row)
+    return ok, bad
+
+
 def brx_cup_name(item):
     """Ürün bir bardak türü mü → kanonik ad (büyük/küçük harf, boşluk farkı yok)."""
     k = " ".join(str(item or "").split()).lower()
@@ -16659,6 +16717,36 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_fk, f"{0 if _u2 else _fn}|{_u2}"))
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
+
+        elif action in ("brx_fix_preview", "brx_fix_apply"):
+            # Eski ürün adlarını katalog adlarına çevir (owner 2026-10-21). Yalnız owner;
+            # önce önizleme, owner onaylarsa uygulanır. Sonuç yanıt olarak döner (sendR).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            _ok, _bad = brx_fix_plan(db)
+            if action == "brx_fix_apply":
+                _ids = set(int(x) for x in (data.get("ids") or []) if str(x).isdigit())
+                _done = 0
+                for x in _ok:
+                    if _ids and x["id"] not in _ids:
+                        continue
+                    db.execute("UPDATE brx_tx SET item=?, unit=?, qty=?, edited_by=?, edited_at=? WHERE id=?",
+                               (x["new"], x["nu"], x["nq"], "Nero · каталог", datetime.now(TZ).isoformat(), x["id"]))
+                    _done += 1
+                    # «(упак, N шт)» → paket boyutu yeni ada kaydedilir (уп bakiyede adede çevrilsin)
+                    _pm = re.search(r"\(\s*упак[^)]*?(\d+)\s*шт", x["old"] or "", re.I)
+                    if _pm and not brx_packs(db).get(x["new"].lower()):
+                        db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                                   (x["new"], "уп", "каталог", datetime.now(TZ).isoformat(), int(_pm.group(1))))
+                db.commit()
+                log_action(db, "brx_fix_apply", user.id, user.first_name, None, "", {"count": _done})
+                _ok, _bad = brx_fix_plan(db)
+                context.result = {"ok": True, "done": _done, "rows": _ok, "bad": _bad}
+                return
+            context.result = {"ok": True, "rows": _ok, "bad": _bad}
+            return
 
         elif action in ("gdebt_safe_add", "gdebt_safe_void"):
             # СЕЙФ ДОЛГОВ (2026-10-13): kapanış ekranından kayıt — HEMEN saklanır,
