@@ -39,4 +39,9 @@ act(10, {'action': 'brx_add', 'from': 1, 'to': 2, 'items': [{'item': 'Сливк
 check(bot.brx_balance(db)[(1, 2)].get(('сливки 11% 0,2 л', 'шт')) == 54.0, 'уп + pk=27 → 54 шт (paket boyutu kaydedildi)')
 act(10, {'action': 'brx_add', 'from': 1, 'to': 2, 'items': [{'item': 'Сливки 11% 0,2 л', 'unit': 'шт', 'qty': 3}]})
 check(bot.brx_balance(db)[(1, 2)].get(('сливки 11% 0,2 л', 'шт')) == 57.0, 'шт ile verilen aynı satıra eklenir (57 шт)')
+# Bardak paketle (owner 2026-10-20): Стакан 500 пачка=15 → 2 пачки = 30 шт
+db.execute("INSERT INTO brx_items (name, unit, at, pack) VALUES ('Стакан 500','шт','2026-10-01',15)"); db.commit()
+act(10, {'action': 'brx_add', 'from': 1, 'to': 2, 'items': [{'item': 'Стакан 500', 'unit': 'пачка', 'qty': 2}]})
+r = db.execute("SELECT unit, qty FROM brx_tx WHERE item='Стакан 500' ORDER BY id DESC LIMIT 1").fetchone()
+check(r and r['unit'] == 'шт' and r['qty'] == 30, 'Стакан 500: 2 пачки → 30 шт kaydedildi (kapanış adetle)')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)

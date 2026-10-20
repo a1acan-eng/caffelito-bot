@@ -16993,6 +16993,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _qq = 0
                 _cn = brx_cup_name(_nm)
                 if _cn:
+                    # Bardak HER ZAMAN adetle saklanır (kapanış «Было» sayımı adet). Paketle
+                    # girildiyse (owner 2026-10-20) paket boyutuyla adede çevrilir.
+                    if _un in BRX_PACK_UNITS:
+                        try:
+                            _cpk = brx_packs(db).get(_cn.lower()) or int(float(str(_it.get("pk") or 0)))
+                        except Exception:
+                            _cpk = 0
+                        if _cpk > 0:
+                            _qq = round(_qq * _cpk, 3)
+                        else:
+                            await update.message.reply_text(f"❌ {_cn}: не задано, сколько штук в пачке — укажите количество в штуках.")
+                            return
                     _nm, _un = _cn, "шт"
                 # Katalogdan gelen paket boyutu (owner 2026-10-20: «упак, 27 шт»): ürünün paket
                 # boyutu henüz yoksa kaydedilir → уп ile girilen miktar bakiyede adede çevrilir.
