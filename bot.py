@@ -41,6 +41,8 @@ DB_PATH = os.getenv("DB_PATH", "caffelito.db")
 TZ = timezone(timedelta(hours=5))
 
 logging.basicConfig(level=logging.INFO)
+# httpx her isteği URL ile yazar — URL içinde BOT_TOKEN var; loglara token sızmasın.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.info(f"DB_PATH = {DB_PATH}")
 logger.info(f"WEBAPP_URL (etkin) = {WEBAPP_URL or '(bos)'}")
