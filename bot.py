@@ -544,6 +544,9 @@ def get_db():
                      ("reserve_cancelled", "INTEGER"),
                      # owner 2026-10-04: bu kişiye otomatik gecikme cezası KAPALI (1)
                      ("op_fine_off", "INTEGER"),
+                     # owner 2026-10-21: bu kişi vardiyasını PLAN BİTİŞİNDEN ÖNCE de
+                     # kendisi kapatabilir (devir kilidi yok, owner onayı hazır sayılır).
+                     ("close_free", "INTEGER"),
                      # owner 2026-10-05: stajyerlik sayacının başlangıcı (YYYY-MM-DD).
                      # NULL = ilk vardiyadan say; owner «заново» deyince bugün olur.
                      ("intern_from", "TEXT")):
@@ -4834,6 +4837,26 @@ def ho_early_request(db, row):
     return ho_row_for_shift(db, row["shift_id"]), ""
 
 
+def close_free_on(db, user_id):
+    """Owner bu kişiye «смену закрывает сам» izni verdi mi (users.close_free)."""
+    try:
+        r = db.execute("SELECT COALESCE(close_free,0) AS c FROM users WHERE user_id=?", (int(user_id),)).fetchone()
+        return bool(r and int(r["c"] or 0))
+    except Exception:
+        return False
+
+
+def ho_free_approve(db, row):
+    """close_free kişide devir satırı: erken çıkış owner tarafından ÖNCEDEN onaylı sayılır
+    (kilit yok, «izinsiz erken çıkış» kaydı yok). Ücret hesabına dokunmaz."""
+    if not row or row["finalized"] or row["early_status"] == "approved":
+        return row
+    db.execute("UPDATE handover SET early_status='approved', early_dec_at=?, early_by=0 WHERE id=?",
+               (datetime.now(TZ).isoformat(), int(row["id"])))
+    db.commit()
+    return ho_row_for_shift(db, row["shift_id"])
+
+
 def ho_early_decide(db, row, ok, actor_id):
     """Yalniz OWNER cagirir (handler kontrol eder). Onay → kapanis ho_finalize ile."""
     if row["finalized"]:
@@ -8050,6 +8073,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 _hr = ho_get_or_create(db, _opc, _act_ho)
                 if _hr:
                     _ho_out["me"] = ho_view(db, _hr, _now_ho)
+                    # «Закрывает смену сам» (owner izni): kilit istemcide de yok.
+                    if _ho_out["me"] and close_free_on(db, user_id):
+                        _ho_out["me"]["early"] = "approved"
                     # Erken cagri: kimler cagrilabilir (sменщик henuz gelmediyse).
                     if not _hr["b2_arrived_at"] and not _hr["finalized"]:
                         _ho_out["call_cands"] = ho_call_cands(db, _hr)
@@ -8668,7 +8694,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
             "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id, "
-            "salary_cat_id, COALESCE(op_fine_off,0) AS op_fine_off "
+            "salary_cat_id, COALESCE(op_fine_off,0) AS op_fine_off, COALESCE(close_free,0) AS close_free "
             "FROM users WHERE COALESCE(approved,0)=1 "
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
@@ -8759,6 +8785,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "resd": bs.get("res_ded", 0),
                 "res": _res_card(db, b["user_id"]),
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
+                "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
                 "intern": intern_info(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
@@ -11153,6 +11180,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if ho_enabled(_hocfg_e):
                 ho_void_non_barista(db)
             _hrow_e = ho_row_for_shift(db, active["id"]) if ho_enabled(_hocfg_e) else None
+            if _hrow_e and close_free_on(db, user.id):
+                _hrow_e = ho_free_approve(db, _hrow_e)
             if _hrow_e and not _hrow_e["finalized"]:
                 try:
                     _en_he = datetime.fromisoformat(_hrow_e["sched_end"])
@@ -16066,6 +16095,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "op_fine_user_set", user.id, user.first_name, _tid,
                        display_name_for(db, _tid, fallback=f"ID {_tid}"),
                        {"fine": "выключен" if _off else "включён"})
+
+        elif action == "close_free_set":
+            # Owner: bu kişi vardiyasını plan bitişinden önce de kendisi kapatabilir (aç/kapa).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            if not _tid or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_tid,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            _on = 1 if int(data.get("on") or 0) else 0
+            db.execute("UPDATE users SET close_free=? WHERE user_id=?", (_on or None, _tid))
+            db.commit()
+            log_action(db, "close_free_set", user.id, user.first_name, _tid,
+                       display_name_for(db, _tid, fallback=f"ID {_tid}"),
+                       {"close": "сам, в любое время" if _on else "как обычно"})
 
         elif action == "intern_restart":
             # Owner: stajyerliği bugünden yeniden başlat (sınavı geçemedi → bir ay daha).
