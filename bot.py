@@ -3993,6 +3993,9 @@ OP_DEFAULTS = {
     "handover_flow": 0,
     # Fazla mesai carpani: 1. barista planli bitisten sonra kaldiysa saatlik × bu.
     "extra_k": 1.5,
+    # PARALEL PENCERE (owner 2026-10-24), dk: 1. baristanın başlangıcından bu süre
+    # içinde gelen barista PARALEL (birlikte); sonra gelen İKİNCİ VARDİYA. 0 = kapalı.
+    "par_window": 120,
 }
 OP_FINE_TYPE = "opening_delay"
 
@@ -7273,11 +7276,11 @@ PAR_WINDOW_MIN = 120      # owner 2026-10-24: «7'de başladıysa 9'a kadar gele
 
 def par_window_min(db):
     """Paralel penceresi (dk): birincinin başlangıcından bu süre içinde gelen barista
-    PARALEL sayılır; sonra gelen İKİNCİ VARDİYA (devir). meta 'par_window_min' ile ezilir."""
+    PARALEL sayılır; sonra gelen İKİNCİ VARDİYA (devir). Owner ayarı: op_cfg «par_window»."""
     try:
-        r = db.execute("SELECT val FROM meta WHERE k='par_window_min'").fetchone()
-        if r and str(r["val"] or "").strip():
-            return max(0, int(r["val"]))
+        v = op_cfg(db).get("par_window")
+        if v is not None and str(v).strip() != "":
+            return max(0, int(float(v)))
     except Exception:
         pass
     return PAR_WINDOW_MIN
@@ -15464,6 +15467,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if "warn_before" in data:
                 try:
                     _p["warn_before"] = max(0, min(120, int(float(data.get("warn_before") or 0))))
+                except (TypeError, ValueError):
+                    pass
+            if "par_window" in data:
+                try:
+                    _p["par_window"] = max(0, min(600, int(float(data.get("par_window") or 0))))
                 except (TypeError, ValueError):
                     pass
             # SUBE BASINA сум/saat: {"2": 120000}. 0/bos gelen sube SILINIR
