@@ -963,7 +963,9 @@ def get_db():
     for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
                        ("cat_name", "TEXT"), ("rate", "INTEGER"),
                        ("par_light", "INTEGER"), ("par_by", "INTEGER"),
-                       ("par_adj", "INTEGER"), ("par_n", "INTEGER")):
+                       ("par_adj", "INTEGER"), ("par_n", "INTEGER"),
+                       # par_with: hafif kapanış anında AÇIK olan напарник vardiya id'leri («,5,9,»)
+                       ("par_with", "TEXT")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -7267,11 +7269,16 @@ def par_open_partners(db, shift_row):
         if not ho_shift_is_barista(db, sh):
             return []
         bid = int(sh.get("branch_id") or 0) or user_branch_id(db, int(sh["user_id"]))
+        # YALNIZ GERÇEK PARALEL (owner 2026-10-24, canlı hata): normal devirde de
+        # (sabahçı açık, akşamcı geldi) şubede iki açık barista oluyor — o durumda
+        # sabahçı kasayı HER ZAMANKİ GİBİ kapatır. Paralel = iki vardiyadan biri
+        # «параллельная смена» notuyla açılmış (pozisyon doluyken açılış).
+        _par = lambda r: "параллельн" in str((dict(r).get("note") or "")).lower()
         out = []
         for r in db.execute("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
                             "AND COALESCE(branch_id,1)=? ORDER BY start_time",
                             (int(sh["user_id"]), int(bid or 1))).fetchall():
-            if ho_shift_is_barista(db, r):
+            if (_par(sh) or _par(r)) and ho_shift_is_barista(db, r):
                 out.append(r)
         return out
     except Exception as e:
@@ -7329,7 +7336,13 @@ def par_light_rows(db, shift_row, end_dt):
                             "AND end_time IS NOT NULL AND user_id<>? AND COALESCE(branch_id,1)=?",
                             (int(sh["user_id"]), int(bid or 1))).fetchall():
             try:
-                if datetime.fromisoformat(r["end_time"]) > st and datetime.fromisoformat(r["start_time"]) < end_dt:
+                # Yalnız bu kapanışı BEKLEYEN hafif kapanış: çıkarken напарник olarak
+                # bu vardiyayı kaydetmiş olmalı (eski kayıtlarda par_with yoksa örtüşme).
+                _pw = str(r["par_with"] or "") if "par_with" in r.keys() else ""
+                if _pw:
+                    if f",{int(sh['id'])}," in _pw:
+                        out.append(r)
+                elif datetime.fromisoformat(r["end_time"]) > st and datetime.fromisoformat(r["start_time"]) < end_dt:
                     out.append(r)
             except Exception:
                 continue
@@ -7359,7 +7372,8 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
         end_dt = now
     _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
     # PARALEL: şubede başka barista hâlâ açıksa bu kapanış HAFİF — bardak/tatlı yok.
-    _par_light = bool(par_open_partners(db, active))
+    _par_with_rows = par_open_partners(db, active)
+    _par_light = bool(_par_with_rows)
     if _par_light:
         drinks, desserts = {}, {}
     # ── DEVİR KLAMPESİ KALDIRILDI (kullanıcı isteği — vardiyalar TAMAMEN bağımsız) ──
@@ -7433,11 +7447,13 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
         ot_shift, ot_h = 0, 0.0
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
-        "desserts=?, dessert_bonus=?, overtime=?, overtime_h=?, par_light=?, par_n=? WHERE id=?",
+        "desserts=?, dessert_bonus=?, overtime=?, overtime_h=?, par_light=?, par_n=?, par_with=? WHERE id=?",
         (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
          bonus, hourly_pay, total, note or "",
          json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h,
-         1 if _par_light else None, _par_n, active["id"]))
+         1 if _par_light else None, _par_n,
+         ("," + ",".join(str(int(r["id"])) for r in _par_with_rows) + ",") if _par_light else None,
+         active["id"]))
     db.commit()
     # RESERVE: çalışılan gün kapandı → o günün katkısı (tek sefer, idempotent).
     try:

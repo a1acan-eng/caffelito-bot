@@ -27,17 +27,18 @@ for uid, nm in ((10, 'Бек'), (11, 'Убай'), (12, 'Асс')):
 db.execute("INSERT OR REPLACE INTO branches (id, name, active) VALUES (1,'C5',1)")
 db.commit()
 now = datetime.now(bot.TZ).replace(tzinfo=None)
-def open_shift(uid, h=6, role='barista'):
+P = 'параллельная смена'
+def open_shift(uid, h=6, role='barista', note=''):
     st = now - timedelta(hours=h)
-    sid = db.execute("INSERT INTO shifts (user_id,hours,total,date,period,created_at,start_time,branch_id,shift_role) "
-                     "VALUES (?,0,0,?,?,?,?,1,?)",
-                     (uid, st.strftime('%Y-%m-%d'), st.strftime('%Y-%m'), st.isoformat(), st.isoformat(), role)).lastrowid
+    sid = db.execute("INSERT INTO shifts (user_id,hours,total,date,period,created_at,start_time,branch_id,shift_role,note) "
+                     "VALUES (?,0,0,?,?,?,?,1,?,?)",
+                     (uid, st.strftime('%Y-%m-%d'), st.strftime('%Y-%m'), st.isoformat(), st.isoformat(), role, note)).lastrowid
     db.commit(); return sid
 def row(sid): return db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone()
 drinks = {"ml300": 20, "ml400": 10}
 full = bot.calc_bonus(drinks, bot.get_prices(db))
 check(full > 0, f'bardak bonusu hesaplanıyor ({full})')
-s10, s11 = open_shift(10), open_shift(11, 5)
+s10, s11 = open_shift(10), open_shift(11, 5, note=P)
 check([r["user_id"] for r in bot.par_open_partners(db, row(s11))] == [10], 'Убай için напарник = Бек')
 check(bot._par_mate_names(db, 11) == ['Бек'], 'Nero\'ya напарник adı gidiyor')
 # 1) Önce çıkan bardak sayarak kapatmaya çalışır → red
@@ -83,7 +84,7 @@ db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,a
 db.commit()
 check(bot.par_is_intern(db, 13, 1) and not bot.par_is_intern(db, 10, 1), 'stajyer tanınıyor, barista değil')
 # 7a) stajyer önce çıkar → yalnız saat; barista kapatır → bonus TAM, stajyere pay yok
-s13, s10d = open_shift(13, 4), open_shift(10, 4)
+s13, s10d = open_shift(13, 4), open_shift(10, 4, note=P)
 act(13, {'action': 'shift_end', 'drinks': {}, 'light': 1})
 check(row(s13)["par_light"] == 1, 'stajyer barista açıkken yalnız saatle kapattı')
 SENT.clear()
@@ -92,9 +93,18 @@ check((row(s10d)["bonus"] or 0) == full and not row(s10d)["par_n"], 'barista bon
 check((row(s13)["bonus"] or 0) == 0 and row(s13)["par_by"] is None, 'stajyere pay yazılmadı')
 check(not any(str(c) == '13' and 'Ваша доля' in t for c, t in SENT), 'stajyere «доля» bildirimi gitmedi')
 # 7b) barista önce çıkar, stajyer kapatır → bölme yok
-s10e, s13b = open_shift(10, 4), open_shift(13, 4)
+s10e, s13b = open_shift(10, 4), open_shift(13, 4, note=P)
 act(10, {'action': 'shift_end', 'drinks': {}, 'light': 1})
 act(13, {'action': 'shift_end', 'drinks': drinks})
 check(row(s13b)["end_time"] is not None and not row(s13b)["par_n"] and row(s10e)["par_by"] is None, 'stajyer kapatınca bölme yok')
+# 8) NORMAL DEVİR (canlı hata 2026-10-24): sabahçı açık, akşamcı normal açtı (not yok) →
+#    sabahçı kasayı/bardakları HER ZAMANKİ GİBİ kapatır, bölme yok.
+s10f, s11f = open_shift(10, 10), open_shift(11, 1, note='передача смены')
+check(bot.par_open_partners(db, row(s10f)) == [], 'devirde напарник sayılmıyor')
+act(10, {'action': 'shift_end', 'drinks': drinks})
+check(row(s10f)["end_time"] is not None and (row(s10f)["bonus"] or 0) == full and not row(s10f)["par_light"],
+      'sabahçı devirde bardaklarla tam kapattı')
+act(11, {'action': 'shift_end', 'drinks': drinks})
+check(row(s11f)["end_time"] is not None and (row(s11f)["bonus"] or 0) == full, 'akşamcı da kendi bardaklarıyla kapattı')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
