@@ -10836,6 +10836,36 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("👁 Режим наблюдателя — только просмотр отчётов.")
             return
 
+        # ── OWNER «ЗАКРЫТЬ КАК СОТРУДНИК» (owner 2026-10-24) ─────────────────
+        # Owner başkasının vardiyasını, o kişinin kendi kapanışıyla AYNI yoldan
+        # kapatır (bardak, kasa, masraf; kategori/stajyer/paralel kuralları dahil).
+        # `shift_end` / `cash_report` bu blokta HEDEF kişi olarak çalışır; owner'ın
+        # kendisi `_as_owner`da durur (DM özeti owner'a, klavye/kayıt owner'a dokunmaz).
+        _as_owner = None
+        if action in ("shift_end", "cash_report") and data.get("as_uid"):
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _as_t = int(data.get("as_uid") or 0)
+            except Exception:
+                _as_t = 0
+            _as_row = db.execute("SELECT user_id, name, username FROM users WHERE user_id=?",
+                                 (_as_t,)).fetchone() if _as_t else None
+            if not _as_row or _as_t == user.id:
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            if action == "shift_end" and not get_active_shift(db, _as_t):
+                await update.message.reply_text("ℹ️ У сотрудника нет открытой смены.")
+                return
+            from types import SimpleNamespace as _NS
+            _as_owner = user
+            user = _NS(id=_as_t, first_name=(_as_row["name"] or f"ID {_as_t}"),
+                       username=_as_row["username"], is_bot=False)
+            shown = display_name_for(db, _as_t, fallback=user.first_name)
+            log_action(db, "owner_close_as", _as_owner.id, _as_owner.first_name, _as_t, shown,
+                       {"action": action})
+
         # Rapor grubu: kullanıcının açık vardiyasının / ev şubesinin grubu (çok şube).
         # Tek şubede branch 1'in grubu = eski active_group olduğundan davranış değişmez.
         group_id = resolve_group_id(db, user.id, context)
@@ -11278,7 +11308,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif action == "shift_end":
             # Vardiyayı bitir (gidiş + bardak sayıları + bonus)
             db = get_db()
-            upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+            if not _as_owner:
+                upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
             active = get_active_shift(db, user.id)
             if not active:
                 await update.message.reply_text("❌ Нет активной смены. Сначала нажмите «Начать смену».")
@@ -11319,7 +11350,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ho_void_non_barista(db)
             _hrow_e = ho_row_for_shift(db, active["id"]) if ho_enabled(_hocfg_e) else None
             # Paralel: напарник şubede kalıyor → erken çıkış şubeyi boş bırakmaz, kilit yok.
-            if _hrow_e and (_par_open or close_free_on(db, user.id)):
+            # Owner kendisi kapatıyorsa da kilit yok (izin owner'ın kendisi).
+            if _hrow_e and (_par_open or _as_owner or close_free_on(db, user.id)):
                 _hrow_e = ho_free_approve(db, _hrow_e)
             if _hrow_e and not _hrow_e["finalized"]:
                 try:
@@ -11479,8 +11511,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 except Exception as _e_un:
                     logger.warning(f"unauth DM: {_e_un}")
             # Klavye butonunu taze URL ile yenile (active=null, yeni vardiya başlatılabilsin)
-            await refresh_webapp_keyboard(update, context, db, user,
-                "🔄 Смена закрыта. Готово к следующей смене 👇")
+            if _as_owner:
+                # Owner adına kapattı: özet owner'a gitti (reply), kişiye kısa haber.
+                try:
+                    await context.bot.send_message(
+                        int(user.id),
+                        f"ℹ️ Вашу смену закрыл владелец: {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')} "
+                        f"({fmt_hm(hours)})" + ("" if _sh_light else f" · стаканов: {cups}"))
+                except Exception:
+                    pass
+            else:
+                await refresh_webapp_keyboard(update, context, db, user,
+                    "🔄 Смена закрыта. Готово к следующей смене 👇")
             if group_id:
                 try:
                     from html import escape as esc_html
@@ -13365,6 +13407,48 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Kişinin AÇIK vardiyası bu şubedeyse rol/ставка snapshot'ı anında tazelenir
             refresh_open_shift_snapshot(db, target_id)
 
+        elif action == "close_as_info":
+            # Owner «Закрыть как сотрудник»: kapanış ekranını o kişinin verisiyle
+            # kurmak için — vardiya başlangıcı, şube, ставка, rol (asistan/stajyer),
+            # şubede açık напарник (paralel), şubenin son «Осталось»u («Было»).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                _ti = int(data.get("target") or 0)
+            except Exception:
+                _ti = 0
+            _ta = get_active_shift(db, _ti) if _ti else None
+            if not _ta:
+                context.result = {"ok": False, "error": "У сотрудника нет открытой смены."}
+                return
+            _tb = int(_ta["branch_id"] or 0) or user_branch_id(db, _ti)
+            _tpi = barista_pay_info(db, _ti, branch_id=_tb)
+            try:
+                _trate = int(_ta["rate"]) if _ta["rate"] else int(_tpi["rate"])
+            except Exception:
+                _trate = int(_tpi["rate"])
+            try:
+                _tcr = db.execute(
+                    "SELECT ostalos FROM cashreports WHERE COALESCE(branch_id,1)=? "
+                    "ORDER BY COALESCE(NULLIF(end_time,''), created_at) DESC, id DESC LIMIT 1",
+                    (_tb,)).fetchone()
+                _tkl = json.loads(_tcr["ostalos"]) if (_tcr and _tcr["ostalos"]) else {}
+            except Exception:
+                _tkl = {}
+            _tpar = par_open_partners(db, _ta)
+            context.result = {
+                "ok": True, "uid": _ti, "name": display_name_for(db, _ti, fallback=f"ID {_ti}"),
+                "start": _ta["start_time"], "bid": _tb,
+                "branch": (get_branch(db, _tb) or {}).get("name", ""),
+                "rate": _trate,
+                "asst": 1 if closer_is_assistant(db, _ti, _tb, _ta) else 0,
+                "intern": 1 if par_is_intern(db, _ti, _tb, _ta) else 0,
+                "mates": par_partner_names(db, _tpar),
+                "kasa_last": _tkl,
+            }
+
         elif action == "force_end_shift":
             # Owner: çalışanın vardiyasını elle kapat (kapatmayı unuttuysa).
             # Snapshot kurallarıyla hesaplanır (end_shift); bardak/kasa girilmez.
@@ -15074,7 +15158,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         f"Стаканы и бонус учтены из отчёта.")
                 except Exception as _e:
                     logger.warning(f"auto-close DM: {_e}")
-            await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
+            if not _as_owner:
+                await refresh_webapp_keyboard(update, context, db, user, "🔄 Касса сдана. Готово 👇")
 
         # ─── Kasa raporu DÜZELTMESİ (owner) ───
         # Kapanış raporu sonradan düzeltilebilir: bardak zinciri (было/завоз/осталось),
