@@ -1,5 +1,5 @@
 # Paralel kapanış (owner 2026-10-24): aynı şubede iki barista — kasayı SON ÇIKAN kapatır,
-# önce çıkan yalnız saat; bardak bonusu eşit bölünür (önce çıkanın payı maaşa «+»).
+# önce çıkan yalnız saat; bardak bonusu eşit bölünür, kasadan tamamı çıkar (pay elden verilir).
 # Çalıştırma: rm -f /tmp/pc.db; PYTHONPATH=. DB_PATH=/tmp/pc.db BOT_TOKEN=123:abc python tests/par_close_test.py
 import json, asyncio, bot
 from datetime import datetime, timedelta
@@ -7,8 +7,12 @@ FAIL = []
 def check(c, m):
     print(('  ok  ' if c else '  FAIL ') + m)
     if not c: FAIL.append(m)
+SENT = []
 class FB:
-    async def send_message(self, chat_id=None, text=None, *a, **k): return None
+    async def send_message(self, chat_id=None, text=None, *a, **k):
+        if chat_id is None and a: chat_id = a[0]
+        if text is None and len(a) > 1: text = a[1]
+        SENT.append((chat_id, text or '')); return None
     def __getattr__(self, n):
         async def f(*a, **k): return None
         return f
@@ -50,14 +54,20 @@ check(db.execute("SELECT COUNT(*) FROM cashreports").fetchone()[0] == n_cr, 'ön
 act(10, {'action': 'shift_end', 'drinks': {}, 'light': 1})
 check(row(s10)["end_time"] is None, 'son kalan hafif kapatamaz')
 # 4) Son kalan tam kapanış → bonus yarı yarıya
+SENT.clear()
 act(10, {'action': 'shift_end', 'drinks': drinks})
+check(any(str(c) == '11' and 'Ваша доля' in t for c, t in SENT), 'önce çıkana «Ваша доля» bildirimi gitti')
 r10, r11 = row(s10), row(s11)
 half = full // 2
 check(r10["end_time"] is not None and (r10["bonus"] or 0) == half and r10["par_n"] == 2, f'Бек bonusu yarısı ({half})')
 check((r11["bonus"] or 0) == half and r11["par_by"] == s10, 'Убай vardiyasına payı yazıldı')
-adj = db.execute("SELECT amount, note FROM adjustments WHERE user_id=11").fetchall()
-check([a["amount"] for a in adj] == [half] and 'поровну' in adj[0]["note"], 'Убай maaşına «+» kaydı')
-check(bot.calc_summary(db, 11, r11["period"])["adjustments"] == half, 'maaş özetinde görünüyor')
+check(db.execute("SELECT COUNT(*) FROM adjustments WHERE user_id=11").fetchone()[0] == 0, 'ay sonuna kayıt YOK (bonus nakit)')
+check(bot.calc_summary(db, 11, r11["period"])["adjustments"] == 0, 'Убай maaşına bonus eklenmedi')
+# Kapatan kasadan TAMAMINI alır (kendi payı + напарник payı)
+act(10, {'action': 'cash_report', 'cups': [], 'itogo': 0, 'vyshlo': 100000, 'daily_pay': full, 'branch_id': 1,
+         'end_time': r10["end_time"], 'start_time': r10["start_time"]})
+cr = db.execute("SELECT daily_pay FROM cashreports WHERE user_id=10 ORDER BY id DESC LIMIT 1").fetchone()
+check(cr is not None and cr["daily_pay"] == full, f'kasadan çıkan dnevnoy bonus = tamamı ({cr["daily_pay"] if cr else None})')
 # 5) Tekrar paylaştırma yok: yeni bir vardiya eski hafif kaydı yeniden bölmez
 s10b = open_shift(10, 1)
 act(10, {'action': 'shift_end', 'drinks': drinks})

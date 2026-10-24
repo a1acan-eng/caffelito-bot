@@ -959,7 +959,7 @@ def get_db():
     # kategori/ücret sonradan değişse TARİHSEL vardiyalar asla etkilenmez.
     # Paralel kapanış (owner 2026-10-24): par_light=1 → kasa/bardak yok, yalnız saat
     # (şubede başka barista hâlâ açıktı); par_by = bardak bonusunu paylaştıran kapanışın
-    # vardiya id'si; par_adj = bu kişiye yazılan bonus payı (adjustments.id); par_n = bölen.
+    # vardiya id'si; par_n = bölen. (par_adj eski taslaktan kalma, kullanılmıyor.)
     for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
                        ("cat_name", "TEXT"), ("rate", "INTEGER"),
                        ("par_light", "INTEGER"), ("par_by", "INTEGER"),
@@ -7256,8 +7256,9 @@ def start_shift(db, user_id, custom_start=None, branch_id=None, note=""):
 # Aynı şubede aynı anda iki (ya da daha çok) barista: kasayı, bardakları ve
 # masrafları YALNIZ SON ÇIKAN kapatır. Önce çıkan yalnız saatini kapatır
 # (asistan kapanışı gibi). Son kapanışın bardak bonusu, o gün aynı saatlerde
-# çalışıp önce çıkanlarla EŞİT bölünür: kapatanın payı kasadan (daily_pay,
-# vardiya bonusuna kırpılır), önce çıkanın payı maaşına «+» kaydı olarak.
+# çalışıp önce çıkanlarla EŞİT bölünür. Bonus ay sonunu BEKLEMEZ (owner):
+# kapatan TAMAMINI kasadan alır (daily_pay kırpması paylar dahil), önce
+# çıkanın payı ona elden verilir — önce çıkana bildirim gider.
 def par_open_partners(db, shift_row):
     """Bu vardiyanın şubesinde HÂLÂ AÇIK başka barista vardiyaları (asistan/stajyer
     yuvası sayılmaz). Kişi kendisi asistansa boş liste — onun kapanışı zaten hafif."""
@@ -7370,24 +7371,15 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     _par_rows = [] if _par_light else par_light_rows(db, active, end_dt)
     _par_n = (1 + len(_par_rows)) if _par_rows else None
     if _par_rows:
-        _cname = display_name_for(db, int(user_id), fallback=f"ID {user_id}")
         for _pr in _par_rows:
             try:
                 _ppi = barista_pay_info(db, int(_pr["user_id"]), branch_id=_bid)
                 _pp = get_caffelito_bonus(db) if _ppi["bonus_system"] == "caffelito" else get_prices(db)
                 _share = 0 if _ppi["use_kpi"] else int(calc_bonus(drinks, _pp) // _par_n)
-                _adj = None
-                if _share > 0:
-                    _adj = db.execute(
-                        "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,"
-                        "added_by_name,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                        (int(_pr["user_id"]), _share,
-                         f"Бонус за стаканы · поровну с {_cname} · {end_dt.strftime('%d.%m')}",
-                         _pr["period"] or current_period(), _bid, 0, "Nero",
-                         datetime.now(TZ).isoformat())).lastrowid
+                # Bonus brüte girmez (kasadan nakit) → vardiya satırındaki pay bilgi amaçlı.
                 db.execute("UPDATE shifts SET bonus=COALESCE(bonus,0)+?, total=COALESCE(total,0)+?, "
-                           "par_by=?, par_adj=?, par_n=? WHERE id=?",
-                           (_share, _share, int(active["id"]), _adj, _par_n, int(_pr["id"])))
+                           "par_by=?, par_n=? WHERE id=?",
+                           (_share, _share, int(active["id"]), _par_n, int(_pr["id"])))
             except Exception as _e_pr:
                 logger.warning(f"par split {_pr['id']}: {_e_pr}")
         drinks_bonus = int(drinks_bonus // _par_n)
@@ -11393,10 +11385,35 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n")
             if _sh_light:
                 text += ("👥 Кассу и стаканы закроет: " + ", ".join(par_partner_names(db, _par_open))
-                         + "\n🥤 Бонус за стаканы — поровну, придёт после закрытия кассы\n")
+                         + "\n🥤 Бонус за стаканы — поровну. Когда кассу закроют, придёт сообщение с вашей долей.\n")
             else:
                 text += (f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум"
                          + (f" _(поровну на {_sh_parn})_" if _sh_parn > 1 else "") + "\n")
+            # Paralel: bu kapanış bonusu önce çıkanlarla böldü → kasadan TAMAMI alınır,
+            # paylar elden verilir; önce çıkanlara bildirim.
+            _par_split = []
+            if _sh_parn > 1:
+                try:
+                    _par_split = db.execute("SELECT user_id, COALESCE(bonus,0) AS b FROM shifts WHERE par_by=?",
+                                            (int(sh["id"]),)).fetchall()
+                except Exception:
+                    _par_split = []
+            if _par_split:
+                _pay_all = drinks_bonus + sum(int(r["b"] or 0) for r in _par_split)
+                text += (f"👥 Из кассы возьмите *{fmt_sum(_pay_all)}* сум и отдайте: "
+                         + ", ".join(f"{display_name_for(db, int(r['user_id']), fallback='?')} — {fmt_sum(int(r['b'] or 0))}"
+                                     for r in _par_split) + "\n")
+                for _r in _par_split:
+                    try:
+                        await context.bot.send_message(
+                            int(_r["user_id"]),
+                            f"🥤 Бонус за стаканы · {end_dt.strftime('%d.%m')}"
+                            + (f" · {_bname}" if _bname else "") + "\n"
+                            f"Кассу закрыл(а) {shown}: {cups} шт стаканов, бонус поровну на {_sh_parn}.\n"
+                            f"💰 Ваша доля: *{fmt_sum(int(_r['b'] or 0))} сум* — возьмите у {shown} (из кассы).",
+                            parse_mode="Markdown")
+                    except Exception as _e_pn:
+                        logger.warning(f"par share DM {_r['user_id']}: {_e_pn}")
             if sweets:
                 text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
             text += (f"💵 Часы ({fmt_sum(_rate)}/ч): {fmt_sum(hourly_pay)} _(в конце месяца)_\n")
@@ -11460,6 +11477,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         if sweets:
                             gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"
                         gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
+                        if _par_split:
+                            gtext += ("\n👥 Бонус поровну: " + esc_html(", ".join(
+                                f"{display_name_for(db, int(r['user_id']), fallback='?')} — {fmt_sum(int(r['b'] or 0))}"
+                                for r in _par_split)))
                     if note:
                         gtext += f"\n📝 {esc_html(note)}"
                     _gm = await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
@@ -14750,7 +14771,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 try:
                     _ref, _refd = None, None
                     for _r in db.execute(
-                            "SELECT COALESCE(bonus,0) AS b, end_time FROM shifts "
+                            "SELECT id, COALESCE(bonus,0) AS b, end_time FROM shifts "
                             "WHERE user_id=? AND end_time IS NOT NULL ORDER BY id DESC LIMIT 8",
                             (user.id,)).fetchall():
                         try:
@@ -14768,6 +14789,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             f"(istemci={daily_pay}) — shift_end gecikmis olabilir")
                     else:
                         _earned = int(_ref["b"] or 0)
+                        # Paralel: напарникların payı da bu kasadan çıkıyor (elden verilir).
+                        try:
+                            _earned += int(db.execute(
+                                "SELECT COALESCE(SUM(bonus),0) FROM shifts WHERE par_by=?",
+                                (int(_ref["id"]),)).fetchone()[0] or 0)
+                        except Exception:
+                            pass
                         if daily_pay > _earned:
                             logger.warning(
                                 f"daily_pay kirpildi uid={user.id}: istemci={daily_pay} vardiya_bonusu={_earned}")
