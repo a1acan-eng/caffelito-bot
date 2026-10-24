@@ -13612,6 +13612,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     text=f"ℹ️ Владелец начал вашу смену в {_st}. Не забудьте закрыть её в конце дня.")
             except Exception:
                 pass
+            # GRUBA da bildir — barista kendi açtığındaki gibi (owner 2026-10-24: kapanış
+            # gidiyordu, açılış gitmiyordu). Grup = AÇILAN vardiyanın şubesinin grubu.
+            try:
+                _gid_s = resolve_group_id(db, target_id, context, branch_id=sh["branch_id"])
+                if _gid_s:
+                    from html import escape as esc_html
+                    _gm = await context.bot.send_message(
+                        chat_id=int(_gid_s),
+                        text=(f"🟢 <b>{esc_html(_nm)}</b> начал(а) смену\n"
+                              f"⏰ {_stdt.strftime('%d.%m.%Y %H:%M')}\n"
+                              f"👤 Начато владельцем"),
+                        parse_mode="HTML")
+                    sent_msg_tag(db, _gm, "shift_start", sh["id"])
+            except Exception as e:
+                logger.exception(f"FORCE_START GROUP FORWARD FAILED: {e}")
 
         elif action == "delete_shift":
             # Owner: yanlış/kazara vardiyayı sil (barista hatalarını düzeltme)
