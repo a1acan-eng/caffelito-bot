@@ -957,8 +957,13 @@ def get_db():
 
     # Vardiya SNAPSHOT kolonları: başlangıçta rol+kategori+ставка dondurulur —
     # kategori/ücret sonradan değişse TARİHSEL vardiyalar asla etkilenmez.
+    # Paralel kapanış (owner 2026-10-24): par_light=1 → kasa/bardak yok, yalnız saat
+    # (şubede başka barista hâlâ açıktı); par_by = bardak bonusunu paylaştıran kapanışın
+    # vardiya id'si; par_n = bölen. (par_adj eski taslaktan kalma, kullanılmıyor.)
     for _sc2, _sd2 in (("shift_role", "TEXT"), ("cat_id", "INTEGER"),
-                       ("cat_name", "TEXT"), ("rate", "INTEGER")):
+                       ("cat_name", "TEXT"), ("rate", "INTEGER"),
+                       ("par_light", "INTEGER"), ("par_by", "INTEGER"),
+                       ("par_adj", "INTEGER"), ("par_n", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -7247,6 +7252,93 @@ def start_shift(db, user_id, custom_start=None, branch_id=None, note=""):
     return _row
 
 
+# ── PARALEL KAPANIŞ (owner 2026-10-24) ──────────────────────────────────────
+# Aynı şubede aynı anda iki (ya da daha çok) barista: kasayı, bardakları ve
+# masrafları YALNIZ SON ÇIKAN kapatır. Önce çıkan yalnız saatini kapatır
+# (asistan kapanışı gibi). Son kapanışın bardak bonusu, o gün aynı saatlerde
+# çalışıp önce çıkanlarla EŞİT bölünür. Bonus ay sonunu BEKLEMEZ (owner):
+# kapatan TAMAMINI kasadan alır (daily_pay kırpması paylar dahil), önce
+# çıkanın payı ona elden verilir — önce çıkana bildirim gider.
+def par_open_partners(db, shift_row):
+    """Bu vardiyanın şubesinde HÂLÂ AÇIK başka barista vardiyaları (asistan/stajyer
+    yuvası sayılmaz). Kişi kendisi asistansa boş liste — onun kapanışı zaten hafif."""
+    try:
+        sh = dict(shift_row)
+        if not ho_shift_is_barista(db, sh):
+            return []
+        bid = int(sh.get("branch_id") or 0) or user_branch_id(db, int(sh["user_id"]))
+        out = []
+        for r in db.execute("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
+                            "AND COALESCE(branch_id,1)=? ORDER BY start_time",
+                            (int(sh["user_id"]), int(bid or 1))).fetchall():
+            if ho_shift_is_barista(db, r):
+                out.append(r)
+        return out
+    except Exception as e:
+        logger.warning(f"par_open_partners: {e}")
+        return []
+
+
+def par_is_intern(db, user_id, branch_id=None, shift_row=None):
+    """Stajyer mi? (owner 2026-10-24: bardak bonusu stajyerle PAYLAŞILMAZ.)
+    Barista yuvasında çalışan stajyer de dahil: kategoride stajyerlik sayacı
+    (intern_days>0) ya da kategori/vardiya kategori adında «стаж/intern/trainee»."""
+    try:
+        pi = barista_pay_info(db, int(user_id), branch_id=branch_id)
+        names = [pi.get("cat_name") or ""]
+        try:
+            if shift_row is not None:
+                names.append(shift_row["cat_name"] or "")
+        except (IndexError, KeyError, TypeError):
+            pass
+        if any(re.search(r"стаж|intern|trainee", n or "", re.I) for n in names):
+            return True
+        if pi.get("cat_id"):
+            r = db.execute("SELECT COALESCE(intern_days,0) AS d FROM salary_categories WHERE id=?",
+                           (int(pi["cat_id"]),)).fetchone()
+            if r and int(r["d"] or 0) > 0:
+                return True
+    except Exception as e:
+        logger.warning(f"par_is_intern({user_id}): {e}")
+    return False
+
+
+def par_partner_names(db, rows):
+    return [display_name_for(db, int(r["user_id"]), fallback=f"ID {r['user_id']}") for r in rows]
+
+
+def _par_mate_names(db, user_id):
+    """Nero: açık vardiyamın şubesinde hâlâ açık barista напарникlar (ad listesi).
+    Boş değilse kapanış ekranı «yalnız saat» olur."""
+    try:
+        a = get_active_shift(db, int(user_id))
+        return par_partner_names(db, par_open_partners(db, a)) if a else []
+    except Exception:
+        return []
+
+
+def par_light_rows(db, shift_row, end_dt):
+    """Son kapanışla bonusu paylaşacak, önce çıkmış «hafif» kapanışlar: aynı şube,
+    par_light=1, henüz paylaştırılmamış, saatleri bu vardiyayla örtüşen."""
+    try:
+        sh = dict(shift_row)
+        bid = int(sh.get("branch_id") or 0) or user_branch_id(db, int(sh["user_id"]))
+        st = datetime.fromisoformat(sh["start_time"])
+        out = []
+        for r in db.execute("SELECT * FROM shifts WHERE COALESCE(par_light,0)=1 AND par_by IS NULL "
+                            "AND end_time IS NOT NULL AND user_id<>? AND COALESCE(branch_id,1)=?",
+                            (int(sh["user_id"]), int(bid or 1))).fetchall():
+            try:
+                if datetime.fromisoformat(r["end_time"]) > st and datetime.fromisoformat(r["start_time"]) < end_dt:
+                    out.append(r)
+            except Exception:
+                continue
+        return out
+    except Exception as e:
+        logger.warning(f"par_light_rows: {e}")
+        return []
+
+
 def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     """
     Aktif vardiyayı sonlandır.
@@ -7266,6 +7358,10 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     if end_dt < start:
         end_dt = now
     _bid = active["branch_id"] if active["branch_id"] else user_branch_id(db, user_id)
+    # PARALEL: şubede başka barista hâlâ açıksa bu kapanış HAFİF — bardak/tatlı yok.
+    _par_light = bool(par_open_partners(db, active))
+    if _par_light:
+        drinks, desserts = {}, {}
     # ── DEVİR KLAMPESİ KALDIRILDI (kullanıcı isteği — vardiyalar TAMAMEN bağımsız) ──
     # Eskiden: bir vardiyanın bitişi, aynı şube+roldeki SONRAKİ vardiyanın başlangıcına
     # otomatik kısaltılıyordu (Hasan 03:00 kapatınca 20:00'a düşüyordu). ARTIK YOK.
@@ -7295,6 +7391,26 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     if _pi["use_kpi"]:
         drinks_bonus = 0
         dessert_bonus = 0
+    # PARALEL: son kapanış — bardak bonusu önce çıkanlarla eşit bölünür.
+    # Stajyer bonusu PAYLAŞMAZ: kapatan stajyerse bölme yok; önce çıkan stajyerler
+    # bölene katılmaz (kasa yine tek kişide — yalnız para bölünmez).
+    _par_rows = [] if (_par_light or par_is_intern(db, user_id, _bid, active)) else [
+        _r for _r in par_light_rows(db, active, end_dt)
+        if not par_is_intern(db, int(_r["user_id"]), _bid, _r)]
+    _par_n = (1 + len(_par_rows)) if _par_rows else None
+    if _par_rows:
+        for _pr in _par_rows:
+            try:
+                _ppi = barista_pay_info(db, int(_pr["user_id"]), branch_id=_bid)
+                _pp = get_caffelito_bonus(db) if _ppi["bonus_system"] == "caffelito" else get_prices(db)
+                _share = 0 if _ppi["use_kpi"] else int(calc_bonus(drinks, _pp) // _par_n)
+                # Bonus brüte girmez (kasadan nakit) → vardiya satırındaki pay bilgi amaçlı.
+                db.execute("UPDATE shifts SET bonus=COALESCE(bonus,0)+?, total=COALESCE(total,0)+?, "
+                           "par_by=?, par_n=? WHERE id=?",
+                           (_share, _share, int(active["id"]), _par_n, int(_pr["id"])))
+            except Exception as _e_pr:
+                logger.warning(f"par split {_pr['id']}: {_e_pr}")
+        drinks_bonus = int(drinks_bonus // _par_n)
     bonus = drinks_bonus + dessert_bonus
     hourly_pay = int(hours * _rate)
     total = hourly_pay + bonus
@@ -7317,10 +7433,11 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
         ot_shift, ot_h = 0, 0.0
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
-        "desserts=?, dessert_bonus=?, overtime=?, overtime_h=? WHERE id=?",
+        "desserts=?, dessert_bonus=?, overtime=?, overtime_h=?, par_light=?, par_n=? WHERE id=?",
         (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
          bonus, hourly_pay, total, note or "",
-         json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h, active["id"]))
+         json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h,
+         1 if _par_light else None, _par_n, active["id"]))
     db.commit()
     # RESERVE: çalışılan gün kapandı → o günün katkısı (tek sefer, idempotent).
     try:
@@ -8413,6 +8530,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"ot_cfg={quote(json.dumps(get_overtime_cfg(db), ensure_ascii=False))}",
         f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
         f"on_now={quote(json.dumps(on_now_rows(db, user_id), ensure_ascii=False))}",
+        f"par_mate={quote(json.dumps(_par_mate_names(db, user_id), ensure_ascii=False))}",
+        f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
     ]
     # ── График смен: kaydedilen plan + выходной заявкаları geri gönderilir.
@@ -11168,6 +11287,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             desserts = data.get("desserts", {}) or {}
             note = (data.get("note") or "").strip()
             custom_end = data.get("end_time") or data.get("custom_end")
+            # ── PARALEL KAPANIŞ: ekran ile sunucu AYNI kararı vermeli ──────────
+            # Ekran «hafif» (yalnız saat) gösterdiyse `light: 1` gelir. Arada
+            # durum değiştiyse (напарник kapattı / yeni biri açtı) kapanış
+            # REDDEDİLİR ve ekran tazelenir — bardaklar kaybolmasın, iki kez de
+            # sayılmasın.
+            _par_open = par_open_partners(db, active)
+            _par_req = str(data.get("light") or "").strip().lower() in ("1", "true")
+            _cups_sent = sum(int(v or 0) for v in (drinks or {}).values() if str(v or 0).lstrip("-").isdigit())
+            if _par_open and not _par_req and _cups_sent > 0:
+                await update.message.reply_text(
+                    "👥 На смене ещё " + ", ".join(par_partner_names(db, _par_open)) + ".\n"
+                    "Кассу и стаканы закрывает тот, кто уходит последним. "
+                    "Обновите Nero и закройте только свои часы.")
+                return
+            if _par_req and not _par_open:
+                await update.message.reply_text(
+                    "👤 Напарник уже закрыл смену — теперь кассу и стаканы закрываете вы.\n"
+                    "Обновите Nero, посчитайте стаканы и закройте смену заново.")
+                return
             # ── ПЕРЕДАЧА СМЕНЫ: KAPANIS KILIDI (owner 2026-09-22) ──────────────
             # «Devir penceresi varken 1. barista kendi kendine cikamaz — izin
             # olmadan kapatamasin; taslak yolu ZORUNLU.» Plan bitisinden ONCE
@@ -11180,7 +11318,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if ho_enabled(_hocfg_e):
                 ho_void_non_barista(db)
             _hrow_e = ho_row_for_shift(db, active["id"]) if ho_enabled(_hocfg_e) else None
-            if _hrow_e and close_free_on(db, user.id):
+            # Paralel: напарник şubede kalıyor → erken çıkış şubeyi boş bırakmaz, kilit yok.
+            if _hrow_e and (_par_open or close_free_on(db, user.id)):
                 _hrow_e = ho_free_approve(db, _hrow_e)
             if _hrow_e and not _hrow_e["finalized"]:
                 try:
@@ -11265,11 +11404,46 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "overtime": int(sh["overtime"] or 0), "total": total})
             s = calc_summary(db, user.id, period)
             # DM cevabı: kişisel — saatlik dahil net
+            _sh_light = bool(sh["par_light"]) if "par_light" in sh.keys() else False
+            _sh_parn = int(sh["par_n"] or 0) if "par_n" in sh.keys() else 0
+            if _sh_light:
+                cups, sweets = 0, 0
             text = (f"🔴 *Смена закрыта!*"
                     + (f" · 🏢 {_bname}" if _bname else "") + "\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n"
-                    f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум\n")
+                    f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n")
+            if _sh_light:
+                text += ("👥 Кассу и стаканы закроет: " + ", ".join(par_partner_names(db, _par_open))
+                         + ("\n" if par_is_intern(db, user.id, sh["branch_id"], sh) else
+                            "\n🥤 Бонус за стаканы — поровну. Когда кассу закроют, придёт сообщение с вашей долей.\n"))
+            else:
+                text += (f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум"
+                         + (f" _(поровну на {_sh_parn})_" if _sh_parn > 1 else "") + "\n")
+            # Paralel: bu kapanış bonusu önce çıkanlarla böldü → kasadan TAMAMI alınır,
+            # paylar elden verilir; önce çıkanlara bildirim.
+            _par_split = []
+            if _sh_parn > 1:
+                try:
+                    _par_split = db.execute("SELECT user_id, COALESCE(bonus,0) AS b FROM shifts WHERE par_by=?",
+                                            (int(sh["id"]),)).fetchall()
+                except Exception:
+                    _par_split = []
+            if _par_split:
+                _pay_all = drinks_bonus + sum(int(r["b"] or 0) for r in _par_split)
+                text += (f"👥 Из кассы возьмите *{fmt_sum(_pay_all)}* сум и отдайте: "
+                         + ", ".join(f"{display_name_for(db, int(r['user_id']), fallback='?')} — {fmt_sum(int(r['b'] or 0))}"
+                                     for r in _par_split) + "\n")
+                for _r in _par_split:
+                    try:
+                        await context.bot.send_message(
+                            int(_r["user_id"]),
+                            f"🥤 Бонус за стаканы · {end_dt.strftime('%d.%m')}"
+                            + (f" · {_bname}" if _bname else "") + "\n"
+                            f"Кассу закрыл(а) {shown}: {cups} шт стаканов, бонус поровну на {_sh_parn}.\n"
+                            f"💰 Ваша доля: *{fmt_sum(int(_r['b'] or 0))} сум* — возьмите у {shown} (из кассы).",
+                            parse_mode="Markdown")
+                    except Exception as _e_pn:
+                        logger.warning(f"par share DM {_r['user_id']}: {_e_pn}")
             if sweets:
                 text += f"🍰 Десерты: *{sweets}* шт · 💰 {fmt_sum(dessert_bonus)} сум\n"
             text += (f"💵 Часы ({fmt_sum(_rate)}/ч): {fmt_sum(hourly_pay)} _(в конце месяца)_\n")
@@ -11325,11 +11499,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                              f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})")
                     if _is_asst:
                         gtext += f"\n👤 Ассистент / стажёр"
+                    elif _sh_light:
+                        gtext += ("\n👥 Кассу закроет: <b>"
+                                  + esc_html(", ".join(par_partner_names(db, _par_open))) + "</b>")
                     else:
                         gtext += f"\n🥤 Напитки: <b>{cups}</b> шт"
                         if sweets:
                             gtext += f"\n🍰 Десерты: <b>{sweets}</b> шт"
                         gtext += f"\n💰 Продажи: <b>{fmt_sum(sales_bonus)} сум</b>"
+                        if _par_split:
+                            gtext += ("\n👥 Бонус поровну: " + esc_html(", ".join(
+                                f"{display_name_for(db, int(r['user_id']), fallback='?')} — {fmt_sum(int(r['b'] or 0))}"
+                                for r in _par_split)))
                     if note:
                         gtext += f"\n📝 {esc_html(note)}"
                     _gm = await context.bot.send_message(chat_id=int(group_id), text=gtext, parse_mode="HTML")
@@ -14444,6 +14625,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _cr_asst = (int(_cr_pi.get("does_kasa", 1) or 0) == 0
                         or (_cr_pi.get("slot_role") or "barista") == "assistant"
                         or _cr_row_role(_cr_ref) == "assistant")
+            # Paralel: önce çıkan barista kasa raporu VERMEZ (kasayı son çıkan kapatır).
+            try:
+                if (not _my_act_cr_pre and _cr_ref is not None and "par_light" in _cr_ref.keys()
+                        and int(_cr_ref["par_light"] or 0) == 1 and get_role(db, user.id) != "owner"):
+                    logger.info(f"cash_report atlandi (paralel, hafif kapanis): uid={user.id} bid={_cr_bid}")
+                    await update.message.reply_text("✅ Смена закрыта. Кассу закроет напарник.")
+                    return
+            except (IndexError, KeyError, TypeError):
+                pass
             if _cr_asst and get_role(db, user.id) != "owner":
                 logger.info(f"cash_report atlandi (asistan): uid={user.id} bid={_cr_bid}")
                 await update.message.reply_text(
@@ -14611,7 +14801,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 try:
                     _ref, _refd = None, None
                     for _r in db.execute(
-                            "SELECT COALESCE(bonus,0) AS b, end_time FROM shifts "
+                            "SELECT id, COALESCE(bonus,0) AS b, end_time FROM shifts "
                             "WHERE user_id=? AND end_time IS NOT NULL ORDER BY id DESC LIMIT 8",
                             (user.id,)).fetchall():
                         try:
@@ -14629,6 +14819,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             f"(istemci={daily_pay}) — shift_end gecikmis olabilir")
                     else:
                         _earned = int(_ref["b"] or 0)
+                        # Paralel: напарникların payı da bu kasadan çıkıyor (elden verilir).
+                        try:
+                            _earned += int(db.execute(
+                                "SELECT COALESCE(SUM(bonus),0) FROM shifts WHERE par_by=?",
+                                (int(_ref["id"]),)).fetchone()[0] or 0)
+                        except Exception:
+                            pass
                         if daily_pay > _earned:
                             logger.warning(
                                 f"daily_pay kirpildi uid={user.id}: istemci={daily_pay} vardiya_bonusu={_earned}")
