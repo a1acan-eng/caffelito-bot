@@ -61,5 +61,11 @@ check(cr["user_id"] == 10 and cr["branch_id"] == 1 and cr["daily_pay"] == full, 
 check(db.execute("SELECT COUNT(*) FROM cashreports WHERE user_id=1").fetchone()[0] == 0, 'owner adına rapor yazılmadı')
 u10 = db.execute("SELECT name FROM users WHERE user_id=10").fetchone()
 check(u10["name"] == 'Бек', 'Бек\'in kaydı owner bilgisiyle ezilmedi')
+# Owner başkası adına AÇINCA da gruba «начал(а) смену» gider
+db.execute("UPDATE branches SET group_chat_id=-1001 WHERE id=1"); db.commit()
+SENT.clear()
+act(1, {'action': 'force_start_shift', 'target': 11, 'branch_id': 1})
+check(bot.get_active_shift(db, 11) is not None, 'owner Убай vardiyasını açtı')
+check(any(str(c) == '-1001' and 'начал(а) смену' in t and 'владельцем' in t for c, t in SENT), 'gruba «начал(а) смену · Начато владельцем» gitti')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
