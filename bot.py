@@ -7279,6 +7279,30 @@ def par_open_partners(db, shift_row):
         return []
 
 
+def par_is_intern(db, user_id, branch_id=None, shift_row=None):
+    """Stajyer mi? (owner 2026-10-24: bardak bonusu stajyerle PAYLAŞILMAZ.)
+    Barista yuvasında çalışan stajyer de dahil: kategoride stajyerlik sayacı
+    (intern_days>0) ya da kategori/vardiya kategori adında «стаж/intern/trainee»."""
+    try:
+        pi = barista_pay_info(db, int(user_id), branch_id=branch_id)
+        names = [pi.get("cat_name") or ""]
+        try:
+            if shift_row is not None:
+                names.append(shift_row["cat_name"] or "")
+        except (IndexError, KeyError, TypeError):
+            pass
+        if any(re.search(r"стаж|intern|trainee", n or "", re.I) for n in names):
+            return True
+        if pi.get("cat_id"):
+            r = db.execute("SELECT COALESCE(intern_days,0) AS d FROM salary_categories WHERE id=?",
+                           (int(pi["cat_id"]),)).fetchone()
+            if r and int(r["d"] or 0) > 0:
+                return True
+    except Exception as e:
+        logger.warning(f"par_is_intern({user_id}): {e}")
+    return False
+
+
 def par_partner_names(db, rows):
     return [display_name_for(db, int(r["user_id"]), fallback=f"ID {r['user_id']}") for r in rows]
 
@@ -7368,7 +7392,11 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
         drinks_bonus = 0
         dessert_bonus = 0
     # PARALEL: son kapanış — bardak bonusu önce çıkanlarla eşit bölünür.
-    _par_rows = [] if _par_light else par_light_rows(db, active, end_dt)
+    # Stajyer bonusu PAYLAŞMAZ: kapatan stajyerse bölme yok; önce çıkan stajyerler
+    # bölene katılmaz (kasa yine tek kişide — yalnız para bölünmez).
+    _par_rows = [] if (_par_light or par_is_intern(db, user_id, _bid, active)) else [
+        _r for _r in par_light_rows(db, active, end_dt)
+        if not par_is_intern(db, int(_r["user_id"]), _bid, _r)]
     _par_n = (1 + len(_par_rows)) if _par_rows else None
     if _par_rows:
         for _pr in _par_rows:
@@ -8503,6 +8531,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
         f"on_now={quote(json.dumps(on_now_rows(db, user_id), ensure_ascii=False))}",
         f"par_mate={quote(json.dumps(_par_mate_names(db, user_id), ensure_ascii=False))}",
+        f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
     ]
     # ── График смен: kaydedilen plan + выходной заявкаları geri gönderilir.
@@ -11385,7 +11414,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"⏰ {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}  ({fmt_hm(hours)})\n")
             if _sh_light:
                 text += ("👥 Кассу и стаканы закроет: " + ", ".join(par_partner_names(db, _par_open))
-                         + "\n🥤 Бонус за стаканы — поровну. Когда кассу закроют, придёт сообщение с вашей долей.\n")
+                         + ("\n" if par_is_intern(db, user.id, sh["branch_id"], sh) else
+                            "\n🥤 Бонус за стаканы — поровну. Когда кассу закроют, придёт сообщение с вашей долей.\n"))
             else:
                 text += (f"🥤 Напитков: *{cups}* шт · 💰 {fmt_sum(drinks_bonus)} сум"
                          + (f" _(поровну на {_sh_parn})_" if _sh_parn > 1 else "") + "\n")
