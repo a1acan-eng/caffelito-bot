@@ -965,7 +965,10 @@ def get_db():
                        ("par_light", "INTEGER"), ("par_by", "INTEGER"),
                        ("par_adj", "INTEGER"), ("par_n", "INTEGER"),
                        # par_with: hafif kapanış anında AÇIK olan напарник vardiya id'leri («,5,9,»)
-                       ("par_with", "TEXT")):
+                       ("par_with", "TEXT"),
+                       # par_of: PARALEL GRUP kökü (ilk baristanın vardiya id'si). Yalnız
+                       # birincinin başlangıcından PAR_WINDOW içinde açılan vardiyada dolu.
+                       ("par_of", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -4787,6 +4790,8 @@ def ho_get_or_create(db, cfg, sh):
     sh = dict(sh)
     if not ho_shift_is_barista(db, sh):
         return None
+    if sh.get("par_of"):
+        return None                      # paralel grup üyesi: devir satırı birincide
     row = ho_row_for_shift(db, sh.get("id"))
     if row:
         return row
@@ -5154,6 +5159,8 @@ def ho_on_b2_arrival(db, cfg, b2_sh):
     b2 = dict(b2_sh)
     if not ho_shift_is_barista(db, b2):
         return None                      # stajyer/asistan sменщик sayilmaz
+    if b2.get("par_of"):
+        return None                      # paralel gelen sменщик DEĞİL (birlikte çalışıyorlar)
     bid = int(b2.get("branch_id") or 0)
     try:
         at = datetime.fromisoformat(b2["start_time"])
@@ -7261,6 +7268,68 @@ def start_shift(db, user_id, custom_start=None, branch_id=None, note=""):
 # çalışıp önce çıkanlarla EŞİT bölünür. Bonus ay sonunu BEKLEMEZ (owner):
 # kapatan TAMAMINI kasadan alır (daily_pay kırpması paylar dahil), önce
 # çıkanın payı ona elden verilir — önce çıkana bildirim gider.
+PAR_WINDOW_MIN = 120      # owner 2026-10-24: «7'de başladıysa 9'a kadar gelen paralel»
+
+
+def par_window_min(db):
+    """Paralel penceresi (dk): birincinin başlangıcından bu süre içinde gelen barista
+    PARALEL sayılır; sonra gelen İKİNCİ VARDİYA (devir). meta 'par_window_min' ile ezilir."""
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='par_window_min'").fetchone()
+        if r and str(r["val"] or "").strip():
+            return max(0, int(r["val"]))
+    except Exception:
+        pass
+    return PAR_WINDOW_MIN
+
+
+def par_group(sh):
+    """Vardiyanın paralel grup kökü: par_of varsa o, yoksa kendi id'si."""
+    try:
+        d = dict(sh)
+        return int(d.get("par_of") or d.get("id") or 0)
+    except Exception:
+        return 0
+
+
+def par_window_root(db, user_id, branch_id, when_dt):
+    """Bu kişi şimdi (when_dt) bu şubede açarsa hangi paralel gruba katılır?
+    Şubede AÇIK bir barista vardiyası varsa ve onun grubunun İLK başlangıcından
+    bu yana par_window_min dakikadan az geçtiyse → o grubun kök vardiya id'si.
+    Yoksa None (tek başına / ikinci vardiya). Asistan/stajyer YUVASI hiç katılmaz."""
+    try:
+        bid = int(branch_id or 0) or user_branch_id(db, int(user_id))
+        if closer_is_assistant(db, int(user_id), bid or None):
+            return None
+        win = par_window_min(db)
+        if win <= 0:
+            return None
+        best = None
+        for r in db.execute("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
+                            "AND COALESCE(branch_id,1)=? AND start_time IS NOT NULL",
+                            (int(user_id), int(bid or 1))).fetchall():
+            if not ho_shift_is_barista(db, r):
+                continue
+            root_id = par_group(r)
+            root = r if root_id == int(r["id"]) else db.execute(
+                "SELECT * FROM shifts WHERE id=?", (root_id,)).fetchone()
+            if not root:
+                continue
+            try:
+                rst = datetime.fromisoformat(root["start_time"])
+                if rst.tzinfo is not None:
+                    rst = rst.astimezone(TZ).replace(tzinfo=None)
+            except Exception:
+                continue
+            if timedelta(0) <= (when_dt - rst) <= timedelta(minutes=win):
+                if best is None or rst < best[1]:
+                    best = (root_id, rst)
+        return best[0] if best else None
+    except Exception as e:
+        logger.warning(f"par_window_root: {e}")
+        return None
+
+
 def par_open_partners(db, shift_row):
     """Bu vardiyanın şubesinde HÂLÂ AÇIK başka barista vardiyaları (asistan/stajyer
     yuvası sayılmaz). Kişi kendisi asistansa boş liste — onun kapanışı zaten hafif."""
@@ -7269,16 +7338,16 @@ def par_open_partners(db, shift_row):
         if not ho_shift_is_barista(db, sh):
             return []
         bid = int(sh.get("branch_id") or 0) or user_branch_id(db, int(sh["user_id"]))
-        # YALNIZ GERÇEK PARALEL (owner 2026-10-24, canlı hata): normal devirde de
-        # (sabahçı açık, akşamcı geldi) şubede iki açık barista oluyor — o durumda
-        # sabahçı kasayı HER ZAMANKİ GİBİ kapatır. Paralel = iki vardiyadan biri
-        # «параллельная смена» notuyla açılmış (pozisyon doluyken açılış).
-        _par = lambda r: "параллельн" in str((dict(r).get("note") or "")).lower()
+        # YALNIZ AYNI PARALEL GRUP (owner 2026-10-24): normal devirde de (sabahçı
+        # açık, akşamcı geldi) şubede iki açık barista olur — o durumda herkes
+        # kendi kasasını kapatır. Grup = birincinin başlangıcından PAR_WINDOW
+        # içinde açılanlar (par_of = birincinin vardiyası).
+        g = par_group(sh)
         out = []
         for r in db.execute("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
                             "AND COALESCE(branch_id,1)=? ORDER BY start_time",
                             (int(sh["user_id"]), int(bid or 1))).fetchall():
-            if (_par(sh) or _par(r)) and ho_shift_is_barista(db, r):
+            if par_group(r) == g and ho_shift_is_barista(db, r):
                 out.append(r)
         return out
     except Exception as e:
@@ -11090,6 +11159,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"solo auto-off: {_e_so}")
             _mode = (data.get("shift_mode") or "").strip()
             _blk = slot_block_reason(db, user.id, _bid_chk)
+            # ── PARALEL PENCERE (owner 2026-10-24): birinci barista 07:00'de açtıysa
+            # 09:00'a kadar (PAR_WINDOW) gelen ikinci barista BİRLİKTE çalışır —
+            # «erken gelen sменщик» SAYILMAZ (ücret plan saatine çekilmez, devir
+            # başlamaz). Kasayı gruptan son çıkan kapatır. Pencereden sonra gelen
+            # ise İKİNCİ VARDİYA'dır (normal devir).
+            _par_root = None
+            try:
+                _want0 = _parse_user_time(custom_start) or datetime.now(TZ).replace(tzinfo=None)
+                _par_root = par_window_root(db, user.id, _bid_chk, _want0)
+            except Exception as _e_pw:
+                logger.warning(f"par window: {_e_pw}")
+            _par_note = ""
+            if _par_root:
+                _mode = "parallel"
+                if _blk and "Нет позиции" not in _blk:
+                    _blk = None
+                try:
+                    _pr_nm = display_name_for(db, int(db.execute("SELECT user_id FROM shifts WHERE id=?",
+                                                                 (int(_par_root),)).fetchone()["user_id"]), fallback="")
+                except Exception:
+                    _pr_nm = ""
+                _par_note = ("👥 Вы на смене вместе" + (f" с {_pr_nm}" if _pr_nm else "") + " — работаете параллельно.\n"
+                             "Кассу и стаканы закроет тот, кто уйдёт последним; бонус за стаканы — поровну.")
             # ПЕРЕДАЧА СМЕНЫ (2026-09-21, canli: 2. barista 1. kapatmadan acamadi):
             # akis acikken bu subede ACIK bir devir satiri (1. vardiya) varsa,
             # 2. barista pozisyon dolu olsa da baslar — devir zaten bu demek.
@@ -11111,7 +11203,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # «Текущий бариста должен завершить…» ile reddediliyordu. Şimdi kendiliğinden
             # PARALEL açılır (her biri kendi vardiyasını kapatır); kişiye bilgi verilir.
             # Yalnız «Нет позиции ассистента» (owner ayarı) hâlâ engeldir.
-            _par_note = ""
             if _blk and _grid_bid and "Нет позиции" in _blk:
                 _blk = None     # графиkte bu şubeye konmuş → pozisyon ayarı engel değil
             if _blk and "Нет позиции" not in _blk and _mode not in ("takeover", "parallel") and not _solo_bypass:
@@ -11140,7 +11231,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _early_real = _early_plan = None
             try:
                 _ecfg = op_cfg(db)
-                if ho_enabled(_ecfg) and not closer_is_assistant(db, user.id, _bid_chk or None):
+                if ho_enabled(_ecfg) and not _par_root and not closer_is_assistant(db, user.id, _bid_chk or None):
                     ho_void_non_barista(db)
                     _erow = db.execute(
                         "SELECT * FROM handover WHERE branch_id=? AND finalized=0 AND user_id!=? "
@@ -11157,6 +11248,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"handover early arrival: {_e_er}")
             sh = start_shift(db, user.id, custom_start=custom_start, branch_id=sel_branch,
                              note=("параллельная смена" if _mode == "parallel" else ""))
+            if _par_root:
+                try:
+                    db.execute("UPDATE shifts SET par_of=? WHERE id=?", (int(_par_root), int(sh["id"])))
+                    db.commit()
+                    sh = db.execute("SELECT * FROM shifts WHERE id=?", (int(sh["id"]),)).fetchone()
+                except Exception as _e_po:
+                    logger.warning(f"par_of set: {_e_po}")
             if _early_real is not None:
                 # Vardiya GERCEK saatte acilir, sonra baslangic PLANA cekilir.
                 # (start_shift gelecek saati kabul etmez — «erken geldim, ucret
@@ -13593,9 +13691,19 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # start_shift doğrular: gelecek clamp + AYNI ROL devir klampesi (önceki bitişten
             # önceye yazılamaz) + rol/kategori/ставка şube-etkin konfigürasyondan SNAPSHOT.
             _req_st = data.get("start_time") or None
-            _fpar = bool(_blk)          # pozisyon dolu → paralel (gecikme şube penceresinden ölçülmez)
+            # Paralel pencere (owner 2026-10-24): birincinin başlangıcından PAR_WINDOW içinde → grup.
+            _froot = par_window_root(db, target_id, _fbid,
+                                     _parse_user_time(_req_st) or datetime.now(TZ).replace(tzinfo=None))
+            _fpar = bool(_blk) or bool(_froot)   # pozisyon dolu → paralel (gecikme şube penceresinden ölçülmez)
             sh = start_shift(db, target_id, custom_start=_req_st, branch_id=_fbid,
                              note=("параллельная смена" if _fpar else ""))
+            if _froot:
+                try:
+                    db.execute("UPDATE shifts SET par_of=? WHERE id=?", (int(_froot), int(sh["id"])))
+                    db.commit()
+                    sh = db.execute("SELECT * FROM shifts WHERE id=?", (int(sh["id"]),)).fetchone()
+                except Exception as _e_fpo:
+                    logger.warning(f"force par_of: {_e_fpo}")
             # Audit: owner-elle-başlatma vardiya notuna da işlensin (log_action'a ek)
             try:
                 db.execute("UPDATE shifts SET note=? WHERE id=?",
