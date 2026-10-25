@@ -2426,9 +2426,22 @@ def grid_check(db, week_key, day, user_id, code, tpls=None):
         ot = tpls.get(r["code"])
         if ot and r["code"] != code and grid_overlap(t["start"], t["end"], ot["start"], ot["end"]):
             return False, "Сотрудник уже назначен на другую смену в это время."
-    # KAPASİTE SINIRI KALDIRILDI (owner 2026-10-25): bir şubeye bir güne
-    # istenildiği kadar kişi yazılabilir (paralel vardiyalar). `max_staff`
-    # sütunu duruyor ama artık hiçbir şeyi engellemiyor.
+    # KAPASİTE — bu şubede o gün kaç kişi var
+    bid = t["branch_id"]
+    if bid:
+        cnt = 0
+        for r in rows:
+            rt = tpls.get(r["code"])
+            if rt and rt["branch_id"] == bid:
+                cnt += 1
+        try:
+            br = db.execute("SELECT name, COALESCE(max_staff,2) AS mx FROM branches WHERE id=?",
+                            (int(bid),)).fetchone()
+        except Exception:
+            br = None
+        mx = int(br["mx"]) if br else 2
+        if mx > 0 and cnt >= mx:
+            return False, "Максимум сотрудников на филиале достигнут."
     return True, ""
 
 
