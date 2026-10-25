@@ -559,6 +559,9 @@ def get_db():
                      ("reserve_cancelled", "INTEGER"),
                      # owner 2026-10-04: bu kişiye otomatik gecikme cezası KAPALI (1)
                      ("op_fine_off", "INTEGER"),
+                     # owner 2026-10-25: kişiye özel GECE PRİMİ — NULL = genel ayar,
+                     # 1 = bu kişiye açık, 0 = bu kişiye kapalı (saat/çarpan genel ayardan).
+                     ("night_mode", "INTEGER"),
                      # owner 2026-10-21: bu kişi vardiyasını PLAN BİTİŞİNDEN ÖNCE de
                      # kendisi kapatabilir (devir kilidi yok, owner onayı hazır sayılır).
                      ("close_free", "INTEGER"),
@@ -1540,6 +1543,21 @@ def night_cfg(db):
                 for k in cfg:
                     if k in j:
                         cfg[k] = j[k]
+    except Exception:
+        pass
+    return cfg
+
+
+def night_cfg_for(db, user_id):
+    """Kişi için ETKİN gece ayarı: genel ayar + kişiye özel aç/kapa (users.night_mode).
+    Saat ve çarpan her zaman genel ayardan. `src` vardiya kopyasında kaynağı gösterir."""
+    cfg = night_cfg(db)
+    cfg["src"] = "general"
+    try:
+        r = db.execute("SELECT night_mode FROM users WHERE user_id=?", (int(user_id),)).fetchone()
+        if r is not None and r["night_mode"] is not None:
+            cfg["on"] = 1 if int(r["night_mode"]) else 0
+            cfg["src"] = "personal"
     except Exception:
         pass
     return cfg
@@ -7753,7 +7771,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     bonus = drinks_bonus + dessert_bonus
     hourly_pay = int(hours * _rate)
     # GECE PRİMİ: o anki ayarla hesaplanır ve vardiyaya DONDURULUR (night_cfg kopyası).
-    _ncfg = night_cfg(db)
+    _ncfg = night_cfg_for(db, user_id)
     _np = night_premium(start, end_dt, _pc, _rate, _ncfg, paid_h=hours)
     hourly_pay += _np["pay"]
     total = hourly_pay + bonus
@@ -9165,7 +9183,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         rows = db.execute(
             "SELECT user_id, name, username, role, display_name, password, authorized, "
             "COALESCE(archived,0) AS archived, archived_at, COALESCE(branch_id,1) AS branch_id, "
-            "salary_cat_id, COALESCE(op_fine_off,0) AS op_fine_off, COALESCE(close_free,0) AS close_free "
+            "salary_cat_id, COALESCE(op_fine_off,0) AS op_fine_off, COALESCE(close_free,0) AS close_free, "
+            "night_mode "
             "FROM users WHERE COALESCE(approved,0)=1 "
             "ORDER BY COALESCE(archived,0), COALESCE(display_name,name)").fetchall()
         baristas = []
@@ -9257,6 +9276,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "res": _res_card(db, b["user_id"]),
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
                 "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
+                "nmode": (None if ("night_mode" not in b.keys() or b["night_mode"] is None) else int(b["night_mode"])),
                 "intern": intern_info(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
@@ -13844,6 +13864,34 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(_u, _msg)
                 except Exception:
                     pass
+
+        elif action == "night_user_set":
+            # Owner: bu kişiye gece primi — genel ayar / kişiye açık / kişiye kapalı.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except Exception:
+                _tid = 0
+            _row = db.execute("SELECT night_mode FROM users WHERE user_id=?", (_tid,)).fetchone() if _tid else None
+            if not _row:
+                context.result = {"ok": False, "error": "Сотрудник не найден."}
+                return
+            _mode = str(data.get("mode") or "").strip()
+            if _mode not in ("default", "on", "off"):
+                context.result = {"ok": False, "error": "Неверный режим."}
+                return
+            _new = None if _mode == "default" else (1 if _mode == "on" else 0)
+            _lbl = lambda v: "по общей настройке" if v is None else ("включена" if int(v) else "выключена")
+            db.execute("UPDATE users SET night_mode=? WHERE user_id=?", (_new, _tid))
+            db.commit()
+            log_action(db, "night_user_set", user.id, user.first_name, _tid,
+                       display_name_for(db, _tid, fallback=f"ID {_tid}"),
+                       {"old": _lbl(_row["night_mode"]), "new": _lbl(_new)})
+            context.result = {"ok": True, "mode": _mode}
 
         elif action == "xfer_send":
             # ПЕРЕВОД (owner 2026-10-25): çalışan → çalışan, Nero ID ile.
