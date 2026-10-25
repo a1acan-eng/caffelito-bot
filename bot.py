@@ -168,6 +168,14 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         from_uid INTEGER, to_uid INTEGER, amount INTEGER, note TEXT, period TEXT,
         created_at TEXT, adj_from INTEGER, adj_to INTEGER)""")
+    # Owner düzeltme/iptal (2026-10-25): kayıt SİLİNMEZ — durum + kim/ne zaman + ilk tutar.
+    for _xc, _xt in (("status", "TEXT"), ("orig_amount", "INTEGER"), ("orig_note", "TEXT"),
+                     ("edited_at", "TEXT"), ("edited_by", "INTEGER"),
+                     ("canceled_at", "TEXT"), ("canceled_by", "INTEGER")):
+        try:
+            db.execute(f"ALTER TABLE xfers ADD COLUMN {_xc} {_xt}")
+        except sqlite3.OperationalError:
+            pass
     db.execute("""CREATE TABLE IF NOT EXISTS adjustments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, note TEXT, period TEXT,
@@ -7470,7 +7478,8 @@ def xfer_rows(db, user_id, role):
                  "from": r["from_uid"], "to": r["to_uid"], "a": int(r["amount"] or 0),
                  "fn": display_name_for(db, int(r["from_uid"]), fallback=f"ID {r['from_uid']}"),
                  "tn": display_name_for(db, int(r["to_uid"]), fallback=f"ID {r['to_uid']}"),
-                 "note": r["note"] or ""} for r in rs]
+                 "note": r["note"] or "", "st": (r["status"] or "ok"),
+                 "ed": 1 if r["edited_at"] else 0, "oa": r["orig_amount"]} for r in rs]
     except Exception as e:
         logger.warning(f"xfer_rows: {e}")
         return []
@@ -7524,6 +7533,57 @@ def xfer_send(db, from_uid, to_uid, amount, note=""):
     db.commit()
     log_action(db, "xfer_send", int(from_uid), fn, to_uid, tn, {"amount": amount, "note": note, "xfer_id": xid})
     return True, "", xid
+
+
+def xfer_owner_change(db, owner_id, xid, amount=None, note=None, cancel=False):
+    """Owner bir transferi DÜZELTİR (tutar/neden) ya da İPTAL eder. Para iki tarafın
+    `adjustments` kayıtlarında: düzeltmede ikisi birlikte güncellenir, iptalde ikisi
+    birlikte kaldırılır. `xfers` satırı HİÇ silinmez (geçmiş + ilk değer korunur).
+    Döner (ok, hata, satır)."""
+    x = db.execute("SELECT * FROM xfers WHERE id=?", (int(xid),)).fetchone()
+    if not x:
+        return False, "Перевод не найден.", None
+    if (x["status"] or "ok") == "canceled":
+        return False, "Перевод уже отменён.", None
+    fn = display_name_for(db, int(x["from_uid"]), fallback=f"ID {x['from_uid']}")
+    tn = display_name_for(db, int(x["to_uid"]), fallback=f"ID {x['to_uid']}")
+    now = datetime.now(TZ).isoformat()
+    if cancel:
+        for a in (x["adj_from"], x["adj_to"]):
+            if a:
+                db.execute("DELETE FROM adjustments WHERE id=?", (int(a),))
+        db.execute("UPDATE xfers SET status='canceled', canceled_at=?, canceled_by=? WHERE id=?",
+                   (now, int(owner_id), int(xid)))
+        db.commit()
+        log_action(db, "xfer_cancel", int(owner_id), "", int(x["to_uid"]), tn,
+                   {"xfer_id": int(xid), "from": fn, "to": tn, "amount": int(x["amount"]), "note": x["note"] or ""})
+        return True, "", db.execute("SELECT * FROM xfers WHERE id=?", (int(xid),)).fetchone()
+    old_a, old_n = int(x["amount"] or 0), x["note"] or ""
+    if amount is None:
+        new_a = old_a
+    else:
+        try:
+            new_a = int(float(str(amount).replace(" ", "").replace(",", ".")))
+        except (TypeError, ValueError):
+            return False, "Укажите сумму.", None
+    if new_a <= 0 or new_a > XFER_MAX:
+        return False, "Сумма должна быть больше 0 (для отмены — «Отменить перевод»).", None
+    new_n = old_n if note is None else str(note).strip()[:200]
+    if new_a == old_a and new_n == old_n:
+        return False, "Ничего не изменилось.", None
+    tail = (" · " + new_n) if new_n else ""
+    if x["adj_from"]:
+        db.execute("UPDATE adjustments SET amount=?, note=? WHERE id=?", (-new_a, f"Перевод → {tn}{tail}", int(x["adj_from"])))
+    if x["adj_to"]:
+        db.execute("UPDATE adjustments SET amount=?, note=? WHERE id=?", (new_a, f"Перевод от {fn}{tail}", int(x["adj_to"])))
+    db.execute("UPDATE xfers SET amount=?, note=?, orig_amount=COALESCE(orig_amount, ?), "
+               "orig_note=COALESCE(orig_note, ?), edited_at=?, edited_by=? WHERE id=?",
+               (new_a, new_n, old_a, old_n, now, int(owner_id), int(xid)))
+    db.commit()
+    log_action(db, "xfer_edit", int(owner_id), "", int(x["to_uid"]), tn,
+               {"xfer_id": int(xid), "from": fn, "to": tn, "old": {"amount": old_a, "note": old_n},
+                "new": {"amount": new_a, "note": new_n}})
+    return True, "", db.execute("SELECT * FROM xfers WHERE id=?", (int(xid),)).fetchone()
 
 
 def par_open_partners(db, shift_row):
@@ -13755,6 +13815,35 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "night_pay_set", user.id, user.first_name, None, "ночная доплата",
                        {"old": _old, "new": _new, "at": datetime.now(TZ).isoformat()})
             context.result = {"ok": True, "cfg": _new}
+
+        elif action in ("xfer_edit", "xfer_cancel"):
+            # Owner: transferi düzelt / iptal et (herkesinkini). Taraflara haber gider.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            _cx = action == "xfer_cancel"
+            ok, err, xr = xfer_owner_change(db, user.id, data.get("id"),
+                                            amount=None if _cx else data.get("amount"),
+                                            note=None if _cx else data.get("note"), cancel=_cx)
+            if not ok:
+                context.result = {"ok": False, "error": err}
+                return
+            context.result = {"ok": True}
+            _fn = display_name_for(db, int(xr["from_uid"]), fallback="?")
+            _tn = display_name_for(db, int(xr["to_uid"]), fallback="?")
+            _msg = (f"↩️ Владелец отменил перевод {_fn} → {_tn}: {fmt_sum(int(xr['amount']))} сум."
+                    if _cx else
+                    f"✏️ Владелец исправил перевод {_fn} → {_tn}: теперь {fmt_sum(int(xr['amount']))} сум"
+                    + (f" · {xr['note']}" if xr["note"] else "") + ".")
+            for _u in {int(xr["from_uid"]), int(xr["to_uid"])}:
+                if _u == user.id:
+                    continue
+                try:
+                    await context.bot.send_message(_u, _msg)
+                except Exception:
+                    pass
 
         elif action == "xfer_send":
             # ПЕРЕВОД (owner 2026-10-25): çalışan → çalışan, Nero ID ile.
