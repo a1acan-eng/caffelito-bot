@@ -161,6 +161,13 @@ def get_db():
         added_by INTEGER, added_by_name TEXT,
         created_at TEXT)""")
     # ─── Manuel bakiye düzeltmeleri (Корректировка) — owner mutabakat aracı (+/-) ───
+    # ПЕРЕВОДЫ (owner 2026-10-25): çalışanlar arası para gönderme — kart numarası
+    # yerine Nero ID. Para hesaplar arasında `adjustments` ile taşınır (gönderen −,
+    # alan +, aynı ay); bu tablo geçmiş için (ne zaman · kim → kime · ne kadar · neden).
+    db.execute("""CREATE TABLE IF NOT EXISTS xfers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_uid INTEGER, to_uid INTEGER, amount INTEGER, note TEXT, period TEXT,
+        created_at TEXT, adj_from INTEGER, adj_to INTEGER)""")
     db.execute("""CREATE TABLE IF NOT EXISTS adjustments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, amount INTEGER, note TEXT, period TEXT,
@@ -7333,6 +7340,77 @@ def par_window_root(db, user_id, branch_id, when_dt):
         return None
 
 
+XFER_MAX = 100_000_000
+
+
+def xfer_rows(db, user_id, role):
+    """Nero «Переводы»: owner hepsini (son 60), çalışan yalnız kendisininkini (son 40)."""
+    try:
+        if role == "owner":
+            rs = db.execute("SELECT * FROM xfers ORDER BY id DESC LIMIT 60").fetchall()
+        else:
+            rs = db.execute("SELECT * FROM xfers WHERE from_uid=? OR to_uid=? ORDER BY id DESC LIMIT 40",
+                            (int(user_id), int(user_id))).fetchall()
+        return [{"id": r["id"], "at": r["created_at"], "p": r["period"],
+                 "from": r["from_uid"], "to": r["to_uid"], "a": int(r["amount"] or 0),
+                 "fn": display_name_for(db, int(r["from_uid"]), fallback=f"ID {r['from_uid']}"),
+                 "tn": display_name_for(db, int(r["to_uid"]), fallback=f"ID {r['to_uid']}"),
+                 "note": r["note"] or ""} for r in rs]
+    except Exception as e:
+        logger.warning(f"xfer_rows: {e}")
+        return []
+
+
+def xfer_send(db, from_uid, to_uid, amount, note=""):
+    """Para gönder: gönderenin bu ayki hesabından düş, alanınkine ekle (adjustments).
+    Döner (ok, hata_metni, xfer_id). Owner dışında gönderilecek tutar bu ayın
+    «Чистая зарплата»sını aşamaz."""
+    try:
+        amount = int(float(str(amount).replace(" ", "").replace(",", ".")))
+    except (TypeError, ValueError):
+        return False, "Укажите сумму.", None
+    if amount <= 0:
+        return False, "Укажите сумму.", None
+    if amount > XFER_MAX:
+        return False, "Слишком большая сумма.", None
+    try:
+        to_uid = int(to_uid)
+    except (TypeError, ValueError):
+        return False, "Выберите получателя.", None
+    if to_uid == int(from_uid):
+        return False, "Нельзя отправить самому себе.", None
+    rcv = db.execute("SELECT user_id, role FROM users WHERE user_id=? AND COALESCE(approved,0)=1 "
+                     "AND COALESCE(archived,0)=0", (to_uid,)).fetchone()
+    if not rcv or (rcv["role"] or "") == "observer":
+        return False, "Получатель не найден (проверьте ID).", None
+    per = current_period()
+    if get_role(db, from_uid) != "owner":
+        try:
+            avail = int(calc_summary(db, int(from_uid), per).get("net") or 0)
+        except Exception:
+            avail = 0
+        if amount > avail:
+            return False, f"Недостаточно средств: доступно {fmt_sum(max(0, avail))} сум.", None
+    note = str(note or "").strip()[:200]
+    fn = display_name_for(db, int(from_uid), fallback=f"ID {from_uid}")
+    tn = display_name_for(db, to_uid, fallback=f"ID {to_uid}")
+    now = datetime.now(TZ).isoformat()
+    tail = (" · " + note) if note else ""
+    a1 = db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (int(from_uid), -amount, f"Перевод → {tn}{tail}", per, user_branch_id(db, int(from_uid)),
+                     int(from_uid), fn, now)).lastrowid
+    a2 = db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (to_uid, amount, f"Перевод от {fn}{tail}", per, user_branch_id(db, to_uid),
+                     int(from_uid), fn, now)).lastrowid
+    xid = db.execute("INSERT INTO xfers (from_uid,to_uid,amount,note,period,created_at,adj_from,adj_to) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (int(from_uid), to_uid, amount, note, per, now, a1, a2)).lastrowid
+    db.commit()
+    log_action(db, "xfer_send", int(from_uid), fn, to_uid, tn, {"amount": amount, "note": note, "xfer_id": xid})
+    return True, "", xid
+
+
 def par_open_partners(db, shift_row):
     """Bu vardiyanın şubesinde HÂLÂ AÇIK başka barista vardiyaları (asistan/stajyer
     yuvası sayılmaz). Kişi kendisi asistansa boş liste — onun kapanışı zaten hafif."""
@@ -8619,6 +8697,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"slots={quote(json.dumps(slots_out, ensure_ascii=False))}",
         f"on_now={quote(json.dumps(on_now_rows(db, user_id), ensure_ascii=False))}",
         f"par_mate={quote(json.dumps(_par_mate_names(db, user_id), ensure_ascii=False))}",
+        f"xfers={quote(json.dumps(xfer_rows(db, user_id, role), ensure_ascii=False))}",
         f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
     ]
@@ -13523,6 +13602,24 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        display_name_for(db, target_id), {"branch_id": bid, "cat_id": cid})
             # Kişinin AÇIK vardiyası bu şubedeyse rol/ставка snapshot'ı anında tazelenir
             refresh_open_shift_snapshot(db, target_id)
+
+        elif action == "xfer_send":
+            # ПЕРЕВОД (owner 2026-10-25): çalışan → çalışan, Nero ID ile.
+            db = get_db()
+            ok, err, xid = xfer_send(db, user.id, data.get("to"), data.get("amount"), data.get("note") or "")
+            if not ok:
+                context.result = {"ok": False, "error": err}
+                return
+            context.result = {"ok": True, "id": xid}
+            try:
+                _xr = db.execute("SELECT * FROM xfers WHERE id=?", (int(xid),)).fetchone()
+                await context.bot.send_message(
+                    int(_xr["to_uid"]),
+                    f"💸 {shown} перевёл(а) вам {fmt_sum(int(_xr['amount']))} сум"
+                    + (f"\n📝 {_xr['note']}" if _xr["note"] else "")
+                    + "\nСумма добавлена к вашей зарплате за этот месяц.")
+            except Exception as _e_x:
+                logger.warning(f"xfer DM: {_e_x}")
 
         elif action == "close_as_info":
             # Owner «Закрыть как сотрудник»: kapanış ekranını o kişinin verisiyle
