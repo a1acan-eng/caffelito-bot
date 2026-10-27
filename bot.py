@@ -8420,6 +8420,40 @@ def build_payroll_pdf(db, user_id, period, name=""):
                  8.5, "", gap=6, col=(150, 132, 100))
         rule()
 
+    # ── 10 günlük dönemler (maaş 10'u, 20'si, 30'u) ─────────────────────
+    _today = _adv_today()
+    _decs = []
+    for _k in (1, 2, 3):
+        try:
+            _a, _b = decade_bounds(period, _k)
+        except Exception:
+            continue
+        if _a > _today:
+            continue
+        _decs.append(decade_statement(db, user_id, period, _k))
+    if _decs:
+        head("ПО ДЕКАДАМ · выплаты 10-го, 20-го и в конце месяца")
+        for _ds in _decs:
+            _dd = _ds["dec"]
+            row(f"{_ds['from'][8:10]}–{_ds['to'][8:10]}.{_ds['to'][5:7]}   заработано "
+                + _pdf_fmt(_dd["work"] + _dd["tips"]),
+                "за декаду " + _pdf_fmt(_dd["net"]), 9.5, "B")
+            for _b in _dd["branches"]:
+                row(f"      {_b['name']} · {_b['days']} дн. · {_b['hours']:g} ч", _pdf_fmt(_b["pay"]), 9)
+            _parts = []
+            for _key, _lbl in (("fines", "штрафы"), ("adv", "аванс"), ("res", "резерв")):
+                if _dd[_key]:
+                    _parts.append(f"{_lbl} −{_pdf_fmt(_dd[_key])}")
+            if _dd["adj"]:
+                _parts.append(("корр./переводы +" if _dd["adj"] > 0 else "корр./переводы −") + _pdf_fmt(abs(_dd["adj"])))
+            if _ds["extra"]:
+                _parts.append("за месяц (сверхур./товары) +" + _pdf_fmt(_ds["extra"]))
+            if _parts:
+                line("      " + " · ".join(_parts), 8.5, "", gap=5.5, col=(120, 106, 84))
+            line(f"      с начала месяца {_pdf_fmt(_ds['cum'])} − выплачено {_pdf_fmt(_ds['paid'])} = "
+                 f"к выплате {_pdf_fmt(_ds['due'])}", 8.5, "", gap=6, col=(120, 106, 84))
+        rule()
+
     # ── Kazanc ──────────────────────────────────────────────────────────
     head("НАЧИСЛЕНО")
     row("Почасовая оплата", _pdf_fmt(su.get("hourly")), 9.5)
@@ -8498,6 +8532,93 @@ def build_payroll_pdf(db, user_id, period, name=""):
     pdf.cell(0, 5, "Caffelito · Nero", align="C")
     return bytes(pdf.output())
 
+def decade_bounds(period, k):
+    """Ayın k. 10 günlük maaş dönemi (1: 1–10, 2: 11–20, 3: 21–son) → (date, date)."""
+    import calendar
+    from datetime import date
+    y, m = (int(x) for x in period.split("-"))
+    if k == 1:
+        return date(y, m, 1), date(y, m, 10)
+    if k == 2:
+        return date(y, m, 11), date(y, m, 20)
+    return date(y, m, 21), date(y, m, calendar.monthrange(y, m)[1])
+
+
+def decade_statement(db, uid, period, k):
+    """10 GÜNLÜK MAAŞ DÖKÜMÜ (owner 2026-10-27: maaş ayın 10'u, 20'si, 30'unda ödeniyor).
+    · dönem: o 10 günde kazanılan (şube kırılımı) + bahşiş − ceza − vadesi gelen avans
+      taksiti − rezerv ± düzeltme/transfer;
+    · yürüyen hesap: ay başından dönem sonuna kadarki aynı kalemler (son dönemde aylık
+      fazla mesai + ürün bonusu da) − ayda ŞİMDİYE KADAR yapılan ödemeler = «к выплате сейчас».
+    Son dönemin yürüyen hesabı calc_summary'nin net'iyle aynıdır (testli)."""
+    uid = int(uid)
+    a, b = decade_bounds(period, k)
+    m0 = a.replace(day=1)
+    today = _adv_today()
+    last = (k == 3)
+    m_lo = m0.isoformat()
+    def span(lo, hi):
+        """[lo, hi] aralığı. Son dönemde o aya ait olup tarihi ay dışında kalan (ör. Ekim'e
+        ait, 1 Kasım'da girilmiş düzeltme) kayıtlar da SON döneme sayılır — son dönemin
+        yürüyen hesabı her zaman aylık net'le tutsun."""
+        lo_s, hi_s = lo.isoformat(), (hi + timedelta(days=1)).isoformat()
+        if last:
+            # ay içinde ama lo'dan önce olanlar HARİÇ; geri kalan her şey (sonrası + ay dışı) dahil
+            cond, args = "NOT ({c}>=? AND {c}<?)", (m_lo, lo_s) if lo > m0 else ("9999", "9999")
+        else:
+            cond, args = "{c}>=? AND {c}<?", (lo_s, hi_s)
+        def where(col):
+            return cond.format(c=col), args
+        w, a_ = where("COALESCE(start_time,created_at)")
+        shifts = [dict(r) for r in db.execute(
+            "SELECT * FROM shifts WHERE user_id=? AND period=? AND end_time IS NOT NULL AND " + w,
+            (uid, period) + tuple(a_)).fetchall()]
+        def q(tbl):
+            w2, a2 = where("COALESCE(created_at,'')")
+            return int(db.execute(f"SELECT COALESCE(SUM(amount),0) FROM {tbl} WHERE user_id=? AND period=? AND " + w2,
+                                  (uid, period) + tuple(a2)).fetchone()[0] or 0)
+        tips, fines, adj = q("tips"), q("fines"), q("adjustments")
+        adv_hi = min(hi, today).isoformat()
+        w3, a3 = where("i.due_date")
+        adv = int(db.execute(
+            "SELECT COALESCE(SUM(i.amount),0) FROM advance_inst i JOIN advances x ON x.id=i.advance_id "
+            "WHERE i.user_id=? AND i.period=? AND x.status IN ('active','done') AND i.due_date<=? AND " + w3,
+            (uid, period, adv_hi) + tuple(a3)).fetchone()[0] or 0)
+        try:
+            w4, a4 = where("COALESCE(date,'')")
+            res = int(db.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM reserve_tx WHERE user_id=? AND period=? AND kind='contrib' "
+                "AND COALESCE(voided,0)=0 AND " + w4, (uid, period) + tuple(a4)).fetchone()[0] or 0)
+        except Exception:
+            res = 0
+        work = sum(int(x.get("hourly_pay") or 0) + int(x.get("overtime") or 0) for x in shifts)
+        bonus = sum(int(x.get("bonus") or 0) for x in shifts)
+        return {"shifts": shifts, "work": work, "tips": tips, "fines": fines, "adj": adj, "adv": adv,
+                "res": res, "bonus": bonus,
+                "hours": round(sum(float(x.get("hours") or 0) for x in shifts), 2)}
+    d = span(a, b)
+    d["branches"] = payroll_branch_split(db, d["shifts"])
+    d["net"] = d["work"] + d["tips"] - d["fines"] - d["adv"] - d["res"] + d["adj"]
+    c = span(m0, b)
+    extra = 0
+    if k == 3:
+        try:
+            su = calc_summary(db, uid, period)
+            extra = int(su.get("ot_month") or 0) + int(su.get("product_bonus") or 0)
+        except Exception:
+            extra = 0
+    cum = c["work"] + c["tips"] - c["fines"] - c["adv"] - c["res"] + c["adj"] + extra
+    pays = [dict(r) for r in db.execute(
+        "SELECT id, amount, paid_at, kind, note FROM payments WHERE user_id=? AND period=? ORDER BY paid_at",
+        (uid, period)).fetchall()]
+    skip = set(daily_bonus_pay_ids(db, uid, period) or [])
+    pays = [p for p in pays if p["id"] not in skip]
+    paid = sum(int(p["amount"] or 0) for p in pays)
+    d.pop("shifts", None)
+    return {"k": k, "from": a.isoformat(), "to": b.isoformat(), "dec": d, "extra": extra,
+            "cum": cum, "paid": paid, "pays": pays, "due": cum - paid}
+
+
 def payroll_people(db, period):
     """Maaş listesine girenler: onaylı, owner/gözlemci olmayan; arşivdekiler YALNIZ
     o ay vardiyası ya da bakiyesi varsa."""
@@ -8512,6 +8633,97 @@ def payroll_people(db, period):
             continue
         out.append((int(u["user_id"]), u["nm"] or "?", bool(u["arch"]), su))
     return out
+
+
+def build_payroll_decade_pdf(db, period, k):
+    """ZARPLATA · TÜM ÇALIŞANLAR · 10 GÜNLÜK DÖNEM (maaş günü raporu). Önce şube toplamları
+    (bu dönemde kim nerede ne kazandı), sonra kişi: dönem kırılımı, dönem kesintileri,
+    ay başından yürüyen hesap − yapılan ödemeler = К ВЫПЛАТЕ СЕЙЧАС."""
+    from fpdf import FPDF
+    people = payroll_people(db, period)
+    rows = [(uid, nm, arch, decade_statement(db, uid, period, k)) for uid, nm, arch, _su in people]
+    rows = [r for r in rows if r[3]["dec"]["work"] or r[3]["dec"]["net"] or r[3]["due"]]
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
+    pdf.add_font("nero", "B", os.path.join(PDF_FONT_DIR, "NeroSans-Bold.ttf"))
+    pdf.add_page()
+    W = pdf.w - pdf.l_margin - pdf.r_margin
+    INK, DIM, MID = (40, 30, 16), (150, 132, 100), (110, 96, 74)
+
+    def line(txt, sz=10, style="", gap=6, col=INK):
+        pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
+        pdf.cell(0, gap, txt, new_x="LMARGIN", new_y="NEXT")
+
+    def row(left, right, sz=10, style="", gap=6.2, col=INK):
+        pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
+        y = pdf.get_y()
+        pdf.cell(W * 0.64, gap, left, new_x="RIGHT", new_y="TOP")
+        pdf.set_xy(pdf.l_margin + W * 0.64, y)
+        pdf.cell(W * 0.36, gap, right, align="R", new_x="LMARGIN", new_y="NEXT")
+
+    def rule(pad=2.5):
+        pdf.ln(pad); pdf.set_draw_color(214, 203, 184)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y()); pdf.ln(pad)
+
+    _MON = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+            "августа", "сентября", "октября", "ноября", "декабря"]
+    a, b = decade_bounds(period, k)
+    span = f"{a.day}–{b.day} {_MON[a.month - 1]} {a.year}"
+    line("ЗАРПЛАТА · ВСЕ СОТРУДНИКИ · ДЕКАДА", 9, "B", gap=5, col=DIM)
+    line(span, 19, "B", gap=9)
+    line("сформирован " + datetime.now(TZ).isoformat()[:16].replace("T", " ") + " · сотрудников: " + str(len(rows)),
+         9.5, "", gap=6, col=(120, 106, 84))
+    rule()
+    br = {}
+    for _uid, _nm, _arch, ds in rows:
+        for x in ds["dec"]["branches"]:
+            t0 = br.setdefault(x["name"], {"people": set(), "days": 0, "hours": 0.0, "pay": 0})
+            t0["people"].add(_uid); t0["days"] += x["days"]; t0["hours"] += x["hours"]; t0["pay"] += x["pay"]
+    line("ПО ФИЛИАЛАМ · заработано за декаду", 8.5, "B", gap=6, col=DIM)
+    for name, t0 in sorted(br.items(), key=lambda kv: -kv[1]["pay"]):
+        row(f"{name}   {len(t0['people'])} чел. · {t0['days']} смен-дн. · {round(t0['hours'], 1):g} ч", _pdf_fmt(t0["pay"]), 10)
+    rule()
+    S_ = lambda f: sum(f(r[3]) for r in rows)
+    row("Заработано за декаду", _pdf_fmt(S_(lambda d: d["dec"]["work"] + d["dec"]["tips"])), 10, "B")
+    ded = S_(lambda d: d["dec"]["fines"] + d["dec"]["adv"] + d["dec"]["res"])
+    if ded:
+        row("Удержано за декаду (штрафы, аванс, резерв)", "−" + _pdf_fmt(ded), 9.5)
+    adj = S_(lambda d: d["dec"]["adj"])
+    if adj:
+        row("Корректировки и переводы", ("+" if adj >= 0 else "−") + _pdf_fmt(abs(adj)), 9.5)
+    row("Уже выплачено в этом месяце", "−" + _pdf_fmt(S_(lambda d: d["paid"])), 9.5)
+    row("К ВЫПЛАТЕ ВСЕМ СЕЙЧАС", _pdf_fmt(S_(lambda d: d["due"])), 13, "B", gap=9)
+    line("«к выплате сейчас» = всё заработанное с начала месяца по " + b.strftime("%d.%m") +
+         " минус удержания и уже выданные выплаты", 8, "", gap=5, col=DIM)
+    rule(4)
+    for _uid, nm, arch, ds in rows:
+        if pdf.get_y() > pdf.h - 70:
+            pdf.add_page()
+        d = ds["dec"]
+        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(ds["due"]), 11.5, "B", gap=7.5)
+        for x in d["branches"]:
+            row(f"   {x['name']} · {x['days']} дн. · {x['hours']:g} ч", _pdf_fmt(x["pay"]), 9.5)
+        parts = []
+        if d["tips"]:
+            parts.append("чаевые +" + _pdf_fmt(d["tips"]))
+        for key, lbl in (("fines", "штрафы"), ("adv", "аванс"), ("res", "резерв")):
+            if d[key]:
+                parts.append(f"{lbl} −{_pdf_fmt(d[key])}")
+        if d["adj"]:
+            parts.append(("корр./переводы +" if d["adj"] > 0 else "корр./переводы −") + _pdf_fmt(abs(d["adj"])))
+        if ds["extra"]:
+            parts.append("за месяц +" + _pdf_fmt(ds["extra"]))
+        line("   за декаду " + _pdf_fmt(d["net"]) + ((" · " + " · ".join(parts)) if parts else ""), 8.5, "", gap=5.5, col=MID)
+        pays = " · ".join(f"{str(p['paid_at'])[8:10]}.{str(p['paid_at'])[5:7]} {_pdf_fmt(p['amount'])}" for p in ds["pays"])
+        line(f"   с начала месяца {_pdf_fmt(ds['cum'])} · выплачено {_pdf_fmt(ds['paid'])}" + (f" ({pays})" if pays else ""),
+             8.5, "", gap=5.5, col=MID)
+        if d["bonus"]:
+            line("   бонус за стаканы " + _pdf_fmt(d["bonus"]) + " — выдан из кассы, в сумму не входит", 8, "", gap=5, col=DIM)
+        rule(2)
+    pdf.set_y(-14); pdf.set_font("nero", "", 7.5); pdf.set_text_color(160, 146, 122)
+    pdf.cell(0, 5, "Caffelito · Nero", align="C")
+    return bytes(pdf.output())
 
 
 def build_payroll_all_pdf(db, period):
@@ -16768,15 +16980,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not re.match(r"^\d{4}-\d{2}$", per):
                 per = current_period()
             try:
-                blob = build_payroll_all_pdf(db, per)
+                _dk = int(data.get("decade") or 0)
+            except (TypeError, ValueError):
+                _dk = 0
+            try:
+                if _dk in (1, 2, 3):
+                    blob = build_payroll_decade_pdf(db, per, _dk)
+                    _a, _b = decade_bounds(per, _dk)
+                    fname = f"Nero_zarplata_vse_{per}_{_a.day:02d}-{_b.day:02d}.pdf"
+                    cap = f"📄 Зарплата · все сотрудники · {_a.strftime('%d.%m')}–{_b.strftime('%d.%m.%Y')}"
+                else:
+                    blob = build_payroll_all_pdf(db, per)
+                    fname, cap = f"Nero_zarplata_vse_{per}.pdf", f"📄 Зарплата · все сотрудники · {per}"
             except Exception as e:
-                logger.exception(f"Zarplata ALL PDF basarisiz (per={per}): {e}")
+                logger.exception(f"Zarplata ALL PDF basarisiz (per={per}, dec={_dk}): {e}")
                 await update.message.reply_text("❌ Не удалось собрать PDF.")
                 return
-            if not await send_pdf_or_report(context, update, db, user.id, blob, f"Nero_zarplata_vse_{per}.pdf",
-                                            f"📄 Зарплата · все сотрудники · {per}"):
+            if not await send_pdf_or_report(context, update, db, user.id, blob, fname, cap):
                 return
-            log_action(db, "payroll_pdf_all", user.id, user.first_name, None, None, {"period": per, "size": len(blob)})
+            log_action(db, "payroll_pdf_all", user.id, user.first_name, None, None,
+                       {"period": per, "decade": _dk or None, "size": len(blob)})
 
         elif action == "cash_report_edit":
             db = get_db()
