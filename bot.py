@@ -8291,6 +8291,37 @@ def build_report_pdf(db, rep_row, partial=False, op_row=None):
 
 
 
+def payroll_branch_split(db, shifts):
+    """Maaş raporu için ŞUBE KIRILIMI (owner 2026-10-27: her şubenin parası ayrı).
+    Kapanmış vardiyalardan: şube başına gün (farklı tarih), vardiya, saat, tutar
+    (hourly_pay + vardiya fazla mesaisi — gece primi hourly_pay içinde). Sıra: en çok tutar."""
+    names = {}
+    try:
+        for b in db.execute("SELECT id, name FROM branches").fetchall():
+            names[int(b["id"])] = b["name"]
+    except Exception:
+        pass
+    acc = {}
+    for sh in shifts or []:
+        sh = dict(sh)
+        if not sh.get("end_time"):
+            continue
+        bid = int(sh.get("branch_id") or 0)
+        a = acc.setdefault(bid, {"bid": bid, "name": names.get(bid, "—"), "days": set(), "shifts": 0,
+                                 "hours": 0.0, "pay": 0})
+        a["days"].add(str(sh.get("start_time") or "")[:10])
+        a["shifts"] += 1
+        a["hours"] += float(sh.get("hours") or 0)
+        a["pay"] += int(sh.get("hourly_pay") or 0) + int(sh.get("overtime") or 0)
+    out = []
+    for a in acc.values():
+        a["days"] = len(a["days"])
+        a["hours"] = round(a["hours"], 2)
+        out.append(a)
+    out.sort(key=lambda x: -x["pay"])
+    return out
+
+
 def build_payroll_pdf(db, user_id, period, name=""):
     """Bir kisinin BIR DONEMDEKI hesabi — owner'in calisana gonderdigi kagit.
 
@@ -8357,7 +8388,13 @@ def build_payroll_pdf(db, user_id, period, name=""):
 
     # ── Vardiyalar ──────────────────────────────────────────────────────
     _shifts = su.get("shifts") or []
-    head("СМЕНЫ · " + str(len(_shifts)) + " · часы · стаканы")
+    _bn = {}
+    try:
+        for _b in db.execute("SELECT id, name FROM branches").fetchall():
+            _bn[int(_b["id"])] = _b["name"]
+    except Exception:
+        pass
+    head("СМЕНЫ · " + str(len(_shifts)) + " · филиал · часы · стаканы")
     for _sh in _shifts:
         _st = str(_sh.get("start_time") or "")
         _d = (_st[8:10] + "." + _st[5:7]) if len(_st) >= 10 else "—"
@@ -8366,10 +8403,22 @@ def build_payroll_pdf(db, user_id, period, name=""):
         except Exception:
             _dk = {}
         _cups = sum(int(v or 0) for v in _dk.values())
-        row(_d + "   " + str(round(float(_sh.get("hours") or 0), 2)) + " ч",
+        row(_d + "   " + str(_bn.get(int(_sh.get("branch_id") or 0), "—"))[:16] + "   "
+            + str(round(float(_sh.get("hours") or 0), 2)) + " ч",
             (str(_cups) + " шт") if _cups else "—", 9.5)
     row("Всего часов", str(round(float(su.get("hours") or 0), 2)) + " ч", 10, "B", gap=7)
     rule()
+
+    # ── Şube kırılımı (her şubenin parası ayrı) ─────────────────────────
+    _split = payroll_branch_split(db, _shifts)
+    if _split:
+        head("ПО ФИЛИАЛАМ · дни · часы · начислено")
+        for _b in _split:
+            row(f"{_b['name']}   {_b['days']} дн. · {_b['hours']:g} ч", _pdf_fmt(_b["pay"]), 9.5)
+        if int(su.get("ot_month") or 0):
+            line("Сверхурочные за месяц " + _pdf_fmt(su.get("ot_month")) + " — по месяцу в целом, без деления на филиалы",
+                 8.5, "", gap=6, col=(150, 132, 100))
+        rule()
 
     # ── Kazanc ──────────────────────────────────────────────────────────
     head("НАЧИСЛЕНО")
@@ -8448,6 +8497,114 @@ def build_payroll_pdf(db, user_id, period, name=""):
     pdf.set_text_color(160, 146, 122)
     pdf.cell(0, 5, "Caffelito · Nero", align="C")
     return bytes(pdf.output())
+
+def payroll_people(db, period):
+    """Maaş listesine girenler: onaylı, owner/gözlemci olmayan; arşivdekiler YALNIZ
+    o ay vardiyası ya da bakiyesi varsa."""
+    out = []
+    for u in db.execute("SELECT user_id, COALESCE(display_name,name) AS nm, role, COALESCE(archived,0) AS arch "
+                        "FROM users WHERE COALESCE(approved,0)=1 AND role NOT IN ('owner','observer') "
+                        "ORDER BY COALESCE(display_name,name)").fetchall():
+        su = calc_summary(db, int(u["user_id"]), period)
+        has = bool(su.get("shifts")) or any(int(su.get(k) or 0) for k in
+                                             ("gross", "fines", "paid", "adjustments", "adv_ded", "net"))
+        if not has:
+            continue
+        out.append((int(u["user_id"]), u["nm"] or "?", bool(u["arch"]), su))
+    return out
+
+
+def build_payroll_all_pdf(db, period):
+    """ZARPLATA · TÜM ÇALIŞANLAR (owner 2026-10-27): şefe tek seferde. Önce şube toplamları
+    (her şube ne ödeyecek), sonra her kişi kısa blok: şube kırılımı → kesintiler → К ВЫПЛАТЕ.
+    Her rakam calc_summary'den (tek kişilik raporla aynı)."""
+    from fpdf import FPDF
+    people = payroll_people(db, period)
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
+    pdf.add_font("nero", "B", os.path.join(PDF_FONT_DIR, "NeroSans-Bold.ttf"))
+    pdf.add_page()
+    W = pdf.w - pdf.l_margin - pdf.r_margin
+    INK, DIM = (40, 30, 16), (150, 132, 100)
+
+    def line(txt, sz=10, style="", gap=6, col=INK):
+        pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
+        pdf.cell(0, gap, txt, new_x="LMARGIN", new_y="NEXT")
+
+    def row(left, right, sz=10, style="", gap=6.2, col=INK):
+        pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
+        y = pdf.get_y()
+        pdf.cell(W * 0.66, gap, left, new_x="RIGHT", new_y="TOP")
+        pdf.set_xy(pdf.l_margin + W * 0.66, y)
+        pdf.cell(W * 0.34, gap, right, align="R", new_x="LMARGIN", new_y="NEXT")
+
+    def rule(pad=2.5):
+        pdf.ln(pad); pdf.set_draw_color(214, 203, 184)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y()); pdf.ln(pad)
+
+    _MON = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+            "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+    try:
+        _y, _m = period.split("-"); per_txt = _MON[int(_m) - 1] + " " + _y
+    except Exception:
+        per_txt = str(period)
+    line("ЗАРПЛАТА · ВСЕ СОТРУДНИКИ", 9, "B", gap=5, col=DIM)
+    line(per_txt.capitalize(), 19, "B", gap=9)
+    line("сформирован " + datetime.now(TZ).isoformat()[:16].replace("T", " ") + " · сотрудников: " + str(len(people)),
+         9.5, "", gap=6, col=(120, 106, 84))
+    rule()
+    # Şube toplamları
+    br = {}
+    for _uid, _nm, _arch, su in people:
+        for b in payroll_branch_split(db, su.get("shifts") or []):
+            a = br.setdefault(b["name"], {"people": set(), "days": 0, "hours": 0.0, "pay": 0})
+            a["people"].add(_uid); a["days"] += b["days"]; a["hours"] += b["hours"]; a["pay"] += b["pay"]
+    line("ПО ФИЛИАЛАМ · начислено за часы", 8.5, "B", gap=6, col=DIM)
+    for name, a in sorted(br.items(), key=lambda kv: -kv[1]["pay"]):
+        row(f"{name}   {len(a['people'])} чел. · {a['days']} смен-дн. · {round(a['hours'], 1):g} ч", _pdf_fmt(a["pay"]), 10)
+    T = {k: sum(int(p[3].get(k) or 0) for p in people) for k in ("gross", "fines", "adv_ded", "res_ded", "paid", "adjustments", "net")}
+    rule()
+    row("Начислено всего", _pdf_fmt(T["gross"]), 10, "B")
+    if T["fines"]:
+        row("Штрафы", "−" + _pdf_fmt(T["fines"]), 9.5)
+    if T["adv_ded"]:
+        row("Аванс · удержание", "−" + _pdf_fmt(T["adv_ded"]), 9.5)
+    if T["res_ded"]:
+        row("Резерв", "−" + _pdf_fmt(T["res_ded"]), 9.5)
+    if T["adjustments"]:
+        row("Корректировки и переводы", ("+" if T["adjustments"] >= 0 else "−") + _pdf_fmt(abs(T["adjustments"])), 9.5)
+    if T["paid"]:
+        row("Уже выплачено", "−" + _pdf_fmt(T["paid"]), 9.5)
+    row("К ВЫПЛАТЕ ВСЕМ", _pdf_fmt(T["net"]), 13, "B", gap=9)
+    rule(4)
+    # Kişi blokları
+    for _uid, nm, arch, su in people:
+        if pdf.get_y() > pdf.h - 70:
+            pdf.add_page()
+        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(su.get("net")), 11.5, "B", gap=7.5)
+        for b in payroll_branch_split(db, su.get("shifts") or []):
+            row(f"   {b['name']} · {b['days']} дн. · {b['hours']:g} ч", _pdf_fmt(b["pay"]), 9.5)
+        parts = []
+        for k, lbl, sg in (("ot_month", "сверхур. мес.", "+"), ("tips", "чаевые", "+"), ("product_bonus", "товары", "+"),
+                           ("fines", "штрафы", "−"), ("adv_ded", "аванс", "−"), ("res_ded", "резерв", "−"),
+                           ("paid", "выплачено", "−")):
+            v = int(su.get(k) or 0)
+            if v:
+                parts.append(f"{lbl} {sg}{_pdf_fmt(v)}")
+        adj = int(su.get("adjustments") or 0)
+        if adj:
+            parts.append(("корр./переводы +" if adj > 0 else "корр./переводы −") + _pdf_fmt(abs(adj)))
+        line("   начислено " + _pdf_fmt(su.get("gross")) + ((" · " + " · ".join(parts)) if parts else ""),
+             8.5, "", gap=5.5, col=(110, 96, 74))
+        if int(su.get("bonus") or 0):
+            line("   бонус за стаканы " + _pdf_fmt(su.get("bonus")) + " — выдан из кассы, в сумму не входит",
+                 8, "", gap=5, col=DIM)
+        rule(2)
+    pdf.set_y(-14); pdf.set_font("nero", "", 7.5); pdf.set_text_color(160, 146, 122)
+    pdf.cell(0, 5, "Caffelito · Nero", align="C")
+    return bytes(pdf.output())
+
 
 async def send_pdf_or_report(context, update, db, uid, blob, fname, caption=None,
                              parse_mode=None):
@@ -16600,6 +16757,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
                        {"period": per, "size": len(blob)})
+
+        elif action == "payroll_pdf_all":
+            # ZARPLATA · TÜM ÇALIŞANLAR — owner'ın sohbetine tek PDF (şefe iletmek için).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            per = str(data.get("period") or "").strip()[:7] or current_period()
+            if not re.match(r"^\d{4}-\d{2}$", per):
+                per = current_period()
+            try:
+                blob = build_payroll_all_pdf(db, per)
+            except Exception as e:
+                logger.exception(f"Zarplata ALL PDF basarisiz (per={per}): {e}")
+                await update.message.reply_text("❌ Не удалось собрать PDF.")
+                return
+            if not await send_pdf_or_report(context, update, db, user.id, blob, f"Nero_zarplata_vse_{per}.pdf",
+                                            f"📄 Зарплата · все сотрудники · {per}"):
+                return
+            log_action(db, "payroll_pdf_all", user.id, user.first_name, None, None, {"period": per, "size": len(blob)})
 
         elif action == "cash_report_edit":
             db = get_db()
