@@ -9435,6 +9435,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"par_mate={quote(json.dumps(_par_mate_names(db, user_id), ensure_ascii=False))}",
         f"xfers={quote(json.dumps(xfer_rows(db, user_id, role), ensure_ascii=False))}",
         f"night_cfg={quote(json.dumps(night_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
+        f"payday={quote(json.dumps(payday_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
     ]
@@ -16970,6 +16971,28 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
                        {"period": per, "size": len(blob)})
 
+        elif action == "payday_auto_set":
+            # Maaş günü otomatik PDF: aç/kapa + saat (owner).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            _old = payday_cfg(db)
+            _new = dict(_old)
+            if "on" in data:
+                _new["on"] = 1 if str(data.get("on")).lower() in ("1", "true") else 0
+            if "at" in data:
+                _at = str(data.get("at") or "").strip()
+                if not _hm_ok(_at):
+                    context.result = {"ok": False, "error": "Время — ЧЧ:ММ, например 12:00."}
+                    return
+                _h, _m = _at.split(":")
+                _new["at"] = f"{int(_h):02d}:{int(_m):02d}"
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('payday_auto',?)", (json.dumps(_new),))
+            db.commit()
+            log_action(db, "payday_auto_set", user.id, user.first_name, None, None, {"old": _old, "new": _new})
+            context.result = {"ok": True, "cfg": _new}
+
         elif action == "payroll_pdf_all":
             # ZARPLATA · TÜM ÇALIŞANLAR — owner'ın sohbetine tek PDF (şefe iletmek için).
             db = get_db()
@@ -20117,6 +20140,84 @@ async def shift_end_warn_loop(app):
             logger.warning(f"shift_end_warn_loop: {e}")
         await asyncio.sleep(60)
 
+PAYDAY_DEFAULTS = {"on": 1, "at": "12:00"}
+
+
+def payday_cfg(db):
+    """Maaş günü otomatik PDF ayarı (owner 2026-10-27): {on, at 'HH:MM'} — meta 'payday_auto'."""
+    cfg = dict(PAYDAY_DEFAULTS)
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='payday_auto'").fetchone()
+        if r and r["val"]:
+            j = json.loads(r["val"])
+            if isinstance(j, dict):
+                cfg.update({k: j[k] for k in cfg if k in j})
+    except Exception:
+        pass
+    return cfg
+
+
+def payday_due(now, cfg):
+    """Şu an maaş günü PDF'i gönderilmeli mi? Döner (period, k) ya da None.
+    Günler: 10 → 1–10, 20 → 11–20, 30 (kısa ayda son gün) → 21–son. Saat cfg['at'] ve sonrası."""
+    import calendar
+    if not int(cfg.get("on") or 0):
+        return None
+    last = calendar.monthrange(now.year, now.month)[1]
+    k = {10: 1, 20: 2}.get(now.day) or (3 if now.day == min(30, last) else None)
+    if not k:
+        return None
+    try:
+        hh, mm = (int(x) for x in str(cfg.get("at") or "12:00").split(":"))
+    except Exception:
+        hh, mm = 12, 0
+    if (now.hour, now.minute) < (hh, mm):
+        return None
+    return now.strftime("%Y-%m"), k
+
+
+async def payday_run(bot_obj, db, now):
+    """Bir kontrol turu: maaş günüyse ve bu dönem gönderilmediyse PDF'i owner'lara yollar.
+    Döner gönderilen etiket ('YYYY-MM-k') ya da None."""
+    due = payday_due(now, payday_cfg(db))
+    if not due:
+        return None
+    per, k = due
+    tag = f"{per}-{k}"
+    row = db.execute("SELECT val FROM meta WHERE k='payday_sent'").fetchone()
+    if row and row["val"] == tag:
+        return None
+    blob = build_payroll_decade_pdf(db, per, k)
+    a, b = decade_bounds(per, k)
+    fname = f"Nero_zarplata_vse_{per}_{a.day:02d}-{b.day:02d}.pdf"
+    cap = (f"💰 День зарплаты · {a.strftime('%d.%m')}–{b.strftime('%d.%m.%Y')}\n"
+           "Зарплата всех сотрудников: по филиалам, удержания, к выплате сейчас.")
+    sent = 0
+    for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        try:
+            await bot_obj.send_document(chat_id=int(o["user_id"]), document=io.BytesIO(blob),
+                                        filename=fname, caption=cap)
+            sent += 1
+        except Exception as e:
+            logger.warning(f"payday pdf {o['user_id']}: {e}")
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('payday_sent',?)", (tag,))
+    db.commit()
+    log_action(db, "payday_pdf_auto", 0, "Nero", None, None, {"tag": tag, "sent": sent, "size": len(blob)})
+    return tag
+
+
+async def payday_loop(app):
+    """MAAŞ GÜNÜ: 10'u, 20'si, 30'u (owner 2026-10-27) — «Зарплата всех» dönem PDF'i owner'lara
+    KENDİLİĞİNDEN. Dönem başına bir kez (meta 'payday_sent'). 10 dakikada bir kontrol."""
+    await asyncio.sleep(40)
+    while True:
+        try:
+            await payday_run(app.bot, get_db(), datetime.now(TZ))
+        except Exception as e:
+            logger.warning(f"payday_loop: {e}")
+        await asyncio.sleep(600)
+
+
 async def payment_reminder_loop(app):
     """Her gün kontrol: Railway ödemesinden (PAY_DAY=14) PAY_REMIND_BEFORE=3 gün önce
     (ayın 11'i) owner'lara DM hatırlatma. Ayda bir gönderilir (meta ile takip)."""
@@ -20218,6 +20319,7 @@ async def setup_commands(app):
     asyncio.create_task(scheduled_orders_loop(app))
     asyncio.create_task(backup_loop(app))
     asyncio.create_task(ava_loop(app))
+    asyncio.create_task(payday_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════
