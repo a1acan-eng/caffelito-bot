@@ -7553,6 +7553,126 @@ def xfer_send(db, from_uid, to_uid, amount, note=""):
     return True, "", xid
 
 
+def staff_history(db, uid, period):
+    """ÇALIŞANIN KENDİ GEÇMİŞİ (owner 2026-10-27): bir ayın tüm hareketleri tek listede, tarih
+    sırasıyla — vardiyalar (saat, ücret, gece/fazla mesai, bardak bonusu), kasadan alınan günlük
+    bonus, avans (verildi + taksitler, ileri tarihliler dahil), ödemeler, cezalar, чаевые,
+    düzeltmeler/transferler, rezerv. Hiçbir şey hesaplanmaz — kayıtlarda ne varsa o.
+    Döner {period, sum, items[{at, k, t, s, a}]} — a: maaşa etkisi (+/−) ya da None (bilgi)."""
+    uid = int(uid)
+    items = []
+    def add(at, k, t, s_="", a=None, info=None):
+        items.append({"at": str(at or ""), "k": k, "t": t, "s": s_, "a": a, "i": info})
+    def hm(v):
+        try:
+            return datetime.fromisoformat(str(v)).strftime("%H:%M")
+        except Exception:
+            return ""
+    bnames = {}
+    try:
+        for b in db.execute("SELECT id, name FROM branches").fetchall():
+            bnames[int(b["id"])] = b["name"]
+    except Exception:
+        pass
+    # Vardiyalar
+    for r in db.execute("SELECT * FROM shifts WHERE user_id=? AND period=? AND start_time IS NOT NULL "
+                        "ORDER BY start_time", (uid, period)).fetchall():
+        k = r.keys()
+        if not r["end_time"]:
+            add(r["start_time"], "shift_open", "Смена идёт · " + bnames.get(int(r["branch_id"] or 0), ""),
+                "с " + hm(r["start_time"]))
+            continue
+        parts = [hm(r["start_time"]) + "–" + hm(r["end_time"]), fmt_hm(r["hours"] or 0)]
+        if r["rate"]:
+            parts.append(f"ставка {fmt_sum(r['rate'])}")
+        npay = int((r["night_pay"] if "night_pay" in k else 0) or 0)
+        if npay:
+            parts.append(f"ночные {fmt_hm(r['night_h'] or 0)} +{fmt_sum(npay)}")
+        if int(r["overtime"] or 0):
+            parts.append(f"переработка +{fmt_sum(r['overtime'])}")
+        if (r["note"] or "").strip():
+            parts.append(r["note"].strip())
+        add(r["end_time"], "shift", "Смена · " + bnames.get(int(r["branch_id"] or 0), ""),
+            " · ".join(parts), int(r["hourly_pay"] or 0) + int(r["overtime"] or 0))
+        cups = 0
+        try:
+            cups = sum(int(v or 0) for v in json.loads(r["drinks"] or "{}").values())
+        except Exception:
+            pass
+        bon = int(r["bonus"] or 0)
+        if bon or cups:
+            add(r["end_time"], "bonus", "Дневной бонус · стаканы", f"{cups} шт · за смену", None, bon)
+    # Kasadan alınan günlük bonus (kapanış raporu)
+    for r in db.execute("SELECT created_at, end_time, daily_pay, cups_total FROM cashreports WHERE user_id=? "
+                        "AND period=? AND COALESCE(daily_pay,0)>0", (uid, period)).fetchall():
+        add(r["created_at"], "cash", "Дневной бонус выдан из кассы", "наличными при закрытии", None, int(r["daily_pay"]))
+    # Ödemeler (eski günlük bonus kayıtları hariç)
+    skip = set(daily_bonus_pay_ids(db, uid, period) or [])
+    for r in db.execute("SELECT * FROM payments WHERE user_id=? AND period=? ORDER BY paid_at", (uid, period)).fetchall():
+        if r["id"] in skip:
+            continue
+        kind = (r["kind"] if "kind" in r.keys() else None) or ""
+        t = {"advance": "Аванс выдан", "salary": "Выплата зарплаты"}.get(kind, "Выплата")
+        add(r["paid_at"], "pay", t, " · ".join(x for x in [(r["note"] if "note" in r.keys() else "") or "",
+                                                        ("выдал " + r["paid_by_name"]) if r["paid_by_name"] else ""] if x),
+            -int(r["amount"] or 0))
+    # Avanslar (yeni sistem): verilme anı bu ayda olanlar
+    st_ru = {"active": "одобрен", "done": "погашен", "pending": "ожидает решения", "rejected": "отклонён"}
+    for r in db.execute("SELECT * FROM advances WHERE user_id=? AND substr(COALESCE(decided_at, created_at),1,7)=? "
+                        "ORDER BY id", (uid, period)).fetchall():
+        n = db.execute("SELECT COUNT(*) FROM advance_inst WHERE advance_id=?", (r["id"],)).fetchone()[0]
+        sub = [st_ru.get(r["status"], r["status"] or "")]
+        if r["status"] in ("active", "done"):
+            sub.append(f"к возврату {fmt_sum(r['total'] or 0)}")
+            if int(r["commission"] or 0):
+                sub.append(f"комиссия {fmt_sum(r['commission'])}")
+            if n:
+                sub.append(f"{n} части")
+        if (r["decision_note"] or "").strip():
+            sub.append(r["decision_note"].strip())
+        add(r["decided_at"] or r["created_at"], "adv", "Аванс · " + fmt_sum(r["amount"] or 0) + " сум",
+            " · ".join(sub), None, int(r["amount"] or 0))
+    # Avans taksitleri (bu aya düşen — ileri tarihli olanlar «будет удержано»)
+    today = datetime.now(TZ).date().isoformat()
+    for r in db.execute("SELECT i.*, x.status AS xs, (SELECT COUNT(*) FROM advance_inst j WHERE j.advance_id=i.advance_id) AS nn "
+                        "FROM advance_inst i JOIN advances x ON x.id=i.advance_id WHERE i.user_id=? AND i.period=? "
+                        "AND x.status IN ('active','done') ORDER BY i.due_date", (uid, period)).fetchall():
+        fut = str(r["due_date"]) > today
+        add(str(r["due_date"]) + "T12:00:00", "inst", f"Удержание аванса {r['n']}/{r['nn']}",
+            "будет удержано из зарплаты" if fut else "удержано из зарплаты", -int(r["amount"] or 0))
+    # Eski avans/borç kayıtları (loans)
+    for r in db.execute("SELECT * FROM loans WHERE barista_id=? AND substr(created_at,1,7)=?", (uid, period)).fetchall():
+        add(r["created_at"], "loan", "Займ · " + fmt_sum(r["amount"] or 0) + " сум",
+            " · ".join(x for x in [r["status"] or "", r["reason"] or ""] if x), None, int(r["amount"] or 0))
+    # Cezalar / чаевые / düzeltmeler (transferler dahil)
+    for r in db.execute("SELECT * FROM fines WHERE user_id=? AND period=?", (uid, period)).fetchall():
+        add(r["created_at"], "fine", "Штраф", r["reason"] or "", -int(r["amount"] or 0))
+    for r in db.execute("SELECT * FROM tips WHERE user_id=? AND period=?", (uid, period)).fetchall():
+        add(r["created_at"], "tip", "Чаевые", r["note"] or "", int(r["amount"] or 0))
+    for r in db.execute("SELECT * FROM adjustments WHERE user_id=? AND period=?", (uid, period)).fetchall():
+        nt = r["note"] or ""
+        add(r["created_at"], "xfer" if nt.startswith("Перевод") else "adj",
+            nt.split(" · ")[0] if nt.startswith("Перевод") else "Корректировка",
+            " · ".join(nt.split(" · ")[1:]) if nt.startswith("Перевод") else nt, int(r["amount"] or 0))
+    # Rezerv (iptal edilenler hariç)
+    try:
+        for r in db.execute("SELECT * FROM reserve_tx WHERE user_id=? AND period=? AND COALESCE(voided,0)=0",
+                            (uid, period)).fetchall():
+            a = int(r["amount"] or 0)
+            add(r["created_at"] or r["date"], "res", "Резерв · " + ("взнос" if r["kind"] == "contrib" else (r["kind"] or "")),
+                r["note"] or "", -a if r["kind"] == "contrib" else a)
+    except Exception:
+        pass
+    items.sort(key=lambda x: x["at"], reverse=True)
+    try:
+        sm = calc_summary(db, uid, period)
+        summ = {k: sm.get(k) for k in ("hours", "shifts_count", "hourly", "bonus", "fines", "paid", "adjustments",
+                                        "net", "adv_ded", "res_ded", "overtime", "tips")}
+    except Exception:
+        summ = {}
+    return {"period": period, "sum": summ, "items": items}
+
+
 def xfer_owner_change(db, owner_id, xid, amount=None, note=None, cancel=False):
     """Owner bir transferi DÜZELTİR (tutar/neden) ya da İPTAL eder. Para iki tarafın
     `adjustments` kayıtlarında: düzeltmede ikisi birlikte güncellenir, iptalde ikisi
@@ -13835,6 +13955,21 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "night_pay_set", user.id, user.first_name, None, "ночная доплата",
                        {"old": _old, "new": _new, "at": datetime.now(TZ).isoformat()})
             context.result = {"ok": True, "cfg": _new}
+
+        elif action == "staff_history":
+            # Kişinin ay ay geçmişi — owner herkesinkini, çalışan YALNIZ kendisininkini.
+            db = get_db()
+            try:
+                _hid = int(data.get("target") or user.id)
+            except Exception:
+                _hid = user.id
+            if _hid != user.id and get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            _per = str(data.get("period") or current_period())[:7]
+            if not re.match(r"^\d{4}-\d{2}$", _per):
+                _per = current_period()
+            context.result = dict({"ok": True}, **staff_history(db, _hid, _per))
 
         elif action in ("xfer_edit", "xfer_cancel"):
             # Owner: transferi düzelt / iptal et (herkesinkini). Taraflara haber gider.
