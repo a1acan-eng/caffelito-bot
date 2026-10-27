@@ -41,12 +41,14 @@ db.commit()
 r = act(1, {'action': 'staff_history', 'target': 10, 'period': P})
 check(r.get('ok') is True and r['period'] == P, 'owner Бек\'in Ekim geçmişini alır')
 ks = [x['k'] for x in r['items']]
-for k, nm in (('shift', 'vardiya'), ('bonus', 'bardak bonusu'), ('cash', 'kasadan günlük bonus'), ('fine', 'ceza'),
+for k, nm in (('shift', 'vardiya'), ('bonus', 'bardak bonusu'), ('fine', 'ceza'),
               ('tip', 'чаевые'), ('pay', 'ödeme'), ('adv', 'avans'), ('inst', 'avans taksiti'), ('xfer', 'transfer')):
     check(k in ks, f'listede: {nm}')
 sh = next(x for x in r['items'] if x['k'] == 'shift')
 check(sh['a'] == 9 * 26000 and '07:00–16:00' in sh['s'], 'vardiya: saat aralığı ve ücret (234.000)')
-check(next(x for x in r['items'] if x['k'] == 'cash')['i'] == 12000, 'kasadan alınan bonus 12.000')
+bo = next(x for x in r['items'] if x['k'] == 'bonus')
+check('cash' not in ks and '12 шт' in bo['s'] and ('выдано из кассы' in bo['s'] or 'из кассы взято 12.000' in bo['s']),
+      'kasadan alınan bonus vardiyanın bonus satırında (tek satır): ' + bo['s'])
 ins = [x for x in r['items'] if x['k'] == 'inst']
 check(len(ins) == 2 and all('удержано' in x['s'] for x in ins) and all(x['a'] == -105000 for x in ins), 'iki avans taksiti (−105.000) tarihleriyle görünüyor')
 check(all('другой месяц' not in x['s'] and 'чужой' not in x['s'] for x in r['items']), 'başka ay ve başka kişi YOK')

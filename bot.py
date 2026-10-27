@@ -7574,6 +7574,39 @@ def staff_history(db, uid, period):
             bnames[int(b["id"])] = b["name"]
     except Exception:
         pass
+    # Kasa raporları (kapanışta kasadan alınan günlük bonus) — vardiyalarla EŞLEŞTİRİLİR:
+    # aynı kişinin, vardiya bitişinden −1 sa / +6 sa içindeki en yakın raporu. Böylece
+    # «hak etti» ile «kasadan aldı» TEK satırda görünür (owner 2026-10-27: iki satır
+    # «iki kez mi aldı?» diye okunuyordu). Eşleşmeyen rapor ayrı satır kalır.
+    def _pdt(v):
+        try:
+            d = datetime.fromisoformat(str(v))
+            return d.astimezone(TZ).replace(tzinfo=None) if d.tzinfo else d
+        except Exception:
+            return None
+    _crs = [dict(r) for r in db.execute(
+        "SELECT id, created_at, end_time, daily_pay FROM cashreports WHERE user_id=? "
+        "AND substr(COALESCE(NULLIF(end_time,''), created_at),1,7) IN (?, ?) ORDER BY id",
+        (uid, period, (datetime.strptime(period + "-01", "%Y-%m-%d") + timedelta(days=32)).strftime("%Y-%m"))).fetchall()]
+    _used = set()
+    def _match_cr(end_v):
+        e = _pdt(end_v)
+        if not e:
+            return None
+        best = None
+        for c in _crs:
+            if c["id"] in _used:
+                continue
+            ct = _pdt(c["end_time"]) or _pdt(c["created_at"])
+            if not ct:
+                continue
+            dd = (ct - e).total_seconds()
+            if -3600 <= dd <= 6 * 3600 and (best is None or abs(dd) < best[0]):
+                best = (abs(dd), c)
+        if best:
+            _used.add(best[1]["id"])
+            return best[1]
+        return None
     # Vardiyalar
     for r in db.execute("SELECT * FROM shifts WHERE user_id=? AND period=? AND start_time IS NOT NULL "
                         "ORDER BY start_time", (uid, period)).fetchall():
@@ -7600,12 +7633,27 @@ def staff_history(db, uid, period):
         except Exception:
             pass
         bon = int(r["bonus"] or 0)
-        if bon or cups:
-            add(r["end_time"], "bonus", "Дневной бонус · стаканы", f"{cups} шт · за смену", None, bon)
-    # Kasadan alınan günlük bonus (kapanış raporu)
-    for r in db.execute("SELECT created_at, end_time, daily_pay, cups_total FROM cashreports WHERE user_id=? "
-                        "AND period=? AND COALESCE(daily_pay,0)>0", (uid, period)).fetchall():
-        add(r["created_at"], "cash", "Дневной бонус выдан из кассы", "наличными при закрытии", None, int(r["daily_pay"]))
+        cr = _match_cr(r["end_time"])
+        dp = int((cr or {}).get("daily_pay") or 0)
+        if bon or cups or dp:
+            sub = [f"{cups} шт", f"заработано {fmt_sum(bon)}"]
+            if cr is None:
+                sub.append("отчёт кассы не найден")
+            elif dp == bon:
+                sub.append("выдано из кассы ✓")
+            else:
+                sub.append(f"из кассы взято {fmt_sum(dp)}")
+                if dp > bon and "par_n" in r.keys() and int(r["par_n"] or 0) > 1:
+                    sub.append("вкл. долю напарника")
+            add(r["end_time"], "bonus", "Дневной бонус за смену", " · ".join(sub), None, bon)
+    # Vardiyayla eşleşmeyen kasa raporu (ör. owner raporu düzeltti / vardiya başka ayda)
+    for c in _crs:
+        if c["id"] in _used or int(c["daily_pay"] or 0) <= 0:
+            continue
+        ct = c["end_time"] or c["created_at"]
+        if str(ct)[:7] != period:
+            continue
+        add(ct, "cash", "Дневной бонус выдан из кассы", "наличными при закрытии · смена не найдена", None, int(c["daily_pay"]))
     # Ödemeler (eski günlük bonus kayıtları hariç)
     skip = set(daily_bonus_pay_ids(db, uid, period) or [])
     for r in db.execute("SELECT * FROM payments WHERE user_id=? AND period=? ORDER BY paid_at", (uid, period)).fetchall():
