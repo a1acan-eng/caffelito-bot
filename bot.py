@@ -4872,6 +4872,8 @@ def ho_solo_can(db, user_id, branch_id, when_dt=None):
             "AND start_time IS NOT NULL AND user_id!=? LIMIT 1", (bid, int(user_id))).fetchone()
         if other:
             return False                  # sменщик zaten iste — normal gun
+        if ho_solo_locked(db, bid, when_dt):
+            return False                  # bugün ikinci vardiya açıldı → kilitli
         d = ho_bday(when_dt)
         came = db.execute(
             "SELECT 1 FROM handover WHERE branch_id=? AND date=? AND b2_arrived_at IS NOT NULL LIMIT 1",
@@ -4879,6 +4881,31 @@ def ho_solo_can(db, user_id, branch_id, when_dt=None):
         return came is None
     except Exception as e:
         logger.warning(f"ho_solo_can: {e}")
+        return False
+
+
+def ho_solo_locked(db, branch_id, when_dt=None):
+    """«Один за двоих» KİLİTLİ mi? (owner 2026-10-28: «ikinci vardiya açıldıktan sonra
+    dokunulmaz olsun, otomatik».) O iş gününde şubede İKİNCİ bir barista vardiya
+    açtıysa (sменщик geldi ya da iki barista çalıştı) mod artık ne açılır ne kapanır —
+    owner dahil. Gün değişince kendiliğinden düşer."""
+    try:
+        bid = int(branch_id or 0)
+        d = ho_bday(when_dt)
+        if db.execute("SELECT 1 FROM handover WHERE branch_id=? AND date=? AND b2_arrived_at IS NOT NULL LIMIT 1",
+                      (bid, d)).fetchone():
+            return True
+        # 06:50'de erken açan sabahçı da bu güne sayılsın (gece vardiyası ~03:00'te biter)
+        d0 = datetime.strptime(d, "%Y-%m-%d") + timedelta(hours=HO_BDAY_SHIFT_H - 2)
+        users = set()
+        for r in db.execute("SELECT * FROM shifts WHERE COALESCE(branch_id,1)=? AND start_time IS NOT NULL "
+                            "AND start_time>=? AND start_time<?",
+                            (bid, d0.isoformat(), (d0 + timedelta(days=1)).isoformat())).fetchall():
+            if ho_shift_is_barista(db, r):
+                users.add(int(r["user_id"]))
+        return len(users) >= 2
+    except Exception as e:
+        logger.warning(f"ho_solo_locked: {e}")
         return False
 
 
@@ -9179,6 +9206,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                           "br": (get_branch(db, int(_cm["branch_id"] or 0)) or {}).get("name") or ""}
             _ho_out["solo"] = [int(b["id"]) for b in get_branches(db, only_active=True)
                                if ho_solo(db, int(b["id"]), _now_ho)]
+            _ho_out["solo_lock"] = [int(b["id"]) for b in get_branches(db, only_active=True)
+                                    if ho_solo_locked(db, int(b["id"]), _now_ho)]
             # Baristaya dugmeyi YALNIZ anlamliysa goster (owner'da hep durur).
             _ho_out["solo_can"] = 1 if (_act_ho and ho_solo_can(db, user_id, int(_act_ho["branch_id"] or 0), _now_ho)) else 0
             if role == "owner":
@@ -16661,6 +16690,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _sb or not get_branch(db, _sb):
                 await update.message.reply_text("❌ Филиал не найден."); return
             _on = bool(int(data.get("on") or 0))
+            if ho_solo_locked(db, _sb):
+                await update.message.reply_text(
+                    "🔒 Сегодня на филиале уже работали двое — режим «один за двоих» "
+                    "на сегодня закрыт. Завтра — снова доступен."); return
             if get_role(db, user.id) != "owner":
                 _my_sb = get_active_shift(db, user.id)
                 if not _my_sb or int(_my_sb["branch_id"] or 0) != _sb:
