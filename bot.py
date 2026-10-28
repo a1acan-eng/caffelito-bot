@@ -4446,8 +4446,21 @@ def op_register(db, shift_row, why=None):
         # şube penceresine «geç kalmış» SAYILMAZ (öğlen gelen yardımcı 07:00'ye
         # 5 saat geç değildir). Yalnız kişinin KENDİ График planı ölçülür; yoksa ceza yok.
         _par = "параллель" in str(sh.get("note") or "")
+        # Paralel GRUP üyesi (owner 2026-10-28): sabah grubuna katılan sabahçıdır —
+        # planı kökün vardiya penceresi (07:00). 08:30'da gelen 90 dk geç.
+        _pof = int(sh.get("par_of") or 0)
+        if _pof and _pof != sid:
+            try:
+                _rt = db.execute("SELECT start_time FROM shifts WHERE id=?", (_pof,)).fetchone()
+                if _rt and _rt["start_time"]:
+                    _rst = datetime.fromisoformat(_rt["start_time"])
+                    sched, _pend = op_window_for(cfg, bid, _rst)
+                    _src = "window" if sched else None
+            except Exception as _e_pof:
+                logger.warning(f"op_register par_of plan: {_e_pof}")
+                sched = None
         try:
-            if not _par and ho_enabled(cfg) and not ho_solo(db, bid, actual) and ho_shift_is_barista(db, sh):
+            if sched is None and not _par and ho_enabled(cfg) and not ho_solo(db, bid, actual) and ho_shift_is_barista(db, sh):
                 ho_void_non_barista(db)
                 _hr2 = db.execute(
                     "SELECT b2_start, sched_end FROM handover WHERE branch_id=? AND finalized=0 "
@@ -4526,7 +4539,7 @@ def op_register(db, shift_row, why=None):
         # hala acik» her zaman dogru olurdu ve 2. baristayi hep affederdi. Plan
         # devir satirindan geliyorsa (ya da bildirimle olculuyorsa) muafiyet YOK.
         if (int(cfg.get("handover_waiver") or 0) and not _ho_extra_open
-                and not _by_notice and _src != "handover"):
+                and not _by_notice and _src != "handover" and not (_pof and _pof != sid)):
             try:
                 _cut = sched + timedelta(minutes=_g)
                 _prole = str(sh.get("shift_role") or "barista")
@@ -7443,11 +7456,33 @@ def par_group(sh):
         return 0
 
 
-def par_window_root(db, user_id, branch_id, when_dt):
+def par_next_start(db, root):
+    """Kök vardiyanın ardından gelen İKİNCİ VARDİYA'nın planlı başlangıcı (16:30):
+    önce kökün devir satırı, yoksa şube pencereleri. Bilinmiyorsa None."""
+    try:
+        _hr = ho_row_for_shift(db, int(root["id"]))
+        if _hr and _hr["b2_start"]:
+            return datetime.fromisoformat(_hr["b2_start"])
+    except Exception:
+        pass
+    try:
+        rst = datetime.fromisoformat(root["start_time"])
+        if rst.tzinfo is not None:
+            rst = rst.astimezone(TZ).replace(tzinfo=None)
+        return ho_windows_for_shift(op_cfg(db), int(root["branch_id"] or 0), rst)[2]
+    except Exception:
+        return None
+
+
+def par_window_root(db, user_id, branch_id, when_dt, open_at=False):
     """Bu kişi şimdi (when_dt) bu şubede açarsa hangi paralel gruba katılır?
     Şubede AÇIK bir barista vardiyası varsa ve onun grubunun İLK başlangıcından
     bu yana par_window_min dakikadan az geçtiyse → o grubun kök vardiya id'si.
-    Yoksa None (tek başına / ikinci vardiya). Asistan/stajyer YUVASI hiç katılmaz."""
+    Pencereden SONRA gelen de, gelişi ikinci vardiyanın başlangıcından (16:30)
+    çok kökün başlangıcına (07:00) YAKINSA sabahçıdır — geç kalmış (owner
+    2026-10-28, canlı: Дамир 07:00, Хасан 09:02 → 16:30'a çekilmişti).
+    Yoksa None (tek başına / ikinci vardiya). Asistan/stajyer YUVASI hiç katılmaz.
+    `open_at`: owner sonradan düzeltirken — partner when_dt anında açıktıysa yeter."""
     try:
         bid = int(branch_id or 0) or user_branch_id(db, int(user_id))
         if closer_is_assistant(db, int(user_id), bid or None):
@@ -7456,9 +7491,13 @@ def par_window_root(db, user_id, branch_id, when_dt):
         if win <= 0:
             return None
         best = None
-        for r in db.execute("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
-                            "AND COALESCE(branch_id,1)=? AND start_time IS NOT NULL",
-                            (int(user_id), int(bid or 1))).fetchall():
+        _q = ("SELECT * FROM shifts WHERE (end_time IS NULL OR end_time>?) AND user_id<>? "
+              "AND COALESCE(branch_id,1)=? AND start_time IS NOT NULL AND start_time<=?") if open_at else \
+             ("SELECT * FROM shifts WHERE end_time IS NULL AND user_id<>? "
+              "AND COALESCE(branch_id,1)=? AND start_time IS NOT NULL")
+        _args = ((when_dt.isoformat(), int(user_id), int(bid or 1), when_dt.isoformat()) if open_at
+                 else (int(user_id), int(bid or 1)))
+        for r in db.execute(_q, _args).fetchall():
             if not ho_shift_is_barista(db, r):
                 continue
             root_id = par_group(r)
@@ -7472,7 +7511,11 @@ def par_window_root(db, user_id, branch_id, when_dt):
                     rst = rst.astimezone(TZ).replace(tzinfo=None)
             except Exception:
                 continue
-            if timedelta(0) <= (when_dt - rst) <= timedelta(minutes=win):
+            _ok = timedelta(0) <= (when_dt - rst) <= timedelta(minutes=win)
+            if not _ok and (when_dt - rst) > timedelta(minutes=win):
+                _nx = par_next_start(db, root)
+                _ok = bool(_nx and when_dt < _nx and (when_dt - rst) < (_nx - when_dt))
+            if _ok:
                 if best is None or rst < best[1]:
                     best = (root_id, rst)
         return best[0] if best else None
@@ -14794,6 +14837,36 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 db.execute("UPDATE shifts SET start_time=?, period=? WHERE id=?",
                            (start_dt.isoformat(), start_dt.strftime("%Y-%m"), sid))
             db.commit()
+            # ── PARALEL GRUBA ALMA (owner 2026-10-28, canlı: Хасан 09:02 «ikinci
+            # vardiya» sanılıp 16:30'a çekilmişti; owner 09:02'ye düzeltince ceza
+            # 16:30 planına göre ölçülüp hiç yazılmamıştı). Düzeltilen geliş sabah
+            # grubuna düşüyorsa vardiya gruba katılır: devir işareti geri alınır,
+            # ceza grubun planından (07:00) yeniden hesaplanır.
+            _pmsg = ""
+            try:
+                if (_ns and not sh["par_of"] and ho_shift_is_barista(db, sh)
+                        and not db.execute("SELECT 1 FROM shifts WHERE par_of=? AND id<>? LIMIT 1",
+                                           (sid, sid)).fetchone()):
+                    _proot = par_window_root(db, int(sh["user_id"]), _bid, start_dt, open_at=True)
+                    if _proot and int(_proot) != sid:
+                        _pn = str(sh["note"] or "")
+                        if "параллель" not in _pn:
+                            _pn = (_pn + " · " if _pn else "") + "параллельная смена"
+                        db.execute("UPDATE shifts SET par_of=?, note=? WHERE id=?", (int(_proot), _pn, sid))
+                        db.execute("UPDATE handover SET b2_uid=NULL, b2_name=NULL, b2_arrived_at=NULL, "
+                                   "b2_real_at=NULL, ho_started_at=NULL WHERE finalized=0 AND b2_uid=?",
+                                   (int(sh["user_id"]),))
+                        db.execute("DELETE FROM handover WHERE shift_id=? AND finalized=0 "
+                                   "AND COALESCE(draft,'')=''", (sid,))
+                        db.commit()
+                        _prn = display_name_for(db, int(db.execute("SELECT user_id FROM shifts WHERE id=?",
+                                                                   (int(_proot),)).fetchone()["user_id"]), fallback="")
+                        _pmsg = f"\n👥 Смена отнесена к утренней — параллельно с {_prn}."
+                        log_action(db, "par_regroup", user.id, user.first_name, sh["user_id"],
+                                   display_name_for(db, sh["user_id"], fallback="?"),
+                                   {"shift_id": sid, "par_of": int(_proot), "start": start_dt.isoformat()})
+            except Exception as _e_prg:
+                logger.warning(f"edit_shift par regroup {sid}: {_e_prg}")
             # ── AÇILIŞ CEZASI YENİDEN HESAPLANIR (owner kuralı 2026-09-16) ──
             # Saat sonradan düzeltilirse ceza da yeni saate göre olmalı; eski
             # kayıt ve yazdığı ceza (owner'a geçen alacak dahil) geri alınır.
@@ -14848,11 +14921,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(
                     f"✏️ Смена *{_nm}* обновлена.\n"
                     f"⏰ {start_dt.strftime('%d.%m %H:%M')} → {end_dt.strftime('%H:%M')} · "
-                    f"{fmt_hm(_sh2['hours'] or 0)} · {fmt_sum(_sh2['total'] or 0)} сум" + _opmsg,
+                    f"{fmt_hm(_sh2['hours'] or 0)} · {fmt_sum(_sh2['total'] or 0)} сум" + _pmsg + _opmsg,
                     parse_mode="Markdown")
             else:
                 await update.message.reply_text(
-                    f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}." + _opmsg,
+                    f"✏️ Время начала смены *{_nm}* изменено на {start_dt.strftime('%d.%m %H:%M')}." + _pmsg + _opmsg,
                     parse_mode="Markdown")
 
         elif action == "adjust_balance":
