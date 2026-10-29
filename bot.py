@@ -7273,6 +7273,79 @@ def fine_to_owner_undo(db, fine_id):
         logger.warning(f"fine_to_owner_undo {fine_id}: {e}")
 
 
+# ─── ШТРАФЫ → В ЗАРПЛАТУ (owner 2026-10-29) ────────────────────────────────
+# «Ceza kapsülümdeki parayı istediğim zaman genel maaş kapsülüme geçirebileyim.»
+# Otomatik geçiş 18.09'da owner isteğiyle kapatıldı (FINES_TO_OWNER_BALANCE);
+# şimdi ELLE ve owner'ın seçtiği tutarda: bu ayki maaşına +tutar `adjustments`
+# satırı «[f2s]» etiketiyle. Havuz = owner'ın cezaları (kendi kestiği + sistemin
+# açılış gecikmesi cezası birincil owner'a), marka cezaları ve kendi üstüne
+# yazılanlar hariç — eksi daha önce geçirilenler. Geri alınabilir.
+F2S_TAG = "[f2s]"
+
+
+def f2s_pool(db, owner_id):
+    """(toplam_ceza, geçirilen, kalan) — owner'ın ceza defteri, tüm zamanlar."""
+    oid = int(owner_id)
+    try:
+        q = ("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE user_id<>? AND amount>0 "
+             "AND COALESCE(type,'') NOT IN (%s) AND (added_by=?" % ",".join("?" * len(OP_BRAND_TYPES)))
+        args = [oid, *OP_BRAND_TYPES, oid]
+        if oid == _primary_owner(db):
+            q += " OR (COALESCE(added_by,0)=0 AND type=?)"
+            args.append(OP_FINE_TYPE)
+        total = int(db.execute(q + ")", args).fetchone()["t"] or 0)
+        moved = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM adjustments WHERE user_id=? "
+                               "AND note LIKE ?", (oid, f"%{F2S_TAG}%")).fetchone()["t"] or 0)
+        return total, moved, max(0, total - moved)
+    except Exception as e:
+        logger.warning(f"f2s_pool: {e}")
+        return 0, 0, 0
+
+
+def f2s_view(db, owner_id):
+    total, moved, left = f2s_pool(db, owner_id)
+    rows = []
+    try:
+        for r in db.execute("SELECT id, amount, period, created_at FROM adjustments WHERE user_id=? "
+                            "AND note LIKE ? ORDER BY id DESC LIMIT 20", (int(owner_id), f"%{F2S_TAG}%")).fetchall():
+            rows.append({"id": int(r["id"]), "amount": int(r["amount"] or 0),
+                         "period": r["period"] or "", "at": r["created_at"] or ""})
+    except Exception:
+        pass
+    return {"total": total, "moved": moved, "left": left, "rows": rows}
+
+
+def f2s_move(db, owner_id, amount):
+    """Havuzdan bu ayki maaşa geçir. Döner (ok, hata, adj_id)."""
+    try:
+        amount = int(float(str(amount).replace(" ", "").replace(",", ".")))
+    except (TypeError, ValueError):
+        return False, "Укажите сумму.", None
+    if amount <= 0:
+        return False, "Укажите сумму.", None
+    left = f2s_pool(db, owner_id)[2]
+    if amount > left:
+        return False, f"Доступно только {fmt_sum(left)} сум.", None
+    oid = int(owner_id)
+    cur = db.execute(
+        "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (oid, amount, f"Из штрафов в зарплату {F2S_TAG}", current_period(), user_branch_id(db, oid),
+         oid, display_name_for(db, oid, fallback="Owner"), datetime.now(TZ).isoformat()))
+    db.commit()
+    return True, "", int(cur.lastrowid)
+
+
+def f2s_undo(db, owner_id, adj_id):
+    r = db.execute("SELECT * FROM adjustments WHERE id=? AND user_id=? AND note LIKE ?",
+                   (int(adj_id), int(owner_id), f"%{F2S_TAG}%")).fetchone()
+    if not r:
+        return False, "Перевод не найден.", 0
+    db.execute("DELETE FROM adjustments WHERE id=?", (int(adj_id),))
+    db.commit()
+    return True, "", int(r["amount"] or 0)
+
+
 def get_active_shift(db, user_id):
     return db.execute(
         "SELECT * FROM shifts WHERE user_id=? AND start_time IS NOT NULL AND end_time IS NULL "
@@ -9508,6 +9581,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"xfers={quote(json.dumps(xfer_rows(db, user_id, role), ensure_ascii=False))}",
         f"night_cfg={quote(json.dumps(night_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"payday={quote(json.dumps(payday_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
+        f"f2s={quote(json.dumps(f2s_view(db, user_id) if role == 'owner' else {}, ensure_ascii=False))}",
         f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
     ]
@@ -14535,6 +14609,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     + "\nСумма добавлена к вашей зарплате за этот месяц.")
             except Exception as _e_x:
                 logger.warning(f"xfer DM: {_e_x}")
+
+        elif action in ("f2s_move", "f2s_undo"):
+            # Штрафы → в зарплату (owner 2026-10-29). Yalnız owner; sonuç sendR'ye.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            if action == "f2s_move":
+                ok, err, _aid = f2s_move(db, user.id, data.get("amount"))
+                _amt = int(db.execute("SELECT amount FROM adjustments WHERE id=?", (_aid,)).fetchone()["amount"]) if ok else 0
+            else:
+                ok, err, _amt = f2s_undo(db, user.id, data.get("id") or 0)
+                _aid = data.get("id")
+            if not ok:
+                context.result = {"ok": False, "error": err}
+                return
+            log_action(db, action, user.id, user.first_name, user.id, shown,
+                       {"amount": _amt, "adj_id": _aid, "period": current_period()})
+            context.result = {"ok": True, "f2s": f2s_view(db, user.id)}
 
         elif action == "close_as_info":
             # Owner «Закрыть как сотрудник»: kapanış ekranını o kişinin verisiyle
