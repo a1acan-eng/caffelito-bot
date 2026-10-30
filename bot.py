@@ -9794,7 +9794,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"adv_own={quote(json.dumps(adv_own, ensure_ascii=False) if adv_own else '')}",
         f"res={quote(json.dumps(res_self, ensure_ascii=False) if res_self else '')}",
         f"intern={quote(json.dumps(intern_info(db, user_id), ensure_ascii=False) if role != 'owner' else '')}",
-        f"my_gdebt={quote(json.dumps(my_gdebt(db, user_id), ensure_ascii=False))}",
+        f"mygd={quote(json.dumps(my_gdebt(db, user_id), ensure_ascii=False))}",
         f"res_own={quote(json.dumps(res_own, ensure_ascii=False) if res_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
