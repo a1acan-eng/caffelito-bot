@@ -21,6 +21,7 @@ db = bot.get_db()
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,approved,authorized,branch_id) VALUES (1,'Owner','owner',1,1,1)")
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (10,'Дамир','barista',1,1,1)")
 db.execute("INSERT OR REPLACE INTO branches (id, name, active) VALUES (1,'C5',1)")
+db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('reserve_wfix_once','x')")   # tek seferlik düzeltme ayrı test edilir
 per = bot.current_period(); today = bot._adv_today().isoformat(); now = datetime.now(bot.TZ).isoformat()
 for i, d in enumerate((per + "-01", per + "-02", per + "-03")):
     db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
@@ -49,5 +50,23 @@ check(bot.calc_summary(db, 10, per)["net"] == net0, 'maaştan düştü')
 check(db.execute("SELECT COUNT(*) AS n FROM logs WHERE action IN ('reserve_withdraw','reserve_withdraw_undo')").fetchone()["n"] == 2, 'günlükte 2 kayıt')
 v = bot.reserve_view(db, 10)
 check(all(h["kind"] != "withdraw" for h in v["hist"]), 'geri alınan çekim geçmişte görünmez')
+# Owner 2026-10-31: çekim = rezerv DURUR; sonradan katkı yazılmaz; geri alınca eski durum
+r = act(1, {'action': 'reserve_withdraw', 'target': 10, 'amount': 100000})
+check(r and r.get('ok') and db.execute("SELECT reserve_off FROM users WHERE user_id=10").fetchone()[0] == 1, 'çekim → rezerv durdu')
+check(bot.reserve_sync(db, 10) == 0, 'durduktan sonra katkı yazılmıyor')
+tx2 = db.execute("SELECT id FROM reserve_tx WHERE kind='withdraw' AND COALESCE(voided,0)=0").fetchone()["id"]
+act(1, {'action': 'reserve_withdraw_undo', 'id': tx2})
+check(not db.execute("SELECT reserve_off FROM users WHERE user_id=10").fetchone()[0], 'geri alınca rezerv yeniden açık')
+# Tek seferlik düzeltme: çekimden SONRA yazılmış katkılar iptal → maaşa döner, rezerv durur
+act(1, {'action': 'reserve_withdraw', 'target': 10, 'amount': 50000})
+db.execute("UPDATE users SET reserve_off=NULL WHERE user_id=10")
+late = db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
+                  "VALUES (10,'contrib',?,?,94050,1000000,'Взнос',0,'Nero','x')", (per + "-28", per)).lastrowid
+db.execute("DELETE FROM meta WHERE k='reserve_wfix_once'"); db.commit()
+n0 = bot.calc_summary(db, 10, per)["net"]
+bot.reserve_withdraw_fix_once(db)
+check(db.execute("SELECT voided FROM reserve_tx WHERE id=?", (late,)).fetchone()[0] == 1, 'çekimden sonraki katkı iptal edildi')
+check(bot.calc_summary(db, 10, per)["net"] == n0 + 94050, 'kesilen para maaşa döndü')
+check(db.execute("SELECT reserve_off FROM users WHERE user_id=10").fetchone()[0] == 1, 'rezerv durduruldu')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
