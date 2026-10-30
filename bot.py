@@ -18696,6 +18696,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
 
+        elif action == "brx_merge":
+            # AYNI ÜRÜN İKİ ADLA (owner 2026-10-31: «Cacao / Какао», «Сливки 11% / Сливки 11% 0,2 л»):
+            # src adındaki TÜM kayıtlar dst adına geçer; katalogdaki src arşive. Günlükte id'ler.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            _src = " ".join(str(data.get("src") or "").split())
+            _dst = " ".join(str(data.get("dst") or "").split())
+            if not _src or not _dst or _src.casefold() == _dst.casefold():
+                context.result = {"ok": False, "error": "Выберите другой товар."}; return
+            _ids = [int(r["id"]) for r in db.execute("SELECT id, item FROM brx_tx").fetchall()
+                    if " ".join(str(r["item"] or "").split()).casefold() == _src.casefold()]
+            for _i in _ids:
+                db.execute("UPDATE brx_tx SET item=? WHERE id=?", (_dst, _i))
+            _arch = 0
+            for r in db.execute("SELECT id, name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall():
+                if " ".join(str(r["name"] or "").split()).casefold() == _src.casefold():
+                    db.execute("UPDATE brx_items SET archived=1 WHERE id=?", (int(r["id"]),)); _arch += 1
+            db.commit()
+            log_action(db, "brx_merge", user.id, user.first_name, None, "",
+                       {"src": _src, "dst": _dst, "tx_ids": _ids, "items_archived": _arch})
+            context.result = {"ok": True, "done": len(_ids)}
+
         elif action in ("brx_fix_preview", "brx_fix_apply"):
             # Eski ürün adlarını katalog adlarına çevir (owner 2026-10-21). Yalnız owner;
             # önce önizleme, owner onaylarsa uygulanır. Sonuç yanıt olarak döner (sendR).
