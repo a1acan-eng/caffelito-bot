@@ -6858,8 +6858,17 @@ def adv_decade_pay(db, user_id, today=None):
                              "AND date>=? AND date<=?", (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0)
     except Exception:
         res = 0
+    # Rezervden ÇEKİLEN (owner 2026-10-31, canlı: Suhrob'un 21–31 dökümü −564.300 kesintiyi
+    # gösterip aynı dönemdeki +1.567.500 çekimi göstermiyordu → «к выплате» eksik görünüyordu).
+    try:
+        rout = int(db.execute("SELECT COALESCE(SUM(-amount),0) AS s FROM reserve_tx WHERE user_id=? AND kind='withdraw' "
+                              "AND COALESCE(voided,0)=0 AND date>=? AND date<=?",
+                              (user_id, a.isoformat(), b.isoformat())).fetchone()["s"] or 0)
+    except Exception:
+        rout = 0
     return {"from": a.isoformat(), "to": b.isoformat(), "gross": gross,
-            "adv": int(inst), "fines": fines, "res": res, "net": gross - int(inst) - fines - res}
+            "adv": int(inst), "fines": fines, "res": res, "rout": rout,
+            "net": gross - int(inst) - fines - res + rout}
 
 
 # ═══ RESERVE — çalışanın finansal rezervi (owner 2026-09-28) ══════════════
@@ -8784,6 +8793,8 @@ def build_payroll_pdf(db, user_id, period, name=""):
             for _key, _lbl in (("fines", "штрафы"), ("adv", "аванс"), ("res", "резерв")):
                 if _dd[_key]:
                     _parts.append(f"{_lbl} −{_pdf_fmt(_dd[_key])}")
+            if _dd.get("rout"):
+                _parts.append("из резерва +" + _pdf_fmt(_dd["rout"]))
             if _dd["adj"]:
                 _parts.append(("корр./переводы +" if _dd["adj"] > 0 else "корр./переводы −") + _pdf_fmt(abs(_dd["adj"])))
             if _ds["extra"]:
