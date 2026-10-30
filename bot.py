@@ -7374,11 +7374,43 @@ def f2s_migrate(db, owner_id):
         logger.warning(f"f2s_migrate: {e}")
 
 
+F2S_HAND_CUTOFF = "2026-10-31T03:00:00"
+
+
+def f2s_close_old(db, owner_id):
+    """BİR KEZ (owner 2026-10-31: «270.000 nereden çıktı, sil»): bu tarihe kadarki tüm
+    açık cezalar elden alınmış sayılır — owner hepsini aldığını söyledi."""
+    oid = int(owner_id)
+    k = f"f2s_hand_once_{oid}"
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k=?", (k,)).fetchone():
+            return 0
+        w, args = _f2s_where(db, oid)
+        rows = db.execute("SELECT id, amount FROM fines WHERE COALESCE(settled,0)=0 AND created_at<? AND " + w,
+                          [F2S_HAND_CUTOFF, *args]).fetchall()
+        now_s = datetime.now(TZ).isoformat()
+        for r in rows:
+            db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=?, settle_via='hand' WHERE id=?",
+                       (now_s, oid, int(r["id"])))
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, now_s))
+        db.commit()
+        if rows:
+            log_action(db, "fine_settle_all", oid, "Nero", None, None,
+                       {"ids": [int(r["id"]) for r in rows], "settled": len(rows),
+                        "sum": sum(int(r["amount"] or 0) for r in rows), "auto": "owner_2026_10_31"})
+        return len(rows)
+    except Exception as e:
+        logger.warning(f"f2s_close_old: {e}")
+        return 0
+
+
 def f2s_pool(db, owner_id):
     """(toplam_ceza, maaşa_geçen, açık) — açık = henüz alınmamış (elden de, maaşa da) cezalar."""
     oid = int(owner_id)
     try:
         f2s_migrate(db, oid)
+        if oid == _primary_owner(db):
+            f2s_close_old(db, oid)
         w, args = _f2s_where(db, oid)
         total = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE " + w, args).fetchone()["t"] or 0)
         left = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE COALESCE(settled,0)=0 AND " + w,
@@ -12954,12 +12986,18 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _ids = [int(x) for x in (data.get("ids") or []) if str(x).strip()]
             except (TypeError, ValueError):
                 _ids = []
+            if data.get("all"):
+                # TÜM AYLAR (owner 2026-10-31): kapsül yalnız seçili ayı ve son 60 cezayı
+                # görüyordu → önceki ayların açık cezaları «доступно»da kalıyordu.
+                _w_all, _a_all = _f2s_where(db, int(user.id))
+                _ids = [int(r["id"]) for r in db.execute(
+                    "SELECT id FROM fines WHERE COALESCE(settled,0)=0 AND " + _w_all, _a_all).fetchall()]
             if not _ids:
                 await update.message.reply_text("ℹ️ Открытых штрафов нет.")
                 return
             _now_s = datetime.now(TZ).isoformat()
             _n, _sum, _skip = 0, 0, 0
-            for _fid in _ids[:200]:
+            for _fid in (_ids if data.get("all") else _ids[:200]):
                 _r = db.execute("SELECT id, user_id, amount, type, added_by, COALESCE(settled,0) AS settled "
                                 "FROM fines WHERE id=?", (_fid,)).fetchone()
                 if not _r or int(_r["settled"] or 0):
