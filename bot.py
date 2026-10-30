@@ -16883,6 +16883,37 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"🔒 Черновик сохранён и заблокирован. Смена открыта до {row['sched_end'][11:16]}: "
                 f"отчёт уйдёт сам в {row['sched_end'][11:16]} или раньше — с разрешения владельца.")
 
+        elif action == "ho_draft_unlock":
+            # Owner 2026-10-30: «черновик заблокирован olanı ben açabileyim, herkesinkini».
+            # Taslak silinir (eski içerik günlüğe), çalışan düzeltip YENİDEN kaydeder.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            try:
+                _us = int(data.get("uid") or 0)
+            except (TypeError, ValueError):
+                _us = 0
+            _ash = get_active_shift(db, _us) if _us else None
+            _hr = ho_row_for_shift(db, _ash["id"]) if _ash else None
+            if not _hr or _hr["finalized"]:
+                context.result = {"ok": False, "error": "Открытой передачи смены нет."}; return
+            if not _hr["draft"]:
+                context.result = {"ok": False, "error": "Черновик не заблокирован."}; return
+            db.execute("UPDATE handover SET draft=NULL, draft_at=NULL, "
+                       "early_status=CASE WHEN early_status='requested' THEN 'none' ELSE early_status END WHERE id=?",
+                       (int(_hr["id"]),))
+            db.commit()
+            _unm = display_name_for(db, _us, fallback=f"ID {_us}")
+            log_action(db, "ho_draft_unlock", user.id, user.first_name, _us, _unm,
+                       {"shift_id": int(_hr["shift_id"]), "draft_at": _hr["draft_at"], "draft": _hr["draft"]})
+            try:
+                await context.bot.send_message(
+                    _us, "🔓 Владелец открыл ваш черновик передачи смены.\n"
+                         "Исправьте данные и сохраните черновик заново — до этого отчёт сам не уйдёт.")
+            except Exception:
+                pass
+            context.result = {"ok": True}
+
         elif action == "ho_early_request":
             db = get_db()
             active = get_active_shift(db, user.id)
