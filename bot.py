@@ -3813,6 +3813,21 @@ def cps_salary_pct(score, cfg):
     return max(0, min(100, int(round(pct))))
 
 
+def _cps_pending(db, user_id, period, summ=None):
+    """Uygulanmamış CPS maaş kesintisi → {"sc", "pct", "amt"} ya da None."""
+    try:
+        cfg = cps_cfg(db)
+        sc = cps_score(db, user_id, period, cfg)
+        pct = cps_salary_pct(sc, cfg)
+        if pct <= 0 or cps_adj_find(db, user_id, period, CPS_ADJ_DEDUCT):
+            return None
+        base = int((summ or calc_summary(db, user_id, period)).get("hourly", 0) or 0)
+        amt = int(round(base * pct / 100.0))
+        return {"sc": sc, "pct": pct, "amt": amt} if amt > 0 else None
+    except Exception:
+        return None
+
+
 def cps_bonus_amount(db, user_id, period):
     """Kisinin o ay icin owner tarafindan girilen «%100 prim tutari»."""
     try:
@@ -10081,6 +10096,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 # Reserve: bu ay maaştan düşen katkı + kart özeti (son 30 hareket)
                 "resd": bs.get("res_ded", 0),
                 "reso": bs.get("res_out", 0),
+                # CPS kesintisi bu dönemde UYGULANMAMIŞSA (owner 2026-10-30: «maaşı öderken
+                # gerekli miktarı almıyor») ödeme ekranı uyarır; kesinti yine ELLE uygulanır.
+                "cpsp": _cps_pending(db, b["user_id"], _selp, bs),
                 "res": _res_card(db, b["user_id"]),
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
                 "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
