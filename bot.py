@@ -6147,7 +6147,9 @@ def calc_summary(db, user_id, period=None):
         adv_ded, _adv_rows = 0, []
     # Reserve: çalışılan günlerin katkıları bu ayın maaşından düşer.
     res_ded = reserve_deduction(db, user_id, period)
-    net = gross - fine_total - paid_total + adj_total - adv_ded - res_ded
+    # Rezervden çekilen (owner 2026-10-30) maaşa ayrı kalem olarak eklenir.
+    res_out = reserve_withdrawn(db, user_id, period)
+    net = gross - fine_total - paid_total + adj_total - adv_ded - res_ded + res_out
 
     return {
         "period": period,
@@ -6170,6 +6172,7 @@ def calc_summary(db, user_id, period=None):
         "adv_ded": adv_ded,
         "adv_ded_list": [dict(r) for r in _adv_rows],
         "res_ded": res_ded,
+        "res_out": res_out,
         "gross": gross,
         "net": net,
         "shifts_count": len(shifts),
@@ -7005,6 +7008,17 @@ def reserve_deduction(db, user_id, period):
         r = db.execute("SELECT COALESCE(SUM(amount),0) AS s FROM reserve_tx WHERE user_id=? AND period=? AND kind='contrib' "
                        "AND COALESCE(voided,0)=0",
                        (user_id, period)).fetchone()
+        return int(r["s"] or 0)
+    except Exception:
+        return 0
+
+
+def reserve_withdrawn(db, user_id, period):
+    """REZERVDEN ÇEKİLEN (owner 2026-10-30): bu dönemde owner'ın rezervden çektiği
+    tutar — maaşa AYRI kalem olarak eklenir («Из резерва»), düzeltmelere karışmaz."""
+    try:
+        r = db.execute("SELECT COALESCE(SUM(-amount),0) AS s FROM reserve_tx WHERE user_id=? AND period=? "
+                       "AND kind='withdraw' AND COALESCE(voided,0)=0", (user_id, period)).fetchone()
         return int(r["s"] or 0)
     except Exception:
         return 0
@@ -7858,7 +7872,7 @@ def staff_history(db, uid, period):
     try:
         sm = calc_summary(db, uid, period)
         summ = {k: sm.get(k) for k in ("hours", "shifts_count", "hourly", "bonus", "fines", "paid", "adjustments",
-                                        "net", "adv_ded", "res_ded", "overtime", "tips")}
+                                        "net", "adv_ded", "res_ded", "res_out", "overtime", "tips")}
     except Exception:
         summ = {}
     return {"period": period, "sum": summ, "items": items}
@@ -8734,14 +8748,21 @@ def decade_statement(db, uid, period, k):
                 "AND COALESCE(voided,0)=0 AND " + w4, (uid, period) + tuple(a4)).fetchone()[0] or 0)
         except Exception:
             res = 0
+        try:
+            w5, a5 = where("COALESCE(date,'')")
+            rout = int(db.execute(
+                "SELECT COALESCE(SUM(-amount),0) FROM reserve_tx WHERE user_id=? AND period=? AND kind='withdraw' "
+                "AND COALESCE(voided,0)=0 AND " + w5, (uid, period) + tuple(a5)).fetchone()[0] or 0)
+        except Exception:
+            rout = 0
         work = sum(int(x.get("hourly_pay") or 0) + int(x.get("overtime") or 0) for x in shifts)
         bonus = sum(int(x.get("bonus") or 0) for x in shifts)
         return {"shifts": shifts, "work": work, "tips": tips, "fines": fines, "adj": adj, "adv": adv,
-                "res": res, "bonus": bonus,
+                "res": res, "rout": rout, "bonus": bonus,
                 "hours": round(sum(float(x.get("hours") or 0) for x in shifts), 2)}
     d = span(a, b)
     d["branches"] = payroll_branch_split(db, d["shifts"])
-    d["net"] = d["work"] + d["tips"] - d["fines"] - d["adv"] - d["res"] + d["adj"]
+    d["net"] = d["work"] + d["tips"] - d["fines"] - d["adv"] - d["res"] + d["rout"] + d["adj"]
     c = span(m0, b)
     extra = 0
     if k == 3:
@@ -8750,7 +8771,7 @@ def decade_statement(db, uid, period, k):
             extra = int(su.get("ot_month") or 0) + int(su.get("product_bonus") or 0)
         except Exception:
             extra = 0
-    cum = c["work"] + c["tips"] - c["fines"] - c["adv"] - c["res"] + c["adj"] + extra
+    cum = c["work"] + c["tips"] - c["fines"] - c["adv"] - c["res"] + c["rout"] + c["adj"] + extra
     pays = [dict(r) for r in db.execute(
         "SELECT id, amount, paid_at, kind, note FROM payments WHERE user_id=? AND period=? ORDER BY paid_at",
         (uid, period)).fetchall()]
@@ -8832,6 +8853,9 @@ def build_payroll_decade_pdf(db, period, k):
     ded = S_(lambda d: d["dec"]["fines"] + d["dec"]["adv"] + d["dec"]["res"])
     if ded:
         row("Удержано за декаду (штрафы, аванс, резерв)", "−" + _pdf_fmt(ded), 9.5)
+    rout = S_(lambda d: d["dec"].get("rout", 0))
+    if rout:
+        row("Из резерва", "+" + _pdf_fmt(rout), 9.5)
     adj = S_(lambda d: d["dec"]["adj"])
     if adj:
         row("Корректировки и переводы", ("+" if adj >= 0 else "−") + _pdf_fmt(abs(adj)), 9.5)
@@ -8853,6 +8877,8 @@ def build_payroll_decade_pdf(db, period, k):
         for key, lbl in (("fines", "штрафы"), ("adv", "аванс"), ("res", "резерв")):
             if d[key]:
                 parts.append(f"{lbl} −{_pdf_fmt(d[key])}")
+        if d.get("rout"):
+            parts.append("из резерва +" + _pdf_fmt(d["rout"]))
         if d["adj"]:
             parts.append(("корр./переводы +" if d["adj"] > 0 else "корр./переводы −") + _pdf_fmt(abs(d["adj"])))
         if ds["extra"]:
@@ -8918,7 +8944,7 @@ def build_payroll_all_pdf(db, period):
     line("ПО ФИЛИАЛАМ · начислено за часы", 8.5, "B", gap=6, col=DIM)
     for name, a in sorted(br.items(), key=lambda kv: -kv[1]["pay"]):
         row(f"{name}   {len(a['people'])} чел. · {a['days']} смен-дн. · {round(a['hours'], 1):g} ч", _pdf_fmt(a["pay"]), 10)
-    T = {k: sum(int(p[3].get(k) or 0) for p in people) for k in ("gross", "fines", "adv_ded", "res_ded", "paid", "adjustments", "net")}
+    T = {k: sum(int(p[3].get(k) or 0) for p in people) for k in ("gross", "fines", "adv_ded", "res_ded", "res_out", "paid", "adjustments", "net")}
     rule()
     row("Начислено всего", _pdf_fmt(T["gross"]), 10, "B")
     if T["fines"]:
@@ -8927,6 +8953,8 @@ def build_payroll_all_pdf(db, period):
         row("Аванс · удержание", "−" + _pdf_fmt(T["adv_ded"]), 9.5)
     if T["res_ded"]:
         row("Резерв", "−" + _pdf_fmt(T["res_ded"]), 9.5)
+    if T["res_out"]:
+        row("Из резерва", "+" + _pdf_fmt(T["res_out"]), 9.5)
     if T["adjustments"]:
         row("Корректировки и переводы", ("+" if T["adjustments"] >= 0 else "−") + _pdf_fmt(abs(T["adjustments"])), 9.5)
     if T["paid"]:
@@ -8943,7 +8971,7 @@ def build_payroll_all_pdf(db, period):
         parts = []
         for k, lbl, sg in (("ot_month", "сверхур. мес.", "+"), ("tips", "чаевые", "+"), ("product_bonus", "товары", "+"),
                            ("fines", "штрафы", "−"), ("adv_ded", "аванс", "−"), ("res_ded", "резерв", "−"),
-                           ("paid", "выплачено", "−")):
+                           ("res_out", "из резерва", "+"), ("paid", "выплачено", "−")):
             v = int(su.get(k) or 0)
             if v:
                 parts.append(f"{lbl} {sg}{_pdf_fmt(v)}")
@@ -9075,6 +9103,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "active": s["active"],
         "adv_ded": s.get("adv_ded", 0),
         "res_ded": s.get("res_ded", 0),
+        "res_out": s.get("res_out", 0),
         # Maaş kartı fişi (2026-10-15): net'e giren HER kalem gönderilir — yoksa
         # «Из чего сложилось» toplanınca tutmuyordu (düzeltme / borç devri ve aylık
         # fazla mesai eksikti).
@@ -9957,6 +9986,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "adv": _adv_card(db, b["user_id"]),
                 # Reserve: bu ay maaştan düşen katkı + kart özeti (son 30 hareket)
                 "resd": bs.get("res_ded", 0),
+                "reso": bs.get("res_out", 0),
                 "res": _res_card(db, b["user_id"]),
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
                 "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
@@ -17813,6 +17843,63 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     + (f" Накопленные {fmt_sum(_bal)} сум добавлены к вашей зарплате." if _bal > 0 else ""))
             except Exception:
                 pass
+
+        elif action in ("reserve_withdraw", "reserve_withdraw_undo"):
+            # REZERVDEN ÇEKME (owner 2026-10-30): yalnız owner, istediği tutar (≤ bakiye).
+            # Para çalışanın bu ayki maaşına AYRI kalem («Из резерва») olarak eklenir.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            _now_w = datetime.now(TZ).isoformat()
+            if action == "reserve_withdraw":
+                try:
+                    _wt = int(data.get("target") or 0)
+                    _wa = int(float(str(data.get("amount") or 0).replace(" ", "").replace(",", ".")))
+                except (TypeError, ValueError):
+                    _wt, _wa = 0, 0
+                if not _wt or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_wt,)).fetchone():
+                    context.result = {"ok": False, "error": "Сотрудник не найден."}; return
+                try:
+                    reserve_sync(db, _wt)              # eksik günler önce yazılsın
+                except Exception:
+                    pass
+                _wb = reserve_balance(db, _wt)
+                if _wa <= 0:
+                    context.result = {"ok": False, "error": "Укажите сумму."}; return
+                if _wa > _wb:
+                    context.result = {"ok": False, "error": f"В резерве только {fmt_sum(_wb)} сум."}; return
+                _wn = str(data.get("note") or "").strip()[:120]
+                db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
+                           "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (_wt, "withdraw", _adv_today().isoformat(), current_period(), -_wa, 0,
+                            "Снято из резерва · в зарплату" + (f" · {_wn}" if _wn else ""), user.id, user.first_name, _now_w))
+                db.commit()
+                _wnm = display_name_for(db, _wt, fallback=f"ID {_wt}")
+                log_action(db, "reserve_withdraw", user.id, user.first_name, _wt, _wnm,
+                           {"amount": _wa, "balance_old": _wb, "balance_new": _wb - _wa, "note": _wn})
+                try:
+                    await context.bot.send_message(
+                        _wt, f"💰 Из вашего резерва снято {fmt_sum(_wa)} сум — сумма добавлена к зарплате за этот месяц "
+                             f"(отдельной строкой «Из резерва»).\nВ резерве осталось {fmt_sum(_wb - _wa)} сум.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    _rid = int(data.get("id") or 0)
+                except Exception:
+                    _rid = 0
+                _tx = db.execute("SELECT * FROM reserve_tx WHERE id=? AND kind='withdraw' AND COALESCE(voided,0)=0",
+                                 (_rid,)).fetchone()
+                if not _tx:
+                    context.result = {"ok": False, "error": "Снятие не найдено или уже отменено."}; return
+                _wt = int(_tx["user_id"])
+                db.execute("UPDATE reserve_tx SET voided=1, voided_by=?, voided_by_name=?, voided_at=? WHERE id=?",
+                           (user.id, user.first_name, _now_w, _rid))
+                db.commit()
+                log_action(db, "reserve_withdraw_undo", user.id, user.first_name, _wt,
+                           display_name_for(db, _wt, fallback=f"ID {_wt}"), {"amount": -int(_tx["amount"] or 0), "tx_id": _rid})
+            context.result = {"ok": True, "res": reserve_view(db, _wt)}
 
         elif action == "reserve_tx_void":
             # Owner: yanlış alınmış bir Reserve katkısını sil (maaşa geri döner).
