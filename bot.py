@@ -2543,6 +2543,30 @@ def grid_templates(db):
     return out
 
 
+GRID_SEP = "+"
+
+
+def grid_parts(code):
+    """Hücre kodu → vardiya kodları listesi. Bir gün iki vardiya tutabilir
+    (owner 2026-10-30: Pazar sabah Magic + akşam C5): «M1+C5E»."""
+    return [c for c in (code or "").strip().split(GRID_SEP) if c]
+
+
+def grid_pick(code, tpls, when_dt=None):
+    """İki vardiyalı hücrede `when_dt`ye EN YAKIN başlayan şablon kodu (tek koddaysa o)."""
+    ps = [c for c in grid_parts(code) if tpls.get(c)]
+    if not ps:
+        return ""
+    if len(ps) == 1 or when_dt is None:
+        return ps[0]
+    def _dist(c):
+        m = _mins(tpls[c].get("start"))
+        if m is None:
+            return 10 ** 6
+        return abs(when_dt.hour * 60 + when_dt.minute - m)
+    return min(ps, key=_dist)
+
+
 def grid_mark_pending(db, uid, wk, day):
     """Owner bir çalışanın gününü değiştirmeden ÖNCE çağrılır: ilk değeri saklar."""
     try:
@@ -2574,6 +2598,9 @@ def grid_code_text(db, code, tpls=None):
         return "выходной"
     if code == "sick":
         return "больничный"
+    if GRID_SEP in code:
+        tpls = tpls if tpls is not None else grid_templates(db)
+        return " + ".join(grid_code_text(db, c, tpls) for c in grid_parts(code))
     t = (tpls if tpls is not None else grid_templates(db)).get(code)
     if not t:
         return f"смена «{code}»"
@@ -2618,6 +2645,20 @@ def grid_check(db, week_key, day, user_id, code, tpls=None):
     if code == "off":
         return True, ""
     tpls = tpls if tpls is not None else grid_templates(db)
+    if GRID_SEP in code:
+        ps = grid_parts(code)
+        if len(ps) != 2 or len(set(ps)) != 2 or any(c in ("off", "sick") for c in ps):
+            return False, "В один день можно поставить не больше двух разных смен."
+        if not all(tpls.get(c) for c in ps):
+            return False, "Такой смены нет в шаблонах."
+        a, b = tpls[ps[0]], tpls[ps[1]]
+        if grid_overlap(a["start"], a["end"], b["start"], b["end"]):
+            return False, "Эти две смены пересекаются по времени."
+        for c in ps:
+            ok, why = grid_check(db, week_key, day, user_id, c, tpls)
+            if not ok:
+                return ok, why
+        return True, ""
     t = tpls.get(code)
     if not t:
         return False, "Такой смены нет в шаблонах."
@@ -2631,18 +2672,15 @@ def grid_check(db, week_key, day, user_id, code, tpls=None):
     except Exception as e:
         logger.warning(f"grid_check: {e}")
         return True, ""            # şüphede ENGELLEME — plan kilitlenmesin
-    # ÇAKIŞMA — aynı kişi, aynı gün, çakışan saat (kendi ikinci vardiyası)
-    for r in own:
-        ot = tpls.get(r["code"])
-        if ot and r["code"] != code and grid_overlap(t["start"], t["end"], ot["start"], ot["end"]):
-            return False, "Сотрудник уже назначен на другую смену в это время."
+    # ÇAKIŞMA — kişinin o günkü hücresi YENİ kodla DEĞİŞİR; ikinci vardiya aynı
+    # hücrede «A+B» olarak gelir ve çakışması yukarıda ayrıca kontrol edilir.
+    del own
     # KAPASİTE — bu şubede o gün kaç kişi var
     bid = t["branch_id"]
     if bid:
         cnt = 0
         for r in rows:
-            rt = tpls.get(r["code"])
-            if rt and rt["branch_id"] == bid:
+            if any((tpls.get(c) or {}).get("branch_id") == bid for c in grid_parts(r["code"])):
                 cnt += 1
         try:
             br = db.execute("SELECT name, COALESCE(max_staff,2) AS mx FROM branches WHERE id=?",
@@ -2880,15 +2918,16 @@ def cov_cells(db, d_from, d_to, uid=None, branch_id=None, tpls=None):
             q += " AND user_id=?"
             args.append(int(uid))
         for r in db.execute(q, args).fetchall():
-            t = tpls.get(r["code"] or "")
-            if not t:
-                continue
-            if branch_id is not None and int(t["branch_id"] or 0) != int(branch_id):
-                continue
-            s, e = cov_window(d, t["start"], t["end"])
-            if s:
-                out.append({"uid": int(r["user_id"]), "date": d, "code": r["code"],
-                            "bid": int(t["branch_id"] or 0), "s": s, "e": e})
+            for c in grid_parts(r["code"]):
+                t = tpls.get(c)
+                if not t:
+                    continue
+                if branch_id is not None and int(t["branch_id"] or 0) != int(branch_id):
+                    continue
+                s, e = cov_window(d, t["start"], t["end"])
+                if s:
+                    out.append({"uid": int(r["user_id"]), "date": d, "code": c,
+                                "bid": int(t["branch_id"] or 0), "s": s, "e": e})
         d += timedelta(days=1)
     return out
 
@@ -4368,8 +4407,8 @@ def op_scheduled(db, user_id, when_dt, tpls=None):
             (monday.isoformat(), int(d.weekday()), int(user_id))).fetchone()
         if not row or not row["code"] or row["code"] == "off":
             return None, ""
-        code = row["code"]
         tpls = tpls if tpls is not None else grid_templates(db)
+        code = grid_pick(row["code"], tpls, when_dt)
         t = tpls.get(code)
         if not t or not t.get("start"):
             return None, ""
@@ -4394,6 +4433,7 @@ def grid_branch_for(db, user_id, when_dt):
             code = row["code"] if row else ""
             if not code or code in ("off", "sick"):
                 continue
+            code = grid_pick(code, tpls, when_dt if d == when_dt.date() else None)
             t = tpls.get(code) or {}
             if t.get("branch_id"):
                 return int(t["branch_id"])
@@ -19605,8 +19645,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 try:
                     db.execute(
                         "UPDATE open_shifts SET status='done', decided_by=?, decided_by_name=?, decided_at=? "
-                        "WHERE week_key=? AND day=? AND code=? AND status IN ('open','claimed')",
-                        (user.id, shown, now.isoformat(), wk, day, code))
+                        "WHERE week_key=? AND day=? AND code IN (%s) AND status IN ('open','claimed')"
+                        % ",".join("?" * len(grid_parts(code))),
+                        (user.id, shown, now.isoformat(), wk, day, *grid_parts(code)))
                 except Exception as e:
                     logger.warning(f"open_shift auto-close: {e}")
             db.commit()
@@ -19722,7 +19763,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Только владелец.")
                 return
             _tc = str(data.get("code") or "").strip()[:16]
-            _used = db.execute("SELECT COUNT(*) AS c FROM shift_grid WHERE code=?", (_tc,)).fetchone()
+            _used = db.execute("SELECT COUNT(*) AS c FROM shift_grid WHERE ('+'||code||'+') LIKE ?",
+                               ("%+" + _tc + "+%",)).fetchone()
             if _used and (_used["c"] or 0) > 0:
                 # Planda KULLANILIYORSA silme — pasife al. Silmek geçmiş haftaların
                 # hücrelerini anlamsız kodlara çevirirdi.
