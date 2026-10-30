@@ -8925,17 +8925,23 @@ def decade_statement(db, uid, period, k):
 
 
 def payroll_people(db, period):
-    """Maaş listesine girenler: onaylı, owner/gözlemci olmayan; arşivdekiler YALNIZ
-    o ay vardiyası ya da bakiyesi varsa."""
+    """Maaş listesine girenler: onaylı, gözlemci olmayan; arşivdekiler YALNIZ
+    o ay vardiyası ya da bakiyesi varsa. Owner o ay çalıştıysa (vardiya/kazanç) girer."""
     out = []
     for u in db.execute("SELECT user_id, COALESCE(display_name,name) AS nm, role, COALESCE(archived,0) AS arch "
-                        "FROM users WHERE COALESCE(approved,0)=1 AND role NOT IN ('owner','observer') "
+                        "FROM users WHERE COALESCE(approved,0)=1 AND role NOT IN ('observer') "
                         "ORDER BY COALESCE(display_name,name)").fetchall():
         su = calc_summary(db, int(u["user_id"]), period)
-        has = bool(su.get("shifts")) or any(int(su.get(k) or 0) for k in
-                                             ("gross", "fines", "paid", "adjustments", "adv_ded", "net"))
-        if not has:
-            continue
+        if (u["role"] or "") == "owner":
+            # Owner da ara sıra çalışıyor (owner 2026-10-31): o ay VARDİYASI ya da
+            # kazancı varsa listeye girer; yalnız ceza aktarımı vb. ile girmez.
+            if not (su.get("shifts") or int(su.get("gross") or 0)):
+                continue
+        else:
+            has = bool(su.get("shifts")) or any(int(su.get(k) or 0) for k in
+                                                 ("gross", "fines", "paid", "adjustments", "adv_ded", "net"))
+            if not has:
+                continue
         out.append((int(u["user_id"]), u["nm"] or "?", bool(u["arch"]), su))
     return out
 
