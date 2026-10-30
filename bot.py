@@ -16545,7 +16545,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # (Ayni sira varsayimi daha once 4 kez obur uctan yamanmisti.)
                     # Artik dogrudan buradan gidiyor: istemci cash_report'u shift_end'e
                     # zincirledigi icin grupta sira zaten «закрыл смену» → отчёт olur.
-                    await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                    _crr = db.execute("SELECT * FROM cashreports WHERE user_id=? ORDER BY id DESC LIMIT 1",
+                                      (user.id,)).fetchone()
+                    if _crr:
+                        # Kayıttan kurulan metin = düzeltmede yeniden kurulacak metin.
+                        t = cash_report_group_text(db, _crr)
+                    _gm_cr = await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                    if _crr:
+                        sent_msg_tag(db, _gm_cr, "cash_report", int(_crr["id"]))
                 except Exception as e:
                     logger.exception(f"KASA report send failed: {e}")
                 # ─── Stok uyarısı (kalan bardak) — gruba, herkese ───
@@ -17576,11 +17583,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _rd = datetime.fromisoformat(rep["created_at"]).strftime("%d.%m %H:%M")
             except Exception:
                 _rd = rep["date"] or "?"
+            _gfx = 0
+            try:
+                _gfx = await gmsg_sync_cash_report(context.bot, db, rid)
+            except Exception as _e_gx:
+                logger.warning(f"cash_report_edit group sync {rid}: {_e_gx}")
             await update.message.reply_text(
                 f"✏️ Отчёт исправлен — *{rep['user_name'] or '?'}* · {_rd}\n"
                 f"Изменено: {_what}\n"
                 f"🥤 Продано: {cups_total} шт · 💸 Расходы: {fmt_sum(exp_total)} сум\n"
-                "_Прежние значения сохранены в истории отчёта._",
+                + ("📝 Сообщение в группе тоже исправлено\n" if _gfx else "")
+                + "_Прежние значения сохранены в истории отчёта._",
                 parse_mode="Markdown")
             await refresh_webapp_keyboard(update, context, db, user, "🔄 Отчёт обновлён 👇")
 
@@ -21214,6 +21227,109 @@ async def gmsg_sync_shift(bot, db, sid, old_st, old_en, old_h, new_st, new_en, n
         db.execute("UPDATE sent_msgs SET text=?, ents=?, edited_at=?, edited_by=? WHERE id=?",
                    (new_text, json.dumps(_nents, ensure_ascii=False), datetime.now(TZ).isoformat(),
                     "Nero · правка смены", int(r["id"])))
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def cash_report_group_text(db, rep):
+    """Gruba giden «СМЕННЫЙ ОТЧЁТ» (HTML) — KAYITTAN kurulur. Owner raporu sonradan
+    düzeltince (owner 2026-10-30: «Капучинатор ekledim, gruptaki mesaj değişmedi»)
+    aynı metin güncel verilerle yeniden kurulup gruptaki mesaj düzenlenir."""
+    from html import escape as _e
+    def _j(v, d):
+        try:
+            x = json.loads(v) if isinstance(v, str) and v else v
+            return x if isinstance(x, type(d)) else d
+        except Exception:
+            return d
+    r = dict(rep)
+    try:
+        at = datetime.fromisoformat(r.get("created_at") or "")
+    except Exception:
+        at = datetime.now(TZ)
+    nm = display_name_for(db, int(r.get("user_id") or 0), fallback=r.get("user_name") or "?")
+    bylo, rest = _j(r.get("bylo"), {}), _j(r.get("restock"), {})
+    ost, sold = _j(r.get("ostalos"), {}), _j(r.get("sold"), {})
+    names = list(dict.fromkeys(list(bylo) + list(rest) + list(ost) + list(sold)))
+    t = "<b>📋 СМЕННЫЙ ОТЧЁТ — CAFFELITO</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    t += f"<b>{_e(nm)}</b> · {at.strftime('%d.%m.%Y %H:%M')}\n━━━━━━━━━━━━━━━━━━━━\n"
+    t += "<b>🥤 Стаканы (было → осталось = продано)</b>\n"
+    for n in names:
+        b, rr = int(bylo.get(n, 0) or 0), int(rest.get(n, 0) or 0)
+        o, sd = int(ost.get(n, 0) or 0), int(sold.get(n, 0) or 0)
+        if b or rr or o or sd:
+            rtxt = (f" +{rr}" if rr > 0 else f" {rr}") if rr else ""
+            t += f"  <b>{_e(str(n))}:    {b}{rtxt} → {o} = {sd}</b>\n"
+    t += f"\n  <b>🧮 ИТОГО ПРОДАНО:  {int(r.get('cups_total') or 0)} шт</b>\n"
+    exps = _j(r.get("expenses"), [])
+    if exps:
+        t += "━━━━━━━━━━━━━━━━━━━━\n<b>💸 Расходы</b>\n"
+        for x in exps:
+            if isinstance(x, dict):
+                t += f"  <b>{_e(str(x.get('n', '')))}: {fmt_sum(int(x.get('a', 0) or 0))}</b>\n"
+        t += f"  <b>Итого расходы: {fmt_sum(int(r.get('expenses_total') or 0))} сум</b>\n"
+    try:
+        gd = db.execute("SELECT t.kind, t.amount, g.name FROM guest_tx t LEFT JOIN guests g ON g.id=t.guest_id "
+                        "WHERE t.report_id=? AND COALESCE(t.voided,0)=0 ORDER BY t.id", (int(r.get("id") or 0),)).fetchall()
+    except Exception:
+        gd = []
+    if gd:
+        t += "━━━━━━━━━━━━━━━━━━━━\n<b>📒 Долги гостей</b>\n"
+        for g in gd:
+            k, gn, ga = g["kind"], _e(g["name"] or "?"), fmt_sum(int(g["amount"] or 0))
+            t += (f"  🎁 Свои (бесплатно): {gn} — {ga}\n" if k == "free" else
+                  f"  🔴 В долг: {gn} — {ga}\n" if k == "debt" else
+                  f"  🟢 Депозит: {gn} — {ga} (в кассе)\n" if k == "dep" else
+                  f"  🟢 Вернул(а) долг: {gn} — {ga} (в кассе)\n")
+    if int(r.get("daily_pay") or 0):
+        t += "━━━━━━━━━━━━━━━━━━━━\n"
+        t += f"<b>💵 Дневной бонус: {fmt_sum(int(r.get('daily_pay') or 0))} сум</b>"
+    if r.get("note"):
+        t += f"\n📝 {_e(str(r.get('note')))}"
+    if r.get("edited_at"):
+        try:
+            _ea = datetime.fromisoformat(r["edited_at"]).strftime("%d.%m %H:%M")
+        except Exception:
+            _ea = ""
+        t += f"\n✏️ <i>исправлено владельцем {_ea}</i>"
+    return t
+
+
+async def gmsg_sync_cash_report(bot, db, rid):
+    """Düzeltilen kasa raporunun grup mesajını yeniden yaz. Mesaj kapanışta rapora
+    bağlandıysa (kind='cash_report') onu, eski raporlarda başlıktaki saatle bulur.
+    Döner: düzeltilen mesaj sayısı."""
+    rep = db.execute("SELECT * FROM cashreports WHERE id=?", (int(rid),)).fetchone()
+    if not rep:
+        return 0
+    rows = db.execute("SELECT * FROM sent_msgs WHERE kind='cash_report' AND shift_id=?", (int(rid),)).fetchall()
+    if not rows:
+        try:
+            _hd = " · " + datetime.fromisoformat(rep["created_at"]).strftime("%d.%m.%Y %H:%M")
+            rows = [x for x in db.execute(
+                "SELECT * FROM sent_msgs WHERE kind IS NULL AND text LIKE '📋 СМЕННЫЙ ОТЧЁТ%' AND text LIKE ?",
+                (f"%{_hd}%",)).fetchall()]
+        except Exception:
+            rows = []
+    html = cash_report_group_text(db, rep)
+    n = 0
+    for r in rows:
+        try:
+            m = await bot.edit_message_text(chat_id=int(r["chat_id"]), message_id=int(r["message_id"]),
+                                            text=html, parse_mode="HTML")
+        except Exception as _e:
+            if "not modified" not in str(_e).lower():
+                logger.warning(f"gmsg_sync_cash_report {rid}: {_e}")
+                continue
+            m = None
+        _txt = getattr(m, "text", None) or re.sub(r"<[^>]+>", "", html).replace("&lt;", "<").replace(
+            "&gt;", ">").replace("&quot;", '"').replace("&#x27;", "'").replace("&amp;", "&")
+        _ents = gmsg_ents_of(m) if m is not None and getattr(m, "text", None) else []
+        db.execute("UPDATE sent_msgs SET text=?, ents=?, kind='cash_report', shift_id=?, edited_at=?, edited_by=? "
+                   "WHERE id=?", (_txt, json.dumps(_ents, ensure_ascii=False), int(rid),
+                                 datetime.now(TZ).isoformat(), "Nero · правка отчёта", int(r["id"])))
         n += 1
     if n:
         db.commit()
