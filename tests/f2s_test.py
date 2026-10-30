@@ -22,6 +22,7 @@ db = bot.get_db()
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,approved,authorized,branch_id) VALUES (1,'Owner','owner',1,1,1)")
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (10,'Дамир','barista',1,1,1)")
 db.execute("INSERT OR REPLACE INTO branches (id, name, active) VALUES (1,'C5',1)")
+db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('f2s_hand_once_1','x')")   # bir kerelik kapatma bu testte yok
 per = bot.current_period(); t0 = datetime.now(bot.TZ) - timedelta(days=2)
 def fine(uid, amt, typ, by, k):
     return db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (?,?,?,?,?,?,?)",
@@ -80,5 +81,19 @@ _w = []
 check(bot.op_recalc(db, 999, _w) == (None, 0) and 'закрыт' in _w[-1], 'alınmış ceza yeniden hesaplanmaz')
 check(bot.op_reject(db, oid, 1, 'O')[0] is None and db.execute("SELECT 1 FROM fines WHERE id=?", (f2,)).fetchone(),
       'alınmış ceza iptal edilemez')
+# «Все получены» TÜM AYLAR: önceki ayın açık cezası da kapanır
+fo = db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (10,70000,'т','manual','2026-08',1,'2026-08-05T10:00:00')").lastrowid
+db.commit()
+check(bot.f2s_pool(db, 1)[2] == 130000, 'açık: bu ay 60.000 + ağustos 70.000')
+act(1, {'action': 'fine_settle_all', 'all': 1})
+check(bot.f2s_pool(db, 1)[2] == 0 and db.execute("SELECT settle_via FROM fines WHERE id=?", (fo,)).fetchone()[0] == 'hand',
+      '«все получены» tüm aylar → доступно 0')
+# bir kerelik kapatma (owner 2026-10-31): eşikten önceki açık cezalar elden alınmış sayılır
+fx = db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (10,270000,'т','manual','2026-10','1','2026-10-20T10:00:00')").lastrowid
+db.execute("DELETE FROM meta WHERE k='f2s_hand_once_1'"); db.commit()
+check(bot.f2s_pool(db, 1)[2] == 0 and db.execute("SELECT settled FROM fines WHERE id=?", (fx,)).fetchone()[0] == 1, 'bir kerelik: eski açık 270.000 kapandı')
+fy = db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (10,15000,'т','manual','2026-10','1','2026-10-20T11:00:00')").lastrowid
+db.commit()
+check(bot.f2s_pool(db, 1)[2] == 15000, 'bir kerelik kapatma tekrar çalışmaz')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
