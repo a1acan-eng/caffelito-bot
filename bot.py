@@ -1921,6 +1921,25 @@ def gdebt_view(db, only_bid=None):
     return {"guests": guests, "tx": tx}
 
 
+def my_gdebt(db, user_id):
+    """Bu çalışana (Nero ID) bağlı misafir kayıtlarının açık borçları — kendi ekranında
+    görüp maaşından kapatabilsin (owner 2026-10-31)."""
+    out = []
+    try:
+        for g in db.execute("SELECT id, name FROM guests WHERE user_id=? AND COALESCE(archived,0)=0",
+                            (int(user_id),)).fetchall():
+            bal = 0
+            for r in db.execute("SELECT kind, amount FROM guest_tx WHERE guest_id=? AND COALESCE(voided,0)=0",
+                                (int(g["id"]),)).fetchall():
+                if r["kind"] != "free":
+                    bal += int(r["amount"] or 0) if r["kind"] == "debt" else -int(r["amount"] or 0)
+            if bal > 0:
+                out.append({"id": int(g["id"]), "n": g["name"] or "", "bal": bal})
+    except Exception:
+        pass
+    return out
+
+
 GDEBT_UNLOCK_H = 0.25       # doğru PIN sonrası en fazla 15 dk açık (ekrandan çıkınca hemen kilitlenir)
 GDEBT_PIN_TRIES = 5         # bu kadar yanlış denemeden sonra 10 dk bekleme
 
@@ -9775,6 +9794,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"adv_own={quote(json.dumps(adv_own, ensure_ascii=False) if adv_own else '')}",
         f"res={quote(json.dumps(res_self, ensure_ascii=False) if res_self else '')}",
         f"intern={quote(json.dumps(intern_info(db, user_id), ensure_ascii=False) if role != 'owner' else '')}",
+        f"my_gdebt={quote(json.dumps(my_gdebt(db, user_id), ensure_ascii=False))}",
         f"res_own={quote(json.dumps(res_own, ensure_ascii=False) if res_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
@@ -19010,12 +19030,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         elif action in ("gdebt_guest_link", "gdebt_from_salary"):
             # Misafir = çalışan (owner 2026-10-31): Nero ID ile bağla; borcu maaştan düşüp kapat.
+            # Çalışan KENDİSİNE bağlı misafir borcunu kendi maaşından kapatabilir («kendisi kapatabilsin»).
             db = get_db()
-            if get_role(db, user.id) != "owner":
-                context.result = {"ok": False, "error": "Только владелец."}; return
+            _own_r = get_role(db, user.id) == "owner"
             _g = db.execute("SELECT * FROM guests WHERE id=?", (int(data.get("guest_id") or 0),)).fetchone()
             if not _g:
                 context.result = {"ok": False, "error": "Гость не найден."}; return
+            _self = (action == "gdebt_from_salary" and "user_id" in _g.keys()
+                     and int(_g["user_id"] or 0) == int(user.id))
+            if not _own_r and not _self:
+                context.result = {"ok": False, "error": "Только владелец."}; return
             if action == "gdebt_guest_link":
                 try:
                     _u = int(data.get("uid") or 0)
@@ -19043,6 +19067,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _a = 0
                 if _a <= 0 or _a > _bal:
                     context.result = {"ok": False, "error": f"Долг гостя: {fmt_sum(max(0, _bal))} сум."}; return
+                if not _own_r:
+                    try:
+                        _nt = int(calc_summary(db, _u, current_period()).get("net") or 0)
+                    except Exception:
+                        _nt = 0
+                    if _nt < _a:
+                        context.result = {"ok": False, "error": f"Не хватает: к выплате {fmt_sum(max(0, _nt))} сум."}; return
                 _now = datetime.now(TZ).isoformat()
                 _gn = _g["name"] or "?"
                 db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
@@ -19056,7 +19087,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 log_action(db, "gdebt_from_salary", user.id, user.first_name, _u, _un,
                            {"guest_id": int(_g["id"]), "amount": _a, "balance_old": _bal, "balance_new": _bal - _a})
                 try:
-                    await context.bot.send_message(_u, f"📒 Долг «{_gn}» {fmt_sum(_a)} сум удержан из вашей зарплаты за этот месяц."
+                    if _self:
+                        _oid = _primary_owner(db)
+                        if _oid:
+                            await context.bot.send_message(_oid, f"📒 {_un} закрыл(а) долг гостя «{_gn}» из своей зарплаты: {fmt_sum(_a)} сум.")
+                    else:
+                        await context.bot.send_message(_u, f"📒 Долг «{_gn}» {fmt_sum(_a)} сум удержан из вашей зарплаты за этот месяц."
                                                        + (f"\nОсталось: {fmt_sum(_bal - _a)} сум." if _bal - _a > 0 else "\nДолг закрыт."))
                 except Exception:
                     pass
@@ -19093,11 +19129,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _tn = display_name_for(db, _t, fallback=f"ID {_t}")
             log_action(db, "adv_payoff", user.id, user.first_name, _t, _tn,
                        {"amount": _sum, "inst": [{"id": int(r["id"]), "due": r["due_date"], "period": r["period"]} for r in _rows]})
-            if _t != user.id:
-                try:
+            try:
+                if _t != user.id:
                     await context.bot.send_message(_t, f"✅ Аванс погашен досрочно: {fmt_sum(_sum)} сум удержано из зарплаты за этот месяц. Долга больше нет.")
-                except Exception:
-                    pass
+                elif _primary_owner(db):
+                    await context.bot.send_message(_primary_owner(db), f"✅ {_tn} погасил(а) аванс досрочно из зарплаты: {fmt_sum(_sum)} сум.")
+            except Exception:
+                pass
             context.result = {"ok": True, "amount": _sum}
 
         elif action == "brx_ext_del":

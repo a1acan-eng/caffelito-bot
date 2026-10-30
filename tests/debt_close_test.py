@@ -58,5 +58,22 @@ check(bot.calc_summary(db, 10, per)["net"] == n1 - 450000, 'maaştan 450.000 dü
 g = [x for x in bot.gdebt_view(db)["guests"] if x["id"] == gid][0]
 check(g["bal"] == 0, 'misafir bakiyesi 0')
 check(any(c == 10 and 'Долг' in (t or '') for c, t in SENT), 'çalışana bildirim')
+# Çalışan KENDİSİ kapatır (owner 2026-10-31: «kendisi kapatabilsin»)
+aid2 = db.execute("INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,status,created_at) VALUES (10,?,300000,0,0,300000,'active',?)",
+                  (per, now.isoformat())).lastrowid
+db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) VALUES (?,10,1,?,?,300000)", (aid2, fut.isoformat(), fut.strftime('%Y-%m')))
+db.execute("INSERT INTO guest_tx (guest_id,branch_id,kind,amount,at) VALUES (?,1,'debt',100000,'x')", (gid,)); db.commit()
+n2 = bot.calc_summary(db, 10, per)["net"]
+r = act(10, {'action': 'adv_payoff'})
+check(r and r.get('ok') and r['amount'] == 300000, 'çalışan kendi avansını kapattı')
+check(any(c == 1 and 'погасил' in (t or '') for c, t in SENT), 'owner\'a haber gitti')
+check(bot.my_gdebt(db, 10) == [{"id": gid, "n": "Дамир", "bal": 100000}], 'kendi misafir borcunu görüyor')
+r = act(10, {'action': 'gdebt_from_salary', 'guest_id': gid, 'amount': 100000})
+check(r and r.get('ok') and bot.my_gdebt(db, 10) == [], 'çalışan kendi misafir borcunu kapattı')
+check(bot.calc_summary(db, 10, per)["net"] == n2 - 400000, 'maaştan 300.000 + 100.000 düştü')
+r = act(11, {'action': 'gdebt_from_salary', 'guest_id': gid, 'amount': 1})
+check(r and not r.get('ok'), 'başkasının misafir borcunu kapatamaz')
+r = act(10, {'action': 'gdebt_guest_link', 'guest_id': gid, 'uid': 11})
+check(r and not r.get('ok'), 'çalışan bağlamayı değiştiremez')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
