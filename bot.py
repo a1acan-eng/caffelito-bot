@@ -6954,10 +6954,45 @@ def reserve_info(db, user_id, cfg=None):
             "status": status, "from": (u["reserve_from"] or "") if u else ""}
 
 
+def reserve_withdraw_fix_once(db):
+    """BİR KEZ (owner 2026-10-31: «rezervden sonra maaşı gerçekten az»): rezervden
+    çekim yapıldıktan SONRA yazılmış katkılar iptal edilir (para maaşa döner) ve o
+    çalışanın rezervi durdurulur — yeni kural: çekim = rezerv durur."""
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k='reserve_wfix_once'").fetchone():
+            return 0
+        now_s = datetime.now(TZ).isoformat()
+        n = 0
+        for w in db.execute("SELECT * FROM reserve_tx WHERE kind='withdraw' AND COALESCE(voided,0)=0 "
+                            "ORDER BY id").fetchall():
+            uid = int(w["user_id"])
+            rows = db.execute("SELECT id, date, amount FROM reserve_tx WHERE user_id=? AND kind='contrib' "
+                              "AND COALESCE(voided,0)=0 AND id>?", (uid, int(w["id"]))).fetchall()
+            for r in rows:
+                db.execute("UPDATE reserve_tx SET voided=1, voided_by=0, voided_by_name=?, voided_at=? WHERE id=?",
+                           ("Nero · после снятия резерв остановлен", now_s, int(r["id"])))
+            u = db.execute("SELECT COALESCE(reserve_cancelled,0) AS c FROM users WHERE user_id=?", (uid,)).fetchone()
+            if u and not int(u["c"] or 0):
+                db.execute("UPDATE users SET reserve_off=1 WHERE user_id=?", (uid,))
+            if rows:
+                n += len(rows)
+                log_action(db, "reserve_withdraw_fix", 0, "Nero", uid,
+                           display_name_for(db, uid, fallback=f"ID {uid}"),
+                           {"voided": [int(r["id"]) for r in rows],
+                            "returned": sum(int(r["amount"] or 0) for r in rows), "withdraw_id": int(w["id"])})
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('reserve_wfix_once',?)", (now_s,))
+        db.commit()
+        return n
+    except Exception as e:
+        logger.warning(f"reserve_withdraw_fix_once: {e}")
+        return 0
+
+
 def reserve_sync(db, user_id, cfg=None, today=None):
     """Eksik katkıları yaz (idempotent). Çalışılan her gün (kapanmış vardiya)
     için en fazla bir satır; başlangıçtan/stajyerlik bitişinden önce yok.
     Döner: yazılan satır sayısı."""
+    reserve_withdraw_fix_once(db)
     cfg = cfg or reserve_cfg(db)
     if not cfg["started"]:
         return 0
@@ -6992,6 +7027,15 @@ def reserve_sync(db, user_id, cfg=None, today=None):
         db.commit()
         return 0
     lo = max(cfg["started"], str(u["reserve_from"] or "")[:10], _mark_lo)
+    # Çekimden ÖNCEKİ günlere geriye dönük katkı YAZILMAZ (owner 2026-10-31: çekim
+    # günü −1 «işaret» penceresi, rezerv doluyken atlanmış günü sonradan kesiyordu).
+    try:
+        _lw = db.execute("SELECT MAX(date) AS d FROM reserve_tx WHERE user_id=? AND kind='withdraw' "
+                         "AND COALESCE(voided,0)=0", (user_id,)).fetchone()
+        if _lw and _lw["d"]:
+            lo = max(lo, (datetime.strptime(str(_lw["d"])[:10], "%Y-%m-%d").date() + timedelta(days=1)).isoformat())
+    except Exception:
+        pass
     days = [r["d"] for r in db.execute(
         "SELECT DISTINCT substr(COALESCE(start_time, date),1,10) AS d FROM shifts "
         "WHERE user_id=? AND end_time IS NOT NULL AND substr(COALESCE(start_time, date),1,10)>=? "
@@ -18078,9 +18122,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if _wa > _wb:
                     context.result = {"ok": False, "error": f"В резерве только {fmt_sum(_wb)} сум."}; return
                 _wn = str(data.get("note") or "").strip()[:120]
+                # Çekim = rezerv DURUR (owner 2026-10-31). Önceki durum `target`ta saklanır
+                # (çekim geri alınınca geri gelir); yeniden başlatma kartındaki «Резерв» düğmesiyle.
+                _prev_off = int((db.execute("SELECT COALESCE(reserve_off,0) AS o FROM users WHERE user_id=?",
+                                            (_wt,)).fetchone() or {"o": 0})["o"] or 0)
+                db.execute("UPDATE users SET reserve_off=1 WHERE user_id=?", (_wt,))
                 db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) "
                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                           (_wt, "withdraw", _adv_today().isoformat(), current_period(), -_wa, 0,
+                           (_wt, "withdraw", _adv_today().isoformat(), current_period(), -_wa, _prev_off,
                             "Снято из резерва · в зарплату" + (f" · {_wn}" if _wn else ""), user.id, user.first_name, _now_w))
                 db.commit()
                 _wnm = display_name_for(db, _wt, fallback=f"ID {_wt}")
@@ -18089,7 +18138,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 try:
                     await context.bot.send_message(
                         _wt, f"💰 Из вашего резерва снято {fmt_sum(_wa)} сум — сумма добавлена к зарплате за этот месяц "
-                             f"(отдельной строкой «Из резерва»).\nВ резерве осталось {fmt_sum(_wb - _wa)} сум.")
+                             f"(отдельной строкой «Из резерва»).\nВ резерве осталось {fmt_sum(_wb - _wa)} сум. "
+                             f"Взносы в резерв остановлены.")
                 except Exception:
                     pass
             else:
@@ -18104,6 +18154,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _wt = int(_tx["user_id"])
                 db.execute("UPDATE reserve_tx SET voided=1, voided_by=?, voided_by_name=?, voided_at=? WHERE id=?",
                            (user.id, user.first_name, _now_w, _rid))
+                # Geri alınınca rezervin çekimden önceki durumu geri gelir (katkılar BUGÜNDEN).
+                if not int(_tx["target"] or 0):
+                    db.execute("UPDATE users SET reserve_off=NULL, reserve_synced_to=? WHERE user_id=? "
+                               "AND COALESCE(reserve_cancelled,0)=0", (_adv_today().isoformat(), _wt))
                 db.commit()
                 log_action(db, "reserve_withdraw_undo", user.id, user.first_name, _wt,
                            display_name_for(db, _wt, fallback=f"ID {_wt}"), {"amount": -int(_tx["amount"] or 0), "tx_id": _rid})
