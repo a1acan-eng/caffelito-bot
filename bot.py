@@ -1892,9 +1892,48 @@ def daily_bonus_pay_ids(db, user_id, period):
     return ids
 
 
+_GD_TR = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                  ["a", "b", "v", "g", "d", "e", "e", "j", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
+                   "u", "f", "x", "ts", "ch", "sh", "sh", "", "i", "", "e", "yu", "ya"]))
+
+
+def _gd_key(name):
+    """Ad anahtarı: ilk kelime, Kiril→Latin, harf dışı yok («Дамир» = «Damir K.» = «damir»)."""
+    w = (str(name or "").strip().split() or [""])[0].lower()
+    w = "".join(_GD_TR.get(ch, ch) for ch in w)
+    w = w.replace("kh", "x").replace("h", "x").replace("q", "k").replace("w", "v")
+    return "".join(ch for ch in w if ch.isalnum())
+
+
+def gdebt_autolink(db):
+    """Misafir adı TEK bir çalışanın adıyla eşleşiyorsa Nero ID ile bağla (owner 2026-10-31:
+    «Damir buranın çalışanı gibi durmuyor»). user_id NULL = bilinmiyor (bağlanabilir);
+    0 = owner «не сотрудник» dedi (dokunulmaz). Birden çok eşleşmede bağlanmaz."""
+    try:
+        staff = {}
+        for u in db.execute("SELECT user_id, name, display_name FROM users WHERE COALESCE(approved,0)=1 "
+                            "AND COALESCE(archived,0)=0 AND role NOT IN ('observer')").fetchall():
+            ks = {_gd_key(u["display_name"]), _gd_key(u["name"])} - {""}
+            for k in ks:
+                staff.setdefault(k, set()).add(int(u["user_id"]))
+        n = 0
+        for g in db.execute("SELECT id, name FROM guests WHERE user_id IS NULL AND COALESCE(archived,0)=0").fetchall():
+            m = staff.get(_gd_key(g["name"]))
+            if m and len(m) == 1:
+                db.execute("UPDATE guests SET user_id=? WHERE id=?", (next(iter(m)), int(g["id"])))
+                n += 1
+        if n:
+            db.commit()
+        return n
+    except Exception as e:
+        logger.warning(f"gdebt_autolink: {e}")
+        return 0
+
+
 def gdebt_view(db, only_bid=None):
     """Nero: misafirler (bakiyeyle) + son hareketler. only_bid verilirse YALNIZ o
     şubenin misafirleri (owner 2026-10-06: çalışan yalnız atandığı şubeyi görür)."""
+    gdebt_autolink(db)
     bal, fm, ft = {}, {}, {}
     _m0 = datetime.now(TZ).strftime("%Y-%m")
     for r in db.execute("SELECT guest_id, kind, amount, at FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
@@ -19047,7 +19086,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _u = 0
                 if _u and not db.execute("SELECT 1 FROM users WHERE user_id=? AND COALESCE(approved,0)=1", (_u,)).fetchone():
                     context.result = {"ok": False, "error": "Сотрудник не найден (проверьте ID)."}; return
-                db.execute("UPDATE guests SET user_id=? WHERE id=?", (_u or None, int(_g["id"])))
+                db.execute("UPDATE guests SET user_id=? WHERE id=?", (_u, int(_g["id"])))   # 0 = «не сотрудник»
                 db.commit()
                 log_action(db, "gdebt_guest_link", user.id, user.first_name, _u or None,
                            display_name_for(db, _u, fallback="") if _u else "", {"guest_id": int(_g["id"]), "guest": _g["name"]})

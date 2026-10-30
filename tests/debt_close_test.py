@@ -75,5 +75,20 @@ r = act(11, {'action': 'gdebt_from_salary', 'guest_id': gid, 'amount': 1})
 check(r and not r.get('ok'), 'başkasının misafir borcunu kapatamaz')
 r = act(10, {'action': 'gdebt_guest_link', 'guest_id': gid, 'uid': 11})
 check(r and not r.get('ok'), 'çalışan bağlamayı değiştiremez')
+# Kendiliğinden bağlama (owner 2026-10-31): ad tek çalışanla eşleşirse Nero ID ile bağlanır
+db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (20,'Suhrob','Suhrob','barista',1,1,1)")
+db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (21,'Ali','Ali A.','barista',1,1,1)")
+db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (22,'Ali','Ali B.','barista',1,1,1)")
+g1 = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Сухроб',1,'x')").lastrowid
+g2 = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Али',1,'x')").lastrowid
+g3 = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Анвар',1,'x')").lastrowid
+db.commit()
+v = {x["id"]: x for x in bot.gdebt_view(db)["guests"]}
+check(v[g1]["uid"] == 20, '«Сухроб» → Suhrob (ID 20) kendiliğinden bağlandı')
+check(v[g2]["uid"] == 0, 'iki «Ali» varken bağlanmadı')
+check(v[g3]["uid"] == 0, 'eşleşmeyen misafir bağlanmadı')
+act(1, {'action': 'gdebt_guest_link', 'guest_id': g1, 'uid': 0})
+bot.gdebt_view(db)
+check(db.execute("SELECT user_id FROM guests WHERE id=?", (g1,)).fetchone()[0] == 0, '«не сотрудник» denince bir daha bağlanmaz')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
