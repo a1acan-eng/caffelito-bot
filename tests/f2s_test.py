@@ -1,14 +1,16 @@
-# Штрафы → в зарплату (owner 2026-10-29): owner ceza defterindeki parayı istediği
-# zaman, istediği tutarda bu ayki maaşına geçirir; geri alabilir.
+# Штрафы → в зарплату (owner 2026-10-29/30): açık cezalar (en eskiden, bölünmeden) bu ayın
+# maaşına geçer ve «в зарплату» olarak KAPANIR. Elden alınan («получено») ceza havuza girmez.
+# Alınan ceza kilitli (geri açılmaz, silinmez). Owner maaşını aldıktan sonra aktarım geri alınmaz.
 # Çalıştırma: rm -f /tmp/fs.db; PYTHONPATH=. DB_PATH=/tmp/fs.db BOT_TOKEN=123:abc python tests/f2s_test.py
 import json, asyncio, bot
-from datetime import datetime
+from datetime import datetime, timedelta
 FAIL = []
 def check(c, m):
     print(('  ok  ' if c else '  FAIL ') + m)
     if not c: FAIL.append(m)
+SAID = []
 class FB:
-    async def send_message(self, chat_id=None, text=None, *a, **k): return None
+    async def send_message(self, chat_id=None, text=None, *a, **k): SAID.append(text); return None
     def __getattr__(self, n):
         async def f(*a, **k): return None
         return f
@@ -20,33 +22,63 @@ db = bot.get_db()
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,approved,authorized,branch_id) VALUES (1,'Owner','owner',1,1,1)")
 db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (10,'Дамир','barista',1,1,1)")
 db.execute("INSERT OR REPLACE INTO branches (id, name, active) VALUES (1,'C5',1)")
-per = bot.current_period(); now = datetime.now(bot.TZ).isoformat()
-def fine(uid, amt, typ, by):
-    db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (?,?,?,?,?,?,?)",
-               (uid, amt, 'т', typ, per, by, now))
-fine(10, 50000, 'manual', 1)            # owner kesti
-fine(10, 30000, 'opening_delay', 0)     # sistem kesti → birincil owner
-fine(10, 1000000, 'insp_70', 1)         # marka cezası → sayılmaz
-fine(1, 20000, 'manual', 1)             # owner kendi üstüne → sayılmaz
+per = bot.current_period(); t0 = datetime.now(bot.TZ) - timedelta(days=2)
+def fine(uid, amt, typ, by, k):
+    return db.execute("INSERT INTO fines (user_id,amount,reason,type,period,added_by,created_at) VALUES (?,?,?,?,?,?,?)",
+                      (uid, amt, 'т', typ, per, by, (t0 + timedelta(minutes=k)).isoformat())).lastrowid
+f1 = fine(10, 50000, 'manual', 1, 1)            # en eski
+f2 = fine(10, 30000, 'opening_delay', 0, 2)     # sistem → birincil owner
+f3 = fine(10, 20000, 'manual', 1, 3)
+fine(10, 1000000, 'insp_70', 1, 4)              # marka → sayılmaz
+fine(1, 20000, 'manual', 1, 5)                  # kendi üstüne → sayılmaz
 db.commit()
 net0 = bot.calc_summary(db, 1, per)["net"]
-emp0 = bot.calc_summary(db, 10, per)["net"]
-check(bot.f2s_pool(db, 1) == (80000, 0, 80000), f'havuz 80.000 (marka ve kendi cezası hariç) {bot.f2s_pool(db, 1)}')
+check(bot.f2s_pool(db, 1) == (100000, 0, 100000), f'havuz: açık 100.000 {bot.f2s_pool(db, 1)}')
 r = act(10, {'action': 'f2s_move', 'amount': 1000})
 check(r and not r.get('ok'), 'barista geçiremez')
-r = act(1, {'action': 'f2s_move', 'amount': 90000})
-check(r and not r.get('ok') and '80' in r.get('error', ''), 'havuzdan fazlası reddedildi')
 r = act(1, {'action': 'f2s_move', 'amount': 30000})
-check(r and r.get('ok') and r['f2s']['left'] == 50000 and r['f2s']['moved'] == 30000, 'kısmi geçiş 30.000, kalan 50.000')
-check(bot.calc_summary(db, 1, per)["net"] == net0 + 30000, 'owner maaşı +30.000')
-check(bot.calc_summary(db, 10, per)["net"] == emp0, 'çalışan etkilenmez')
-r = act(1, {'action': 'f2s_move', 'amount': 50000})
-check(r and r.get('ok') and r['f2s']['left'] == 0, 'kalanın hepsi geçti')
-aid = r['f2s']['rows'][0]['id']
+check(r and not r.get('ok') and '50' in r.get('error', ''), 'en eski ceza bölünmez → «минимум 50.000»')
+r = act(1, {'action': 'f2s_move', 'amount': 90000})
+check(r and r.get('ok') and r['f2s']['rows'][0]['amount'] == 80000 and r['f2s']['left'] == 20000,
+      'istenen 90.000 → tam cezalar 50+30 = 80.000 geçti, açık 20.000')
+check(bot.calc_summary(db, 1, per)["net"] == net0 + 80000, 'owner maaşı +80.000')
+v = {x["id"]: (x["settled"], x["settle_via"]) for x in db.execute("SELECT id, settled, settle_via FROM fines")}
+check(v[f1] == (1, 'salary') and v[f2] == (1, 'salary') and v[f3][0] == 0, 'geçen cezalar «в зарплату» olarak kapandı')
+# elden alındı → havuzdan çıkar, kilitli
+act(1, {'action': 'fine_settle', 'id': f3, 'settled': 1})
+check(bot.f2s_pool(db, 1)[2] == 0, 'elden alınan ceza havuzda yok (alacak gibi görünmez)')
+act(1, {'action': 'fine_settle', 'id': f3, 'settled': 0})
+check(db.execute("SELECT settled FROM fines WHERE id=?", (f3,)).fetchone()["settled"] == 1, '«получено» geri alınamaz')
+act(1, {'action': 'delete_record', 'kind': 'fine', 'id': f1})
+check(db.execute("SELECT 1 FROM fines WHERE id=?", (f1,)).fetchone() is not None, 'alınmış ceza silinemez')
+# aktarım: maaş alınmadan geri alınabilir
+aid = bot.f2s_view(db, 1)['rows'][0]['id']
+check(bot.f2s_view(db, 1)['rows'][0]['lock'] == 0, 'maaş ödenmeden kilitli değil')
 r = act(1, {'action': 'f2s_undo', 'id': aid})
-check(r and r.get('ok') and r['f2s']['left'] == 50000, 'geri alındı → kalan 50.000')
-check(bot.calc_summary(db, 1, per)["net"] == net0 + 30000, 'geri alınca maaştan düştü')
-check(db.execute("SELECT COUNT(*) AS n FROM logs WHERE action IN ('f2s_move','f2s_undo')").fetchone()["n"] == 3, 'günlükte 3 kayıt')
-check(db.execute("SELECT COUNT(*) AS n FROM fines WHERE COALESCE(settled,0)=1").fetchone()["n"] == 0, 'ceza işaretleri değişmedi')
+check(r and r.get('ok') and r['f2s']['left'] == 80000, 'geri alındı → cezalar yeniden açık')
+check(bot.calc_summary(db, 1, per)["net"] == net0, 'maaştan düştü')
+r = act(1, {'action': 'f2s_move', 'amount': 80000})
+aid = r['f2s']['rows'][0]['id']
+db.execute("INSERT INTO payments (user_id,amount,period,paid_by,paid_by_name,paid_at) VALUES (1,500000,?,1,'Owner',?)",
+           (per, (datetime.now(bot.TZ) + timedelta(seconds=5)).isoformat()))
+db.commit()
+check(bot.f2s_view(db, 1)['rows'][0]['lock'] == 1, 'maaş alındıktan sonra aktarım geçmişte (kilitli)')
+r = act(1, {'action': 'f2s_undo', 'id': aid})
+check(r and not r.get('ok'), 'maaş alındıktan sonra geri alınamaz')
+# eski (tutar bazlı) aktarım göçü
+f4 = fine(10, 40000, 'manual', 1, 10); f5 = fine(10, 60000, 'manual', 1, 11); db.commit()
+db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+           "VALUES (1,40000,'Из штрафов в зарплату [f2s]',?,1,1,'Owner',?)", (per, datetime.now(bot.TZ).isoformat()))
+db.commit()
+check(bot.f2s_pool(db, 1)[2] == 60000, 'eski aktarım en eski açık cezayla eşleşti (havuz 60.000)')
+check(db.execute("SELECT settle_via FROM fines WHERE id=?", (f4,)).fetchone()["settle_via"] == 'salary', 'göç: ceza «в зарплату»')
+# alınmış açılış cezası: saat düzeltmesi / iptal dokunmaz
+oid = db.execute("INSERT INTO opening_delays (user_id,branch_id,shift_id,status,fine_id,amount) VALUES (10,1,999,'approved',?,30000)",
+                 (f2,)).lastrowid
+db.commit()
+_w = []
+check(bot.op_recalc(db, 999, _w) == (None, 0) and 'закрыт' in _w[-1], 'alınmış ceza yeniden hesaplanmaz')
+check(bot.op_reject(db, oid, 1, 'O')[0] is None and db.execute("SELECT 1 FROM fines WHERE id=?", (f2,)).fetchone(),
+      'alınmış ceza iptal edilemez')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)

@@ -966,8 +966,10 @@ def get_db():
     # Tutar ve ceza kaydi DEGISMEZ — bu sadece «elime gecti» damgasi, bu yuzden
     # ayri bir tablo degil, ayni satirda uc alan. Varsayilan 0 = henuz odenmedi,
     # yani mevcut butun cezalar «acik» olarak kalir (dogru baslangic durumu).
+    # settle_via (owner 2026-10-30): 'hand' = elden alındı · 'salary' = maaşa geçirildi
+    # (f2s_adj = o aktarımın adjustments id'si). Alınan ceza KİLİTLİDİR.
     for _fc, _fd in (("settled", "INTEGER DEFAULT 0"), ("settled_at", "TEXT"),
-                     ("settled_by", "INTEGER")):
+                     ("settled_by", "INTEGER"), ("settle_via", "TEXT"), ("f2s_adj", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE fines ADD COLUMN {_fc} {_fd}")
         except sqlite3.OperationalError:
@@ -4641,6 +4643,11 @@ def op_recalc(db, shift_id, why=None):
     try:
         row = db.execute("SELECT * FROM opening_delays WHERE shift_id=?",
                          (int(shift_id),)).fetchone()
+        if row and row["fine_id"] and fine_locked(db, int(row["fine_id"])):
+            # Alınmış ceza KİLİTLİ (owner 2026-10-30): saat düzeltmesi onu değiştirmez.
+            if isinstance(why, list):
+                why.append("штраф уже получен и закрыт — не пересчитывается")
+            return None, 0
         if row:
             old_amt = int(row["amount"] or 0) if row["status"] == "approved" else 0
             if row["fine_id"]:
@@ -4688,12 +4695,24 @@ def op_approve(db, rec_id, actor_id, actor_name, amount=None):
     return db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone(), ""
 
 
+def fine_locked(db, fine_id):
+    """Ceza ALINDI mı (elden ya da maaşa geçirildi)? Alınan ceza kilitlidir:
+    geri açılamaz, silinemez, yeniden hesaplanmaz (owner 2026-10-30)."""
+    try:
+        r = db.execute("SELECT COALESCE(settled,0) AS s FROM fines WHERE id=?", (int(fine_id),)).fetchone()
+        return bool(r and int(r["s"] or 0))
+    except Exception:
+        return False
+
+
 def op_reject(db, rec_id, actor_id, actor_name):
     """Reddet. Zaten onaylanmışsa yazılan ceza satırı da GERİ ALINIR —
     yoksa ekranda «reddedildi» yazarken para kesik kalırdı."""
     row = db.execute("SELECT * FROM opening_delays WHERE id=?", (int(rec_id),)).fetchone()
     if not row:
         return None, "Запись не найдена."
+    if row["fine_id"] and fine_locked(db, int(row["fine_id"])):
+        return None, "Штраф уже получен — удалить или отменить нельзя."
     if row["fine_id"]:
         fine_to_owner_undo(db, int(row["fine_id"]))
         db.execute("DELETE FROM fines WHERE id=? AND type=?",
@@ -7297,23 +7316,78 @@ def fine_to_owner_undo(db, fine_id):
 F2S_TAG = "[f2s]"
 
 
-def f2s_pool(db, owner_id):
-    """(toplam_ceza, geçirilen, kalan) — owner'ın ceza defteri, tüm zamanlar."""
+def _f2s_where(db, oid):
+    """Owner'ın ceza defteri: kendi kestiği + (birincil owner'da) sistemin açılış cezası;
+    marka cezaları ve kendi üstüne yazılanlar hariç."""
+    q = ("user_id<>? AND amount>0 AND COALESCE(type,'') NOT IN (%s) AND (added_by=?"
+         % ",".join("?" * len(OP_BRAND_TYPES)))
+    args = [oid, *OP_BRAND_TYPES, oid]
+    if oid == _primary_owner(db):
+        q += " OR (COALESCE(added_by,0)=0 AND type=?)"
+        args.append(OP_FINE_TYPE)
+    return q + ")", args
+
+
+def _f2s_take(db, oid, amount, adj_id, now_s):
+    """En eski AÇIK cezalardan, toplamı `amount`ı aşmayacak kadarını «maaşa geçti»
+    işaretle. Döner: işaretlenen toplam."""
+    w, args = _f2s_where(db, oid)
+    got = 0
+    for r in db.execute("SELECT id, amount FROM fines WHERE COALESCE(settled,0)=0 AND " + w +
+                        " ORDER BY created_at, id", args).fetchall():
+        a = int(r["amount"] or 0)
+        if got + a > amount:
+            break
+        db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=?, settle_via='salary', f2s_adj=? WHERE id=?",
+                   (now_s, oid, adj_id, int(r["id"])))
+        got += a
+    return got
+
+
+def f2s_migrate(db, owner_id):
+    """Ceza bazlı modelden ÖNCE yapılmış tutar aktarımlarını (bağlı cezası olmayan
+    [f2s] satırları) bir kez en eski açık cezalarla eşleştir."""
     oid = int(owner_id)
     try:
-        q = ("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE user_id<>? AND amount>0 "
-             "AND COALESCE(type,'') NOT IN (%s) AND (added_by=?" % ",".join("?" * len(OP_BRAND_TYPES)))
-        args = [oid, *OP_BRAND_TYPES, oid]
-        if oid == _primary_owner(db):
-            q += " OR (COALESCE(added_by,0)=0 AND type=?)"
-            args.append(OP_FINE_TYPE)
-        total = int(db.execute(q + ")", args).fetchone()["t"] or 0)
+        for r in db.execute("SELECT id, amount, created_at FROM adjustments WHERE user_id=? AND note LIKE ? "
+                            "ORDER BY id", (oid, f"%{F2S_TAG}%")).fetchall():
+            if db.execute("SELECT 1 FROM fines WHERE f2s_adj=? LIMIT 1", (int(r["id"]),)).fetchone():
+                continue
+            _f2s_take(db, oid, int(r["amount"] or 0), int(r["id"]), r["created_at"] or datetime.now(TZ).isoformat())
+        db.commit()
+    except Exception as e:
+        logger.warning(f"f2s_migrate: {e}")
+
+
+def f2s_pool(db, owner_id):
+    """(toplam_ceza, maaşa_geçen, açık) — açık = henüz alınmamış (elden de, maaşa da) cezalar."""
+    oid = int(owner_id)
+    try:
+        f2s_migrate(db, oid)
+        w, args = _f2s_where(db, oid)
+        total = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE " + w, args).fetchone()["t"] or 0)
+        left = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM fines WHERE COALESCE(settled,0)=0 AND " + w,
+                              args).fetchone()["t"] or 0)
         moved = int(db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM adjustments WHERE user_id=? "
                                "AND note LIKE ?", (oid, f"%{F2S_TAG}%")).fetchone()["t"] or 0)
-        return total, moved, max(0, total - moved)
+        return total, moved, left
     except Exception as e:
         logger.warning(f"f2s_pool: {e}")
         return 0, 0, 0
+
+
+def f2s_locked(db, owner_id, adj_row):
+    """Aktarım geçmişte mi kaldı? Ay değiştiyse ya da aktarımdan SONRA owner'a maaş
+    ödemesi yapıldıysa geri alınamaz (owner 2026-10-30)."""
+    try:
+        if str(adj_row["period"] or "") != current_period():
+            return True
+        skip = set(daily_bonus_pay_ids(db, int(owner_id), str(adj_row["period"] or "")) or [])
+        return any(int(p["id"]) not in skip for p in db.execute(
+            "SELECT id FROM payments WHERE user_id=? AND COALESCE(paid_at,'')>?",
+            (int(owner_id), str(adj_row["created_at"] or ""))).fetchall())
+    except Exception:
+        return True
 
 
 def f2s_view(db, owner_id):
@@ -7323,31 +7397,45 @@ def f2s_view(db, owner_id):
         for r in db.execute("SELECT id, amount, period, created_at FROM adjustments WHERE user_id=? "
                             "AND note LIKE ? ORDER BY id DESC LIMIT 20", (int(owner_id), f"%{F2S_TAG}%")).fetchall():
             rows.append({"id": int(r["id"]), "amount": int(r["amount"] or 0),
-                         "period": r["period"] or "", "at": r["created_at"] or ""})
+                         "period": r["period"] or "", "at": r["created_at"] or "",
+                         "lock": 1 if f2s_locked(db, owner_id, r) else 0})
     except Exception:
         pass
     return {"total": total, "moved": moved, "left": left, "rows": rows}
 
 
 def f2s_move(db, owner_id, amount):
-    """Havuzdan bu ayki maaşa geçir. Döner (ok, hata, adj_id)."""
+    """Açık cezalardan (en eskiden) bu ayki maaşa geçir. Ceza BÖLÜNMEZ: geçen tutar,
+    istenen tutarı aşmayan tam cezaların toplamıdır. Döner (ok, hata, adj_id)."""
     try:
         amount = int(float(str(amount).replace(" ", "").replace(",", ".")))
     except (TypeError, ValueError):
         return False, "Укажите сумму.", None
     if amount <= 0:
         return False, "Укажите сумму.", None
-    left = f2s_pool(db, owner_id)[2]
+    oid = int(owner_id)
+    left = f2s_pool(db, oid)[2]
+    if left <= 0:
+        return False, "Открытых штрафов нет — переводить нечего.", None
     if amount > left:
         return False, f"Доступно только {fmt_sum(left)} сум.", None
-    oid = int(owner_id)
+    now_s = datetime.now(TZ).isoformat()
     cur = db.execute(
         "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
         "VALUES (?,?,?,?,?,?,?,?)",
-        (oid, amount, f"Из штрафов в зарплату {F2S_TAG}", current_period(), user_branch_id(db, oid),
-         oid, display_name_for(db, oid, fallback="Owner"), datetime.now(TZ).isoformat()))
+        (oid, 0, f"Из штрафов в зарплату {F2S_TAG}", current_period(), user_branch_id(db, oid),
+         oid, display_name_for(db, oid, fallback="Owner"), now_s))
+    aid = int(cur.lastrowid)
+    got = _f2s_take(db, oid, amount, aid, now_s)
+    if got <= 0:
+        db.rollback()
+        w, args = _f2s_where(db, oid)
+        r = db.execute("SELECT amount FROM fines WHERE COALESCE(settled,0)=0 AND " + w +
+                       " ORDER BY created_at, id LIMIT 1", args).fetchone()
+        return False, f"Минимум — {fmt_sum(int(r['amount'] if r else 0))} сум (самый ранний штраф).", None
+    db.execute("UPDATE adjustments SET amount=? WHERE id=?", (got, aid))
     db.commit()
-    return True, "", int(cur.lastrowid)
+    return True, "", aid
 
 
 def f2s_undo(db, owner_id, adj_id):
@@ -7355,6 +7443,10 @@ def f2s_undo(db, owner_id, adj_id):
                    (int(adj_id), int(owner_id), f"%{F2S_TAG}%")).fetchone()
     if not r:
         return False, "Перевод не найден.", 0
+    if f2s_locked(db, owner_id, r):
+        return False, "Перевод уже в прошлом (зарплата получена) — отменить нельзя.", 0
+    db.execute("UPDATE fines SET settled=0, settled_at=NULL, settled_by=NULL, settle_via=NULL, f2s_adj=NULL "
+               "WHERE f2s_adj=?", (int(adj_id),))
     db.execute("DELETE FROM adjustments WHERE id=?", (int(adj_id),))
     db.commit()
     return True, "", int(r["amount"] or 0)
@@ -8762,7 +8854,9 @@ def decade_statement(db, uid, period, k):
                 "hours": round(sum(float(x.get("hours") or 0) for x in shifts), 2)}
     d = span(a, b)
     d["branches"] = payroll_branch_split(db, d["shifts"])
-    d["net"] = d["work"] + d["tips"] - d["fines"] - d["adv"] - d["res"] + d["rout"] + d["adj"]
+    # «за декаду» = o dönemin KAZANCI: rezervden çekilen para kazanç değildir (owner
+    # 2026-10-30) — yalnız yürüyen hesaba (ödenecek) girer.
+    d["net"] = d["work"] + d["tips"] - d["fines"] - d["adv"] - d["res"] + d["adj"]
     c = span(m0, b)
     extra = 0
     if k == 3:
@@ -8878,7 +8972,7 @@ def build_payroll_decade_pdf(db, period, k):
             if d[key]:
                 parts.append(f"{lbl} −{_pdf_fmt(d[key])}")
         if d.get("rout"):
-            parts.append("из резерва +" + _pdf_fmt(d["rout"]))
+            parts.append("из резерва (к выплате, не заработок) +" + _pdf_fmt(d["rout"]))
         if d["adj"]:
             parts.append(("корр./переводы +" if d["adj"] > 0 else "корр./переводы −") + _pdf_fmt(abs(d["adj"])))
         if ds["extra"]:
@@ -9849,7 +9943,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         # arkasindaki «собрано штрафов»). Hicbir hesap degismiyor — yalnizca alan.
         _fi = _repq("SELECT f.id, f.amount, f.reason, f.created_at, f.period AS per, "
                     "f.type AS ftype, f.added_by AS by_id, f.user_id AS uid, "
-                    "COALESCE(f.settled,0) AS settled, f.settled_at, "
+                    "COALESCE(f.settled,0) AS settled, f.settled_at, COALESCE(f.settle_via,'') AS via, "
                     "COALESCE(u.display_name,u.name) AS nm "
                     "FROM fines f LEFT JOIN users u ON u.user_id=f.user_id ORDER BY f.id DESC", (), 60)
         _lo = _repq("SELECT l.id, l.amount, l.reason, l.status, l.created_at, COALESCE(u.display_name,u.name) AS nm "
@@ -9888,7 +9982,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         "fines": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "",
                    "at": r["created_at"], "per": r["per"] or "", "ftype": r["ftype"] or "",
                    "by": r["by_id"] or 0, "uid": r["uid"] or 0,
-                   "settled": int(r["settled"] or 0), "settled_at": r["settled_at"] or ""} for r in _fi],
+                   "settled": int(r["settled"] or 0), "settled_at": r["settled_at"] or "", "via": r["via"] or ""} for r in _fi],
         "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
@@ -12802,13 +12896,17 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "\u274c \u042d\u0442\u043e\u0442 \u0448\u0442\u0440\u0430\u0444 \u0432\u044b\u043f\u0438\u0441\u0430\u043b\u0438 \u043d\u0435 \u0432\u044b.")
                 return
             want = 1 if int(data.get("settled", 1) or 0) else 0
+            if not want and int(row["settled"] or 0):
+                # Owner 2026-10-30: alınan ceza KİLİTLİ — «получено» geri alınmaz.
+                await update.message.reply_text("🔒 Штраф уже получен — отметку снять нельзя.")
+                return
             if int(row["settled"] or 0) == want:
                 await update.message.reply_text(
                     "\u26a0\ufe0f \u0421\u0442\u0430\u0442\u0443\u0441 \u0443\u0436\u0435 \u0442\u0430\u043a\u043e\u0439.")
                 return
             now_s = datetime.now(TZ).isoformat()
             if want:
-                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=? WHERE id=?",
+                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=?, settle_via='hand' WHERE id=?",
                            (now_s, user.id, fid))
             else:
                 # Yanlislikla kapatilani geri ac — tutar yine degismiyor.
@@ -12852,7 +12950,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     int(_r["added_by"] or 0) == 0 and str(_r["type"] or "") == OP_FINE_TYPE)
                 if not _own:
                     _skip += 1; continue
-                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=? WHERE id=?", (_now_s, user.id, _fid))
+                db.execute("UPDATE fines SET settled=1, settled_at=?, settled_by=?, settle_via='hand' WHERE id=?", (_now_s, user.id, _fid))
                 _n += 1; _sum += int(_r["amount"] or 0)
             db.commit()
             log_action(db, "fine_settle_all", user.id, user.first_name, None, None,
@@ -15029,7 +15127,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _opnew = int(_oprec["amount_calc"] or 0) if _oprec else 0
                 if not _oprec and _opwhy:
                     # Ceza OLUSMADI -> owner sebebini gorsun (sessiz kalma).
-                    _opmsg = chr(10) + "ℹ️ Штраф не начислен: " + _opwhy[-1]
+                    _opmsg = chr(10) + ("ℹ️ Штраф не изменён: " if "закрыт" in _opwhy[-1]
+                                        else "ℹ️ Штраф не начислен: ") + _opwhy[-1]
                 if _oprec and int(op_cfg(db).get("auto") or 0):
                     op_approve(db, int(_oprec["id"]), 0, "Nero")
                 if _opold or _opnew:
@@ -15411,6 +15510,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             logger.info(f"vardiya {rid} silindi → gunluk bonus odemesi {_rm} de silindi")
                     # Ceza siliniyorsa owner'a yazilan ALACAK da geri alinir,
                     # yoksa ceza yokken para owner'da kalirdi.
+                    if kind == "fine" and fine_locked(db, rid):
+                        await update.message.reply_text("🔒 Штраф уже получен — удалить нельзя.")
+                        return
                     if kind == "fine":
                         # Açılış gecikmesi cezası ise gecikme kaydı da «отменён»
                         # olmalı (op_reject aynı geri almayı yapar) — yoksa kayıt
