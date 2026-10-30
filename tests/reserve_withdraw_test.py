@@ -68,5 +68,12 @@ bot.reserve_withdraw_fix_once(db)
 check(db.execute("SELECT voided FROM reserve_tx WHERE id=?", (late,)).fetchone()[0] == 1, 'çekimden sonraki katkı iptal edildi')
 check(bot.calc_summary(db, 10, per)["net"] == n0 + 94050, 'kesilen para maaşa döndü')
 check(db.execute("SELECT reserve_off FROM users WHERE user_id=10").fetchone()[0] == 1, 'rezerv durduruldu')
+# Suhrob (canlı 2026-10-31): 21–31 dökümü kesintiyi gösterip çekimi göstermiyordu
+from datetime import date
+db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) VALUES (10,'contrib','2026-10-22','2026-10',62700,0,'Взнос',0,'Nero','x')")
+db.execute("INSERT INTO reserve_tx (user_id,kind,date,period,amount,target,note,created_by,created_by_name,created_at) VALUES (10,'withdraw','2026-10-30','2026-10',-1567500,0,'Снято',1,'O','y')")
+db.commit()
+dp = bot.adv_decade_pay(db, 10, date(2026, 10, 31))
+check(dp['rout'] >= 1567500 and dp['net'] == dp['gross'] - dp['adv'] - dp['fines'] - dp['res'] + dp['rout'], f'dönem dökümünde «Из резерва» var ({dp["rout"]})')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
