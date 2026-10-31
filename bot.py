@@ -2330,6 +2330,33 @@ def brx_packs(db):
     return out
 
 
+# Kolide kaç tane (owner 2026-10-31: «sütte kolide 12 tane, Сливки 11% de aynı»).
+# Katalogdaki «упак, 12 л» adet sayılmıyordu → koli/adet düğmesi hiç çıkmıyordu.
+BRX_PACK_SEED = (("Молоко 3,2%", 12), ("Сливки 11%", 27))
+
+
+def brx_pack_seed(db):
+    """Bir kez: bilinen ürünlerin koli boyutu (owner sonradan ✎ ile değiştirebilir)."""
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k='brx_pack_seed1'").fetchone():
+            return
+        have = brx_packs(db)
+        for nm, pk in BRX_PACK_SEED:
+            if have.get(nm.lower()):
+                continue
+            r = next((x for x in db.execute("SELECT id, name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()
+                      if (x["name"] or "").strip().lower() == nm.lower()), None)
+            if r:
+                db.execute("UPDATE brx_items SET pack=? WHERE id=?", (pk, r["id"]))
+            else:
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                           (nm, "шт", "каталог", datetime.now(TZ).isoformat(), pk))
+        db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('brx_pack_seed1', '1')")
+        db.commit()
+    except Exception as e:
+        logger.warning(f"brx_pack_seed: {e}")
+
+
 def brx_norm(packs, item, unit, qty):
     """Paket boyutu biliniyorsa пачка/уп → шт (bakiye adette toplansın)."""
     k = (item or "").strip().lower()
@@ -10002,6 +10029,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # Между филиалами: çalışan ŞU AN çalıştığı şubeyi görür (şube değiştirince değişir).
             _ob = None if role == "owner" else acting_branch_id(db, user_id)
             # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
+            brx_pack_seed(db)
             _nm = {}
             for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
                 _nm.setdefault(((_r["item"] or "").strip().lower(), _r["unit"] or "шт"), (_r["item"] or "").strip())
