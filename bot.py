@@ -9166,8 +9166,9 @@ def build_payroll_decade_pdf(db, period, k):
             if _ur:
                 rows.append((_fu, _ur["nm"] or "?", bool(_ur["arch"]), decade_statement(db, _fu, period, k)))
     fcp = {u: sum(x["pay"] for x in v) for u, v in FC.items()}
+    XF = payroll_xfers(db, period)
     _today_s = _td.strftime("%d.%m")
-    FCC = (176, 112, 20)
+    FCC, XFC = (176, 112, 20), (40, 92, 160)
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
@@ -9220,6 +9221,11 @@ def build_payroll_decade_pdf(db, period, k):
     if adj:
         row("Корректировки и переводы", ("+" if adj >= 0 else "−") + _pdf_fmt(abs(adj)), 9.5)
     row("Уже выплачено в этом месяце", "−" + _pdf_fmt(S_(lambda d: d["paid"])), 9.5)
+    _xn = sum(1 for v in XF.values() for x in v if x["a"] > 0)
+    if _xn:
+        line(f"Переводы между сотрудниками за месяц: {_xn} · {_pdf_fmt(sum(x['a'] for v in XF.values() for x in v if x['a'] > 0))} сум"
+             " — уже учтены в «к выплате».", 8, "", gap=5, col=XFC)
+        line("У отправителя перевод вычтен, у получателя добавлен — см. строки «перевод» у каждого.", 8, "", gap=5, col=XFC)
     if fcp:
         row("К выплате по отработанным сменам", _pdf_fmt(S_(lambda d: d["due"])), 10.5, "B")
         row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
@@ -9243,6 +9249,7 @@ def build_payroll_decade_pdf(db, period, k):
         for x in FC.get(_uid, []):
             row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
                 + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
+        _pdf_xfer_lines(row, XF, _uid, XFC)
         parts = []
         if d["tips"]:
             parts.append("чаевые +" + _pdf_fmt(d["tips"]))
@@ -9320,8 +9327,64 @@ def payroll_forecast(db, period, today=None):
             continue
         out.setdefault(uid, []).append({"bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
                                         "s": st.strftime("%H:%M"), "e": e.strftime("%H:%M"),
-                                        "h": round(h, 2), "pay": pay, "open": 1 if rows else 0})
+                                        "h": round(h, 2), "pay": pay, "open": 1 if rows else 0, "sid": rows[0]["id"] if rows else 0})
+    # Grafik'te OLMAYAN ama bugün vardiyası AÇIK olan (owner 2026-10-31: «Ubay da çalışıyor,
+    # grafikte yok»): bitiş = şube penceresinin sonu.
+    _seen = {x.get("sid") for v in out.values() for x in v if x.get("sid")}
+    _cfg = op_cfg(db)
+    _d0 = datetime(today.year, today.month, today.day)
+    for r in db.execute("SELECT * FROM shifts WHERE start_time IS NOT NULL AND end_time IS NULL "
+                        "AND start_time>=? AND start_time<?",
+                        (_d0.isoformat(), (_d0 + timedelta(days=1)).isoformat())).fetchall():
+        if int(r["id"]) in _seen:
+            continue
+        try:
+            uid, bid = int(r["user_id"]), int(r["branch_id"] or 0)
+            st = datetime.fromisoformat(r["start_time"])
+            _ws, e = op_window_for(_cfg, bid, st)
+            if not e or e <= st:
+                continue
+            pw = branch_pay_window(db, bid)
+            h = paid_hours(st, e, pw)
+            rate = int(r["rate"]) if r["rate"] else int(barista_pay_info(db, uid, branch_id=bid)["rate"])
+            pay = int(h * rate) + int(night_premium(st, e, pw, rate, night_cfg_for(db, uid), paid_h=h)["pay"])
+        except Exception as ex:
+            logger.warning(f"payroll_forecast open {r['id']}: {ex}")
+            continue
+        out.setdefault(uid, []).append({"bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
+                                        "s": st.strftime("%H:%M"), "e": e.strftime("%H:%M"),
+                                        "h": round(h, 2), "pay": pay, "open": 1, "sid": int(r["id"])})
     return out
+
+
+def payroll_xfers(db, period):
+    """{uid: [{at, who, a}]} — bu ayın çalışanlar arası transferleri (iptal edilenler hariç).
+    a: o kişinin maaşına etkisi (gönderen −, alan +). Rapor şefe gidiyor (owner 2026-10-31:
+    «para Hasan'a geçti, bana yanlışlıkla verilmesin») → her transfer adıyla görünsün."""
+    out = {}
+    try:
+        for r in db.execute("SELECT * FROM xfers WHERE period=? AND COALESCE(status,'ok')!='canceled' ORDER BY id",
+                            (period,)).fetchall():
+            a = int(r["amount"] or 0)
+            if not a:
+                continue
+            fu, tu = int(r["from_uid"]), int(r["to_uid"])
+            fn = display_name_for(db, fu, fallback=f"ID {fu}")
+            tn = display_name_for(db, tu, fallback=f"ID {tu}")
+            at = str(r["created_at"] or "")
+            out.setdefault(fu, []).append({"at": at, "who": "для " + tn, "a": -a})
+            out.setdefault(tu, []).append({"at": at, "who": "от " + fn, "a": a})
+    except Exception as e:
+        logger.warning(f"payroll_xfers: {e}")
+    return out
+
+
+def _pdf_xfer_lines(row, XF, uid, col):
+    """Kişi bloğunda transfer satırları (tutar «к выплате»ya ZATEN dahil)."""
+    for x in XF.get(uid, []):
+        _at = x["at"]
+        _w = (_at[8:10] + "." + _at[5:7] + " " + _at[11:16]) if len(_at) >= 16 else _at
+        row(f"   перевод {x['who']} · {_w}", ("+" if x["a"] > 0 else "−") + _pdf_fmt(abs(x["a"])), 9.5, col=col)
 
 
 def build_payroll_all_pdf(db, period):
@@ -9339,6 +9402,7 @@ def build_payroll_all_pdf(db, period):
             if _ur:
                 people.append((_fu, _ur["nm"] or "?", bool(_ur["arch"]), calc_summary(db, _fu, period)))
     fcp = {u: sum(x["pay"] for x in v) for u, v in FC.items()}
+    XF = payroll_xfers(db, period)
     _today_s = datetime.now(TZ).strftime("%d.%m")
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=16)
@@ -9348,6 +9412,7 @@ def build_payroll_all_pdf(db, period):
     W = pdf.w - pdf.l_margin - pdf.r_margin
     INK, DIM = (40, 30, 16), (150, 132, 100)
     FCC = (176, 112, 20)
+    XFC = (40, 92, 160)
 
     def line(txt, sz=10, style="", gap=6, col=INK):
         pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
@@ -9399,6 +9464,11 @@ def build_payroll_all_pdf(db, period):
         row("Корректировки и переводы", ("+" if T["adjustments"] >= 0 else "−") + _pdf_fmt(abs(T["adjustments"])), 9.5)
     if T["paid"]:
         row("Уже выплачено", "−" + _pdf_fmt(T["paid"]), 9.5)
+    _xn = sum(1 for v in XF.values() for x in v if x["a"] > 0)
+    if _xn:
+        line(f"Переводы между сотрудниками за месяц: {_xn} · {_pdf_fmt(sum(x['a'] for v in XF.values() for x in v if x['a'] > 0))} сум"
+             " — уже учтены в «к выплате».", 8, "", gap=5, col=XFC)
+        line("У отправителя перевод вычтен, у получателя добавлен — см. строки «перевод» у каждого.", 8, "", gap=5, col=XFC)
     if fcp:
         row("К выплате по отработанным сменам", _pdf_fmt(T["net"]), 10.5, "B")
         row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
@@ -9420,6 +9490,7 @@ def build_payroll_all_pdf(db, period):
         for x in FC.get(_uid, []):
             row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
                 + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
+        _pdf_xfer_lines(row, XF, _uid, XFC)
         parts = []
         for k, lbl, sg in (("ot_month", "сверхур. мес.", "+"), ("tips", "чаевые", "+"), ("product_bonus", "товары", "+"),
                            ("fines", "штрафы", "−"), ("adv_ded", "аванс", "−"), ("res_ded", "резерв", "−"),
