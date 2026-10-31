@@ -58,5 +58,26 @@ check(bot.build_payroll_decade_pdf(db, '2026-10', 3)[:4] == b'%PDF', 'on günlü
 r = act(1, {'action': 'payroll_fc_set', 'on': 0})
 check(r and r.get('ok') and not bot.payroll_fc_on(db), 'owner kapattı')
 check(bot.calc_summary(db, 10, '2026-10')['net'] == 0, 'prognoz maaşa (bakiyeye) YAZILMAZ')
+# Grafik'te yok ama vardiyası açık (owner 2026-10-31: «Ubay bugün de çalışıyor») → pencereye göre prognoz
+db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (13,'Убай2','barista',1,1,1)")
+cfg = bot.op_cfg(db); cfg.setdefault('windows', {})['1'] = [{'s': '07:00', 'e': '16:30'}, {'s': '16:00', 'e': '01:00'}]
+bot.op_cfg_save(db, {'windows': cfg['windows']})
+s3 = datetime(2026, 10, 31, 16, 5)
+db.execute("INSERT INTO shifts (user_id,hours,total,date,period,created_at,start_time,branch_id,shift_role,rate) VALUES (13,0,0,?,?,?,?,1,'barista',20000)",
+           (s3.strftime('%Y-%m-%d'), '2026-10', s3.isoformat(), s3.isoformat())); db.commit()
+fc = bot.payroll_forecast(db, '2026-10', today=D)
+check(13 in fc and fc[13][0]['s'] == '16:05' and fc[13][0]['e'] == '01:00' and fc[13][0]['open'] == 1,
+      f'grafikte olmayan açık vardiya: 16:05 → 01:00 ({fc.get(13)})')
+check(len(fc[11]) == 1, 'grafikteki açık vardiya iki kez sayılmaz')
+# Transferler raporda adıyla
+db.execute("INSERT INTO xfers (from_uid,to_uid,amount,note,period,created_at) VALUES (1,11,1530000,'','2026-10','2026-10-30T21:14:00')")
+db.execute("INSERT INTO xfers (from_uid,to_uid,amount,note,period,created_at,status) VALUES (1,10,5000,'','2026-10','2026-10-30T21:20:00','canceled')")
+db.commit()
+xf = bot.payroll_xfers(db, '2026-10')
+check(xf.get(1) == [{'at': '2026-10-30T21:14:00', 'who': 'для Убай', 'a': -1530000}], f'gönderen: для Убай −1.530.000 ({xf.get(1)})')
+check(xf.get(11)[0]['a'] == 1530000 and xf.get(11)[0]['who'].startswith('от '), 'alan: + 1.530.000')
+check(10 not in xf, 'iptal edilen transfer görünmez')
+check(bot.build_payroll_all_pdf(db, '2026-10')[:4] == b'%PDF' and bot.build_payroll_decade_pdf(db, '2026-10', 3)[:4] == b'%PDF',
+      'PDF transferlerle üretiliyor')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
