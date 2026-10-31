@@ -19044,7 +19044,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _res(True, rows=gdebt_shift_rows(db, user.id, _sid))
 
         elif action in ("gdebt_guest_add", "gdebt_tx", "gdebt_void", "gdebt_guest_del", "gdebt_tx_edit", "gdebt_guest_edit", "gdebt_guest_free"):
-            # Misafir borçları. Herkes kişi ekler ve borç/ödeme yazar; silme yalnız owner.
+            # Misafir borçları. Bu ekrandan yalnız owner yazar; çalışan vardiya kapanışından.
             db = get_db()
             if is_observer(db, user.id):
                 await update.message.reply_text("❌ Наблюдателю недоступно.")
@@ -19061,6 +19061,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _bid = acting_branch_id(db, user.id)
                 if not gdebt_unlocked(db, user.id, "barista"):
                     await update.message.reply_text("🔒 Долги гостей закрыты PIN-кодом.")
+                    return
+                # Çalışan bu ekranda YALNIZ okur (owner 2026-10-31: «içeri girip hepsini kapatma
+                # riski»). Borç/ödeme yalnız vardiya kapanışındaki kutudan (gdebt_safe_add) yazılır.
+                if action in ("gdebt_guest_add", "gdebt_tx"):
+                    await update.message.reply_text("👁 Только просмотр. «Взял» и «Оплатил» записываются при закрытии смены.")
                     return
             if action == "gdebt_guest_add":
                 _gid = gdebt_guest_get_or_create(db, 0, data.get("name"), _bid, user.id, _shown)
