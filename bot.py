@@ -9155,7 +9155,19 @@ def build_payroll_decade_pdf(db, period, k):
     from fpdf import FPDF
     people = payroll_people(db, period)
     rows = [(uid, nm, arch, decade_statement(db, uid, period, k)) for uid, nm, arch, _su in people]
-    rows = [r for r in rows if r[3]["dec"]["work"] or r[3]["dec"]["net"] or r[3]["due"]]
+    a, b = decade_bounds(period, k)
+    _td = datetime.now(TZ).replace(tzinfo=None).date()
+    FC = payroll_forecast(db, period) if (payroll_fc_on(db) and a <= _td <= b) else {}
+    rows = [r for r in rows if r[3]["dec"]["work"] or r[3]["dec"]["net"] or r[3]["due"] or r[0] in FC]
+    for _fu in FC:
+        if _fu not in {r[0] for r in rows}:
+            _ur = db.execute("SELECT COALESCE(display_name,name) AS nm, COALESCE(archived,0) AS arch FROM users "
+                             "WHERE user_id=?", (_fu,)).fetchone()
+            if _ur:
+                rows.append((_fu, _ur["nm"] or "?", bool(_ur["arch"]), decade_statement(db, _fu, period, k)))
+    fcp = {u: sum(x["pay"] for x in v) for u, v in FC.items()}
+    _today_s = _td.strftime("%d.%m")
+    FCC = (176, 112, 20)
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
@@ -9181,7 +9193,6 @@ def build_payroll_decade_pdf(db, period, k):
 
     _MON = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
             "августа", "сентября", "октября", "ноября", "декабря"]
-    a, b = decade_bounds(period, k)
     span = f"{a.day}–{b.day} {_MON[a.month - 1]} {a.year}"
     line("ЗАРПЛАТА · ВСЕ СОТРУДНИКИ · ДЕКАДА", 9, "B", gap=5, col=DIM)
     line(span, 19, "B", gap=9)
@@ -9209,7 +9220,14 @@ def build_payroll_decade_pdf(db, period, k):
     if adj:
         row("Корректировки и переводы", ("+" if adj >= 0 else "−") + _pdf_fmt(abs(adj)), 9.5)
     row("Уже выплачено в этом месяце", "−" + _pdf_fmt(S_(lambda d: d["paid"])), 9.5)
-    row("К ВЫПЛАТЕ ВСЕМ СЕЙЧАС", _pdf_fmt(S_(lambda d: d["due"])), 13, "B", gap=9)
+    if fcp:
+        row("К выплате по отработанным сменам", _pdf_fmt(S_(lambda d: d["due"])), 10.5, "B")
+        row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
+        row("К ВЫПЛАТЕ ВСЕМ · с прогнозом", _pdf_fmt(S_(lambda d: d["due"]) + sum(fcp.values())), 13, "B", gap=9)
+        line("Прогноз = часы по графику, умноженные на ставку (+ ночная надбавка). Фактическая сумма будет после закрытия смен.",
+             8, "", gap=5, col=FCC)
+    else:
+        row("К ВЫПЛАТЕ ВСЕМ СЕЙЧАС", _pdf_fmt(S_(lambda d: d["due"])), 13, "B", gap=9)
     line("«к выплате сейчас» = всё заработанное с начала месяца по " + b.strftime("%d.%m") +
          " минус удержания и уже выданные выплаты", 8, "", gap=5, col=DIM)
     rule(4)
@@ -9217,9 +9235,14 @@ def build_payroll_decade_pdf(db, period, k):
         if pdf.get_y() > pdf.h - 70:
             pdf.add_page()
         d = ds["dec"]
-        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(ds["due"]), 11.5, "B", gap=7.5)
+        _fp = fcp.get(_uid, 0)
+        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(int(ds["due"] or 0) + _fp) + (" *" if _fp else ""),
+            11.5, "B", gap=7.5)
         for x in d["branches"]:
             row(f"   {x['name']} · {x['days']} дн. · {x['hours']:g} ч", _pdf_fmt(x["pay"]), 9.5)
+        for x in FC.get(_uid, []):
+            row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
+                + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
         parts = []
         if d["tips"]:
             parts.append("чаевые +" + _pdf_fmt(d["tips"]))
@@ -9244,12 +9267,79 @@ def build_payroll_decade_pdf(db, period, k):
     return bytes(pdf.output())
 
 
+# ── BUGÜNÜN PLANI · PROGNOZ (owner 2026-10-31) ──────────────────────────
+# Ay sonu maaş bugün dağıtılıyor ama bugünkü (31 Ekim) gündüz/gece vardiyaları henüz
+# çalışılmadı → raporda yok. Açıksa Grafik'teki bugünün vardiyaları saat × ücret
+# (+ gece primi) olarak AYRI satırla eklenir ve «прогноз» diye işaretlenir.
+# Gerçek vardiya kapanınca zaten maaşa girer; prognoz yalnız raporda görünür.
+def payroll_fc_on(db):
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='payroll_fc'").fetchone()
+        return bool(r and str(r["val"]) == "1")
+    except Exception:
+        return False
+
+
+def payroll_forecast(db, period, today=None):
+    """{uid: [{bid, br, s, e, h, pay}]} — bugünün Grafik vardiyaları (henüz kapanmamış).
+    Yalnız bugün bu döneme aitse. Kapanmış vardiyası olan plan atlanır; açık vardiya
+    varsa prognoz gerçek başlangıçtan plan bitişine kadar."""
+    today = today or datetime.now(TZ).replace(tzinfo=None).date()
+    if today.strftime("%Y-%m") != period:
+        return {}
+    out = {}
+    tpls = grid_templates(db)
+    for c in cov_cells(db, today, today, tpls=tpls):
+        uid, s, e, bid = c["uid"], c["s"], c["e"], c["bid"]
+        if not s or not e:
+            continue
+        near = lambda r: abs((datetime.fromisoformat(r["start_time"]) - s).total_seconds()) <= 4 * 3600
+        try:
+            rows = [r for r in db.execute(
+                "SELECT * FROM shifts WHERE user_id=? AND start_time IS NOT NULL AND start_time>=? AND start_time<?",
+                (uid, (s - timedelta(hours=4)).isoformat(), (s + timedelta(hours=4)).isoformat())).fetchall() if near(r)]
+        except Exception:
+            rows = []
+        if any(r["end_time"] for r in rows):
+            continue
+        st = s
+        if rows:
+            try:
+                st = datetime.fromisoformat(rows[0]["start_time"])
+            except Exception:
+                st = s
+        if e <= st:
+            continue
+        try:
+            pw = branch_pay_window(db, bid)
+            h = paid_hours(st, e, pw)
+            rate = int(barista_pay_info(db, uid, branch_id=bid)["rate"])
+            pay = int(h * rate) + int(night_premium(st, e, pw, rate, night_cfg_for(db, uid), paid_h=h)["pay"])
+        except Exception as ex:
+            logger.warning(f"payroll_forecast {uid}: {ex}")
+            continue
+        out.setdefault(uid, []).append({"bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
+                                        "s": st.strftime("%H:%M"), "e": e.strftime("%H:%M"),
+                                        "h": round(h, 2), "pay": pay, "open": 1 if rows else 0})
+    return out
+
+
 def build_payroll_all_pdf(db, period):
     """ZARPLATA · TÜM ÇALIŞANLAR (owner 2026-10-27): şefe tek seferde. Önce şube toplamları
     (her şube ne ödeyecek), sonra her kişi kısa blok: şube kırılımı → kesintiler → К ВЫПЛАТЕ.
     Her rakam calc_summary'den (tek kişilik raporla aynı)."""
     from fpdf import FPDF
     people = payroll_people(db, period)
+    FC = payroll_forecast(db, period) if payroll_fc_on(db) else {}
+    _have = {p[0] for p in people}
+    for _fu in FC:
+        if _fu not in _have:
+            _ur = db.execute("SELECT COALESCE(display_name,name) AS nm, COALESCE(archived,0) AS arch FROM users "
+                             "WHERE user_id=?", (_fu,)).fetchone()
+            if _ur:
+                people.append((_fu, _ur["nm"] or "?", bool(_ur["arch"]), calc_summary(db, _fu, period)))
+    fcp = {u: sum(x["pay"] for x in v) for u, v in FC.items()}
+    _today_s = datetime.now(TZ).strftime("%d.%m")
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_font("nero", "", os.path.join(PDF_FONT_DIR, "NeroSans.ttf"))
@@ -9257,6 +9347,7 @@ def build_payroll_all_pdf(db, period):
     pdf.add_page()
     W = pdf.w - pdf.l_margin - pdf.r_margin
     INK, DIM = (40, 30, 16), (150, 132, 100)
+    FCC = (176, 112, 20)
 
     def line(txt, sz=10, style="", gap=6, col=INK):
         pdf.set_font("nero", style, sz); pdf.set_text_color(*col)
@@ -9308,15 +9399,27 @@ def build_payroll_all_pdf(db, period):
         row("Корректировки и переводы", ("+" if T["adjustments"] >= 0 else "−") + _pdf_fmt(abs(T["adjustments"])), 9.5)
     if T["paid"]:
         row("Уже выплачено", "−" + _pdf_fmt(T["paid"]), 9.5)
-    row("К ВЫПЛАТЕ ВСЕМ", _pdf_fmt(T["net"]), 13, "B", gap=9)
+    if fcp:
+        row("К выплате по отработанным сменам", _pdf_fmt(T["net"]), 10.5, "B")
+        row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
+        row("К ВЫПЛАТЕ ВСЕМ · с прогнозом", _pdf_fmt(T["net"] + sum(fcp.values())), 13, "B", gap=9)
+        line("Прогноз = часы по графику, умноженные на ставку (+ ночная надбавка). Фактическая сумма будет после закрытия смен.",
+             8, "", gap=5, col=FCC)
+    else:
+        row("К ВЫПЛАТЕ ВСЕМ", _pdf_fmt(T["net"]), 13, "B", gap=9)
     rule(4)
     # Kişi blokları
     for _uid, nm, arch, su in people:
         if pdf.get_y() > pdf.h - 70:
             pdf.add_page()
-        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(su.get("net")), 11.5, "B", gap=7.5)
+        _fp = fcp.get(_uid, 0)
+        row(nm + (" (архив)" if arch else ""), "к выплате " + _pdf_fmt(int(su.get("net") or 0) + _fp) + (" *" if _fp else ""),
+            11.5, "B", gap=7.5)
         for b in payroll_branch_split(db, su.get("shifts") or []):
             row(f"   {b['name']} · {b['days']} дн. · {b['hours']:g} ч", _pdf_fmt(b["pay"]), 9.5)
+        for x in FC.get(_uid, []):
+            row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
+                + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
         parts = []
         for k, lbl, sg in (("ot_month", "сверхур. мес.", "+"), ("tips", "чаевые", "+"), ("product_bonus", "товары", "+"),
                            ("fines", "штрафы", "−"), ("adv_ded", "аванс", "−"), ("res_ded", "резерв", "−"),
@@ -9960,6 +10063,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"xfers={quote(json.dumps(xfer_rows(db, user_id, role), ensure_ascii=False))}",
         f"night_cfg={quote(json.dumps(night_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"payday={quote(json.dumps(payday_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
+        f"prfc={1 if (role == 'owner' and payroll_fc_on(db)) else 0}",
         f"f2s={quote(json.dumps(f2s_view(db, user_id) if role == 'owner' else {}, ensure_ascii=False))}",
         f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
         f"ts={ts}",
@@ -17627,6 +17731,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.commit()
             log_action(db, "payday_auto_set", user.id, user.first_name, None, None, {"old": _old, "new": _new})
             context.result = {"ok": True, "cfg": _new}
+
+        elif action == "payroll_fc_set":
+            # Rapora bugünün Grafik vardiyaları (prognoz) eklensin mi — aç/kapa (owner).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            _on = 1 if str(data.get("on")).lower() in ("1", "true") else 0
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('payroll_fc',?)", (str(_on),))
+            db.commit()
+            log_action(db, "payroll_fc_set", user.id, user.first_name, None, None, {"on": _on})
+            _fc = payroll_forecast(db, current_period()) if _on else {}
+            context.result = {"ok": True, "on": _on, "n": sum(len(v) for v in _fc.values()),
+                              "sum": sum(x["pay"] for v in _fc.values() for x in v)}
 
         elif action == "payroll_pdf_all":
             # ZARPLATA · TÜM ÇALIŞANLAR — owner'ın sohbetine tek PDF (şefe iletmek için).
