@@ -41,6 +41,7 @@ check(db.execute("SELECT status FROM advances WHERE id=?", (aid,)).fetchone()[0]
 r = act(1, {'action': 'adv_payoff', 'target': 10})
 check(r and not r.get('ok'), 'ikinci kez kapatılacak borç yok')
 # misafir = çalışan
+db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('gdebt_relink_once', '1')")   # sıfırlama aşağıda ayrıca denenir
 gid = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Дамир',1,'x')").lastrowid
 db.execute("INSERT INTO guest_tx (guest_id,branch_id,kind,amount,at) VALUES (?,1,'debt',450000,'x')", (gid,)); db.commit()
 r = act(1, {'action': 'gdebt_from_salary', 'guest_id': gid, 'amount': 450000})
@@ -75,7 +76,7 @@ r = act(11, {'action': 'gdebt_from_salary', 'guest_id': gid, 'amount': 1})
 check(r and not r.get('ok'), 'başkasının misafir borcunu kapatamaz')
 r = act(10, {'action': 'gdebt_guest_link', 'guest_id': gid, 'uid': 11})
 check(r and not r.get('ok'), 'çalışan bağlamayı değiştiremez')
-# Kendiliğinden bağlama (owner 2026-10-31): ad tek çalışanla eşleşirse Nero ID ile bağlanır
+# Öneri (owner 2026-10-31): ad tek çalışanla eşleşirse Nero SORAR, kendisi bağlamaz
 db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (20,'Suhrob','Suhrob','barista',1,1,1)")
 db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (21,'Ali','Ali A.','barista',1,1,1)")
 db.execute("INSERT OR REPLACE INTO users (user_id,name,display_name,role,branch_id,approved,authorized) VALUES (22,'Ali','Ali B.','barista',1,1,1)")
@@ -84,11 +85,23 @@ g2 = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Али'
 g3 = db.execute("INSERT INTO guests (name,branch_id,created_at) VALUES ('Анвар',1,'x')").lastrowid
 db.commit()
 v = {x["id"]: x for x in bot.gdebt_view(db)["guests"]}
-check(v[g1]["uid"] == 20, '«Сухроб» → Suhrob (ID 20) kendiliğinden bağlandı')
-check(v[g2]["uid"] == 0, 'iki «Ali» varken bağlanmadı')
-check(v[g3]["uid"] == 0, 'eşleşmeyen misafir bağlanmadı')
+check(v[g1]["uid"] == 0 and v[g1]["sug"] == 20 and v[g1]["sn"], '«Сухроб» bağlanmadı, Suhrob (ID 20) ÖNERİLDİ')
+check(v[g2]["sug"] == 0, 'iki «Ali» varken öneri yok')
+check(v[g3]["sug"] == 0, 'eşleşmeyen misafire öneri yok')
+check(v[gid]["uid"] == 10, 'owner\'ın onayladığı bağlantı duruyor')
 act(1, {'action': 'gdebt_guest_link', 'guest_id': g1, 'uid': 0})
+v = {x["id"]: x for x in bot.gdebt_view(db)["guests"]}
+check(v[g1]["uid"] == 0 and v[g1]["sug"] == 0, '«Нет, гость» → bir daha sorulmaz')
+act(1, {'action': 'gdebt_guest_link', 'guest_id': g2, 'uid': 21})
+check({x["id"]: x for x in bot.gdebt_view(db)["guests"]}[g2]["uid"] == 21, '«Да» → bağlandı')
+# Bir kez: eski (otomatik) bağlamalar çözülür, «не сотрудник» kalır
+db.execute("DELETE FROM meta WHERE k='gdebt_relink_once'"); db.commit()
+v = {x["id"]: x for x in bot.gdebt_view(db)["guests"]}
+check(v[g2]["uid"] == 0 and v[gid]["uid"] == 0, 'eski bağlantılar çözüldü')
+check(v[g1]["sug"] == 0 and {x["id"]: x for x in bot.gdebt_view(db)["guests"]}[g2]["uid"] == 0, 'yeniden soruluyor (owner onayına kadar bağsız)')
+check(db.execute("SELECT user_id FROM guests WHERE id=?", (g1,)).fetchone()[0] == 0, '«не сотрудник» korundu')
 bot.gdebt_view(db)
-check(db.execute("SELECT user_id FROM guests WHERE id=?", (g1,)).fetchone()[0] == 0, '«не сотрудник» denince bir daha bağlanmaz')
+act(1, {'action': 'gdebt_guest_link', 'guest_id': gid, 'uid': 10})
+check({x["id"]: x for x in bot.gdebt_view(db)["guests"]}[gid]["uid"] == 10, 'sıfırlama bir kez: yeni onay kalıcı')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)

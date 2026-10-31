@@ -52,7 +52,7 @@ check(len(msgs) == 1 and 'Стакан 200' in msgs[0] and 'Молоко 3,2%' i
 act(10, {'action': 'brx_item_add', 'name': '  Сахар   стики ', 'unit': 'уп'})
 act(10, {'action': 'brx_item_add', 'name': 'сахар стики', 'unit': 'уп'})
 act(10, {'action': 'brx_item_add', 'name': 'Стакан 300', 'unit': 'шт'})
-its = [dict(r) for r in db.execute("SELECT * FROM brx_items WHERE COALESCE(archived,0)=0")]
+its = [dict(r) for r in db.execute("SELECT * FROM brx_items WHERE COALESCE(archived,0)=0 AND COALESCE(by_name,'')!='каталог'")]  # koli tohumu hariç
 check(len(its) == 1 and its[0]['name'] == 'Сахар стики' and its[0]['unit'] == 'уп', 'ürün bir kez kaydedilir (tekrar / bardak eklenmez)')
 pay = bot.build_hash_payload(db, 10, 'Бек')
 check('%D0%A1%D0%B0%D1%85%D0%B0%D1%80' in pay, 'payload kayıtlı ürünleri taşıyor')

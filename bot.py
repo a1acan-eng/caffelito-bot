@@ -1905,10 +1905,12 @@ def _gd_key(name):
     return "".join(ch for ch in w if ch.isalnum())
 
 
-def gdebt_autolink(db):
-    """Misafir adı TEK bir çalışanın adıyla eşleşiyorsa Nero ID ile bağla (owner 2026-10-31:
-    «Damir buranın çalışanı gibi durmuyor»). user_id NULL = bilinmiyor (bağlanabilir);
-    0 = owner «не сотрудник» dedi (dokunulmaz). Birden çok eşleşmede bağlanmaz."""
+def gdebt_suggest(db):
+    """{guest_id: uid} — adı TEK bir çalışanla eşleşen, henüz karar verilmemiş misafirler.
+    Owner 2026-10-31: aynı adda müşteri de var («Akmal m» ≠ çalışan Akmal) → Nero artık
+    KENDİSİ bağlamaz, yalnız sorar; bağlamayı owner «Да / Нет» ile onaylar.
+    user_id NULL = karar yok (sorulur); 0 = «не сотрудник» (bir daha sorulmaz)."""
+    out = {}
     try:
         staff = {}
         for u in db.execute("SELECT user_id, name, display_name FROM users WHERE COALESCE(approved,0)=1 "
@@ -1916,24 +1918,33 @@ def gdebt_autolink(db):
             ks = {_gd_key(u["display_name"]), _gd_key(u["name"])} - {""}
             for k in ks:
                 staff.setdefault(k, set()).add(int(u["user_id"]))
-        n = 0
         for g in db.execute("SELECT id, name FROM guests WHERE user_id IS NULL AND COALESCE(archived,0)=0").fetchall():
             m = staff.get(_gd_key(g["name"]))
             if m and len(m) == 1:
-                db.execute("UPDATE guests SET user_id=? WHERE id=?", (next(iter(m)), int(g["id"])))
-                n += 1
-        if n:
-            db.commit()
-        return n
+                out[int(g["id"])] = next(iter(m))
     except Exception as e:
-        logger.warning(f"gdebt_autolink: {e}")
-        return 0
+        logger.warning(f"gdebt_suggest: {e}")
+    return out
+
+
+def gdebt_relink_once(db):
+    """Bir kez: eski otomatik bağlamalar çözülür, owner her birini yeniden onaylar
+    (owner 2026-10-31: «hepsini bir kez yeniden sorsun»). «не сотрудник» (0) korunur."""
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k='gdebt_relink_once'").fetchone():
+            return
+        db.execute("UPDATE guests SET user_id=NULL WHERE COALESCE(user_id,0)>0")
+        db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('gdebt_relink_once', '1')")
+        db.commit()
+    except Exception as e:
+        logger.warning(f"gdebt_relink_once: {e}")
 
 
 def gdebt_view(db, only_bid=None):
     """Nero: misafirler (bakiyeyle) + son hareketler. only_bid verilirse YALNIZ o
     şubenin misafirleri (owner 2026-10-06: çalışan yalnız atandığı şubeyi görür)."""
-    gdebt_autolink(db)
+    gdebt_relink_once(db)
+    _sug = gdebt_suggest(db)
     bal, fm, ft = {}, {}, {}
     _m0 = datetime.now(TZ).strftime("%Y-%m")
     for r in db.execute("SELECT guest_id, kind, amount, at FROM guest_tx WHERE COALESCE(voided,0)=0").fetchall():
@@ -1949,7 +1960,9 @@ def gdebt_view(db, only_bid=None):
                "fr": 1 if g["free"] else 0, "fm": fm.get(g["id"], 0), "ft": ft.get(g["id"], 0),
                "uid": int(g["user_id"] or 0) if "user_id" in g.keys() else 0,
                "un": (display_name_for(db, int(g["user_id"]), fallback="")
-                      if ("user_id" in g.keys() and g["user_id"]) else "")}
+                      if ("user_id" in g.keys() and g["user_id"]) else ""),
+               "sug": _sug.get(int(g["id"]), 0),
+               "sn": display_name_for(db, _sug[int(g["id"])], fallback="") if int(g["id"]) in _sug else ""}
               for g in db.execute("SELECT * FROM guests WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()
               if not only_bid or int(g["branch_id"] or 0) == int(only_bid)]
     _ids = {g["id"] for g in guests}
@@ -2328,6 +2341,33 @@ def brx_packs(db):
     except Exception:
         pass
     return out
+
+
+# Kolide kaç tane (owner 2026-10-31: «sütte kolide 12 tane, Сливки 11% de aynı»).
+# Katalogdaki «упак, 12 л» adet sayılmıyordu → koli/adet düğmesi hiç çıkmıyordu.
+BRX_PACK_SEED = (("Молоко 3,2%", 12), ("Сливки 11%", 27))
+
+
+def brx_pack_seed(db):
+    """Bir kez: bilinen ürünlerin koli boyutu (owner sonradan ✎ ile değiştirebilir)."""
+    try:
+        if db.execute("SELECT 1 FROM meta WHERE k='brx_pack_seed1'").fetchone():
+            return
+        have = brx_packs(db)
+        for nm, pk in BRX_PACK_SEED:
+            if have.get(nm.lower()):
+                continue
+            r = next((x for x in db.execute("SELECT id, name FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()
+                      if (x["name"] or "").strip().lower() == nm.lower()), None)
+            if r:
+                db.execute("UPDATE brx_items SET pack=? WHERE id=?", (pk, r["id"]))
+            else:
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                           (nm, "шт", "каталог", datetime.now(TZ).isoformat(), pk))
+        db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES ('brx_pack_seed1', '1')")
+        db.commit()
+    except Exception as e:
+        logger.warning(f"brx_pack_seed: {e}")
 
 
 def brx_norm(packs, item, unit, qty):
@@ -10002,6 +10042,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # Между филиалами: çalışan ŞU AN çalıştığı şubeyi görür (şube değiştirince değişir).
             _ob = None if role == "owner" else acting_branch_id(db, user_id)
             # Bakiye SUNUCUDA (tüm geçmişten); ad: ilk görülen yazılış.
+            brx_pack_seed(db)
             _nm = {}
             for _r in db.execute("SELECT item, unit FROM brx_tx WHERE COALESCE(voided,0)=0 ORDER BY id").fetchall():
                 _nm.setdefault(((_r["item"] or "").strip().lower(), _r["unit"] or "шт"), (_r["item"] or "").strip())
