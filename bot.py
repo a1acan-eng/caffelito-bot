@@ -9126,6 +9126,51 @@ def decade_statement(db, uid, period, k):
             "cum": cum, "paid": paid, "pays": pays, "due": cum - paid}
 
 
+def my_decades(db, uid, months=3, today=None):
+    """ÇALIŞANIN 10 GÜNLÜK MAAŞLARI (owner 2026-11-01: «10'u, 20'si, 30'unda alınan ya da
+    alınacak maaşlar geçen aylarda görünmüyor»). Son `months` ay; her ay: dönemler (1–10,
+    11–20, 21–son) → o dönemde kazanılan + o döneme ait ödemeler; ay sonu: net / ödenen / kalan.
+    Ödeme dönemi: ödemenin günü ≤14 → 1, ≤24 → 2, diğerleri (ve sonraki aya taşanlar) → 3."""
+    today = today or _adv_today()
+    out = []
+    y, m = today.year, today.month
+    for i in range(months):
+        mm, yy = m - i, y
+        while mm <= 0:
+            mm += 12; yy -= 1
+        per = f"{yy:04d}-{mm:02d}"
+        rows, last = [], None
+        for k in (1, 2, 3):
+            a, b = decade_bounds(per, k)
+            if a > today:
+                break
+            try:
+                st = decade_statement(db, uid, per, k)
+            except Exception as e:
+                logger.warning(f"my_decades {uid} {per} {k}: {e}")
+                continue
+            last = st
+            d = st["dec"]
+            rows.append({"k": k, "from": st["from"], "to": st["to"], "cur": 1 if a <= today <= b else 0,
+                         "net": int(d["net"]) + int(d.get("rout") or 0), "pays": []})
+        if not rows or last is None:
+            continue
+        for pz in last["pays"]:
+            try:
+                dd = datetime.fromisoformat(str(pz["paid_at"])[:19])
+            except Exception:
+                continue
+            k = 3 if (dd.strftime("%Y-%m") != per or dd.day > 24) else (2 if dd.day > 14 else 1)
+            row = next((r for r in rows if r["k"] == k), rows[-1])
+            row["pays"].append({"d": dd.strftime("%d.%m"), "a": int(pz["amount"] or 0)})
+        has = any(r["net"] or r["pays"] for r in rows) or last["paid"] or last["cum"]
+        if not has:
+            continue
+        out.append({"p": per, "rows": rows, "cum": int(last["cum"]), "paid": int(last["paid"]),
+                    "due": int(last["due"]), "closed": 1 if rows[-1]["k"] == 3 and not rows[-1]["cur"] else 0})
+    return out
+
+
 def payroll_people(db, period):
     """Maaş listesine girenler: onaylı, gözlemci olmayan; arşivdekiler YALNIZ
     o ay vardiyası ya da bakiyesi varsa. Owner o ay çalıştıysa (vardiya/kazanç) girer."""
@@ -10088,6 +10133,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"res={quote(json.dumps(res_self, ensure_ascii=False) if res_self else '')}",
         f"intern={quote(json.dumps(intern_info(db, user_id), ensure_ascii=False) if role != 'owner' else '')}",
         f"mygd={quote(json.dumps(my_gdebt(db, user_id), ensure_ascii=False))}",
+        f"mydec={quote(json.dumps(my_decades(db, user_id), ensure_ascii=False))}",
         f"res_own={quote(json.dumps(res_own, ensure_ascii=False) if res_own else '')}",
         f"kasa_last={quote(json.dumps(kasa_last, ensure_ascii=False))}",
         f"kasa_reports={quote(json.dumps(kasa_reports, ensure_ascii=False))}",
