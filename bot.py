@@ -10661,6 +10661,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
                 "nmode": (None if ("night_mode" not in b.keys() or b["night_mode"] is None) else int(b["night_mode"])),
                 "intern": (lambda _i: (dict(_i, opts=intern_cat_options(db, b["user_id"])) if _i else None))(intern_info(db, b["user_id"])),
+                # Kasadan alınan borç (Долги гостей, Nero ID ile bağlı) kartta da görünsün (owner 2026-11-02).
+                "gd": my_gdebt(db, b["user_id"]),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
