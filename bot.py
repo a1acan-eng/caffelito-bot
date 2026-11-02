@@ -567,7 +567,9 @@ def get_db():
                      ("close_free", "INTEGER"),
                      # owner 2026-10-05: stajyerlik sayacının başlangıcı (YYYY-MM-DD).
                      # NULL = ilk vardiyadan say; owner «заново» deyince bugün olur.
-                     ("intern_from", "TEXT")):
+                     ("intern_from", "TEXT"),
+                     # owner 2026-11-02: stajyerlik bu kişi için kaç gün UZATILDI (kategori gününe eklenir).
+                     ("intern_extra", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -3643,8 +3645,10 @@ def intern_info(db, uid):
         total = int(c["d"] or 0) if c else 0
         if total <= 0:
             return None
-        u = db.execute("SELECT intern_from FROM users WHERE user_id=?", (int(uid),)).fetchone()
+        u = db.execute("SELECT intern_from, COALESCE(intern_extra,0) AS ex FROM users WHERE user_id=?", (int(uid),)).fetchone()
         frm = (u["intern_from"] if u else None) or ""
+        extra = int(u["ex"] or 0) if u else 0
+        total += extra
         q = "SELECT DISTINCT date FROM shifts WHERE user_id=? AND COALESCE(date,'')<>''"
         args = [int(uid)]
         if frm:
@@ -3652,31 +3656,121 @@ def intern_info(db, uid):
             args.append(frm)
         days = sorted(str(r["date"])[:10] for r in db.execute(q, args).fetchall())
         done = len(days)
-        return {"total": total, "done": done, "left": max(0, total - done),
+        return {"total": total, "done": done, "left": max(0, total - done), "extra": extra, "cat_id": cid,
                 "from": frm or (days[0] if days else ""), "fin": 1 if done >= total else 0}
     except Exception as e:
         logger.warning(f"intern_info({uid}): {e}")
         return None
 
 
+# ─── Staj bitti → owner KARAR VERİR (owner 2026-11-02) ───────────────────
+# Otomatik geçiş YOK («ben onay verene kadar geçmesin»). DM'de düğmeler: kategoriler
+# (önce stajyer kategorisinin «следующая категория»sı) + «Продлить 7/15/30 дн.»;
+# başka gün sayısı ve aynı seçenekler uygulamada (карточка → Стажировка).
+INTERN_EXT_OPTS = (7, 15, 30)
+
+
+def intern_cat_options(db, uid=None):
+    """Stajyerin geçebileceği kategoriler: aktif, staj günü olmayan; önerilen başta."""
+    cats = [c for c in get_salary_categories(db, only_active=True) if not int(c.get("intern_days") or 0)]
+    cats.sort(key=lambda c: (int(c.get("hourly_rate") or 0), int(c.get("sort_order") or 0)))
+    nxt = None
+    if uid is not None:
+        try:
+            cid = barista_pay_info(db, int(uid)).get("cat_id")
+            r = db.execute("SELECT next_cat_id FROM salary_categories WHERE id=?", (cid,)).fetchone() if cid else None
+            nxt = int(r["next_cat_id"]) if (r and r["next_cat_id"]) else None
+        except Exception:
+            nxt = None
+    if nxt and any(int(c["id"]) == nxt for c in cats):
+        cats.sort(key=lambda c: 0 if int(c["id"]) == nxt else 1)
+    return [{"id": int(c["id"]), "n": c["name"], "rate": int(c.get("hourly_rate") or 0),
+             "rec": 1 if (nxt and int(c["id"]) == nxt) or (not nxt and i == 0) else 0} for i, c in enumerate(cats)]
+
+
+def intern_promote(db, uid, cid, actor_id, actor_name):
+    """Stajyeri kategoriye geçir (genel atama + şube bazlı STAJYER atamaları kaldırılır).
+    Döner (ok, mesaj). Rezerv ve açık vardiya snapshot'ı salcat_assign ile aynı."""
+    uid, cid = int(uid), int(cid)
+    c = db.execute("SELECT id, name, COALESCE(hourly_rate,0) AS r, COALESCE(intern_days,0) AS d FROM salary_categories "
+                   "WHERE id=? AND COALESCE(active,1)=1", (cid,)).fetchone()
+    if not c or int(c["d"] or 0) > 0:
+        return False, "Категория не найдена."
+    if not db.execute("SELECT 1 FROM users WHERE user_id=?", (uid,)).fetchone():
+        return False, "Сотрудник не найден."
+    try:
+        _was = reserve_eligible(db, uid)
+        if _was:
+            reserve_sync(db, uid)
+    except Exception:
+        _was = True
+    db.execute("UPDATE users SET salary_cat_id=? WHERE user_id=?", (cid, uid))
+    try:
+        db.execute("UPDATE branch_staff SET salary_cat_id=NULL WHERE user_id=? AND salary_cat_id IN "
+                   "(SELECT id FROM salary_categories WHERE COALESCE(intern_days,0)>0)", (uid,))
+    except Exception as e:
+        logger.warning(f"intern_promote branch_staff: {e}")
+    db.commit()
+    try:
+        if not _was and reserve_eligible(db, uid):
+            db.execute("UPDATE users SET reserve_from=? WHERE user_id=?", (_adv_today().isoformat(), uid))
+            db.commit()
+    except Exception as e:
+        logger.warning(f"intern_promote reserve: {e}")
+    nm = display_name_for(db, uid, fallback=f"ID {uid}")
+    log_action(db, "salcat_assign", int(actor_id), actor_name, uid, nm,
+               {"cat_id": cid, "cat": c["name"], "via": "intern_done"})
+    try:
+        refresh_open_shift_snapshot(db, uid)
+    except Exception:
+        pass
+    return True, f"{c['name']} · {fmt_sum(int(c['r']))}/ч"
+
+
+def intern_extend(db, uid, days, actor_id, actor_name):
+    days = int(days)
+    if not 1 <= days <= 365:
+        return False, "Укажите от 1 до 365 дней."
+    db.execute("UPDATE users SET intern_extra=COALESCE(intern_extra,0)+? WHERE user_id=?", (days, int(uid)))
+    db.commit()
+    log_action(db, "intern_extend", int(actor_id), actor_name, int(uid),
+               display_name_for(db, int(uid), fallback=f"ID {uid}"), {"days": days})
+    return True, f"Стажировка продлена на {days} дн."
+
+
+def intern_done_kb(db, uid):
+    rows = []
+    for c in intern_cat_options(db, uid)[:6]:
+        rows.append([InlineKeyboardButton(("⭐ " if c["rec"] else "") + f"{c['n']} · {fmt_sum(c['rate'])}/ч",
+                                          callback_data=f"int_cat:{int(uid)}:{c['id']}")])
+    rows.append([InlineKeyboardButton(f"⏳ +{d} дн.", callback_data=f"int_ext:{int(uid)}:{d}") for d in INTERN_EXT_OPTS])
+    return InlineKeyboardMarkup(rows)
+
+
 async def intern_scan(bot_obj, db):
-    """Süresini dolduran stajyer için owner'a BİR KEZ haber (başlangıç tarihi başına)."""
+    """Süresini dolduran stajyer için owner'a BİR KEZ haber (başlangıç tarihi + toplam gün başına)
+    — kategori/uzatma düğmeleriyle. Owner seçene kadar kategori DEĞİŞMEZ."""
     for u in db.execute("SELECT user_id FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
                         "AND role NOT IN ('owner','observer')").fetchall():
         uid = int(u["user_id"])
         it = intern_info(db, uid)
         if not it or not it["fin"]:
             continue
-        key = f"intern_done_{uid}_{it['from']}"
+        key = f"intern_done_{uid}_{it['from']}_{it['total']}"
         if db.execute("SELECT 1 FROM meta WHERE k=?", (key,)).fetchone():
             continue
         db.execute("INSERT OR REPLACE INTO meta (k, val) VALUES (?, ?)", (key, str(it["done"])))
         db.commit()
         nm = display_name_for(db, uid, fallback=f"ID {uid}")
-        await grid_notify_owners(bot_obj, db,
-            f"🎓 *{nm}* отработал(а) {it['done']} дн. стажировки (из {it['total']}).\n\n"
-            "Сотрудник этого сообщения не видит. Решение — за вами: перевести в другую категорию "
-            "или начать стажировку заново (карточка сотрудника → «Стажировка»).")
+        _txt = (f"🎓 *{md_safe(nm)}* отработал(а) {it['done']} дн. стажировки (из {it['total']}).\n\n"
+                "Выберите новую категорию — ставка изменится сразу (для новых смен). "
+                "Или продлите стажировку. Пока вы не выберете, ничего не меняется.\n"
+                "Другое число дней — в приложении: карточка сотрудника → «Стажировка».")
+        for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+            try:
+                await bot_obj.send_message(_o["user_id"], _txt, parse_mode="Markdown", reply_markup=intern_done_kb(db, uid))
+            except Exception as e:
+                logger.warning(f"intern_scan DM: {e}")
         log_action(db, "intern_done", 0, "system", uid, nm, {"days": it["done"]})
 
 
@@ -10566,7 +10660,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "opoff": 1 if (b["op_fine_off"] if "op_fine_off" in b.keys() else 0) else 0,
                 "cfree": 1 if (b["close_free"] if "close_free" in b.keys() else 0) else 0,
                 "nmode": (None if ("night_mode" not in b.keys() or b["night_mode"] is None) else int(b["night_mode"])),
-                "intern": intern_info(db, b["user_id"]),
+                "intern": (lambda _i: (dict(_i, opts=intern_cat_options(db, b["user_id"])) if _i else None))(intern_info(db, b["user_id"])),
                 "sc": bs["shifts_count"], "fc": bs["fines_count"],
                 "active": bs["active"],
                 "bid": b["branch_id"] or 1,
@@ -12004,6 +12098,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "noop":
+        return
+
+    # ─── Staj bitti: owner kategori seçer ya da uzatır (owner 2026-11-02) ───
+    if data.split(":")[0] in ("int_cat", "int_ext"):
+        db = get_db()
+        if get_role(db, query.from_user.id) != "owner":
+            return
+        try:
+            _k, _u, _v = data.split(":")
+            _u, _v = int(_u), int(_v)
+        except ValueError:
+            return
+        _nm = display_name_for(db, _u, fallback=f"ID {_u}")
+        _it = intern_info(db, _u)
+        if not _it:
+            try: await query.edit_message_text(f"ℹ️ {_nm} уже не на стажировке — решение принято раньше.")
+            except Exception: pass
+            return
+        if _k == "int_cat":
+            _ok, _msg = intern_promote(db, _u, _v, query.from_user.id, query.from_user.first_name)
+            _emp = f"🎉 Стажировка завершена! Ваша новая категория: {_msg}." if _ok else None
+        else:
+            _ok, _msg = intern_extend(db, _u, _v, query.from_user.id, query.from_user.first_name)
+            _emp = f"⏳ Стажировка продлена на {_v} дн." if _ok else None
+        try:
+            await query.edit_message_text((f"✅ {_nm}: " if _ok else "❌ ") + _msg)
+        except Exception:
+            pass
+        if _emp:
+            try: await context.bot.send_message(_u, _emp)
+            except Exception: pass
         return
 
     # ─── KARAR MOTORU: teklif cevabı / owner eskalasyon düğmeleri ───
@@ -18425,6 +18550,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                        display_name_for(db, _tid, fallback=f"ID {_tid}"),
                        {"close": "сам, в любое время" if _on else "как обычно"})
 
+        elif action in ("intern_promote", "intern_extend"):
+            # Owner: staj bitti → kategoriye geçir ya da N gün uzat (uygulamadan, owner 2026-11-02).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+                _val = int(data.get("cat_id") or 0) if action == "intern_promote" else int(data.get("days") or 0)
+            except (TypeError, ValueError):
+                context.result = {"ok": False, "error": "Неверные данные."}
+                return
+            if action == "intern_promote":
+                _ok, _msg = intern_promote(db, _tid, _val, user.id, user.first_name)
+                _emp = f"🎉 Стажировка завершена! Ваша новая категория: {_msg}." if _ok else None
+            else:
+                _ok, _msg = intern_extend(db, _tid, _val, user.id, user.first_name)
+                _emp = f"⏳ Стажировка продлена на {_val} дн." if _ok else None
+            if _emp:
+                try:
+                    await context.bot.send_message(_tid, _emp)
+                except Exception:
+                    pass
+            context.result = {"ok": _ok, "msg": _msg} if _ok else {"ok": False, "error": _msg}
+
         elif action == "intern_restart":
             # Owner: stajyerliği bugünden yeniden başlat (sınavı geçemedi → bir ay daha).
             db = get_db()
@@ -18439,7 +18589,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Сотрудник не найден.")
                 return
             _d = datetime.now(TZ).strftime("%Y-%m-%d")
-            db.execute("UPDATE users SET intern_from=? WHERE user_id=?", (_d, _tid))
+            db.execute("UPDATE users SET intern_from=?, intern_extra=0 WHERE user_id=?", (_d, _tid))
             db.commit()
             log_action(db, "intern_restart", user.id, user.first_name, _tid,
                        display_name_for(db, _tid, fallback=f"ID {_tid}"), {"from": _d})
