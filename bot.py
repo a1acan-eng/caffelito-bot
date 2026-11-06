@@ -5247,6 +5247,38 @@ def ho_void_non_barista(db):
     return n
 
 
+def ho_anchor(db, user_id, start_dt):
+    """Devir penceresi hangi ana göre seçilir: kişinin O GÜNKÜ График planı (±3 sa
+    içindeyse), yoksa geliş anı. Owner 2026-11-06, canlı: Akmal plan 15:30 (akşamcı),
+    14:29'da geldi → 60 dk toleransın 1 dk dışında kaldı, sabah penceresine (07:00–16:30)
+    düştü, 1. barista sanıldı ve 16:30'da «сменщик не пришёл — сверхурочно» başladı."""
+    try:
+        pl, _c = op_scheduled(db, int(user_id), start_dt)
+        if pl and abs((pl - start_dt).total_seconds()) <= 3 * 3600:
+            return pl
+    except Exception:
+        pass
+    return start_dt
+
+
+def ho_row_misplaced(db, cfg, row):
+    """Açık devir satırı kişinin planına göre YANLIŞ pencerede mi (ör. akşamcı için
+    sabah devri)? Öyleyse satır silinmeli — sverхурочно / devir uygulanmaz."""
+    try:
+        sh = db.execute("SELECT user_id, start_time FROM shifts WHERE id=?", (int(row["shift_id"]),)).fetchone()
+        if not sh or not sh["start_time"]:
+            return False
+        st_dt = datetime.fromisoformat(sh["start_time"])
+        anc = ho_anchor(db, int(sh["user_id"]), st_dt)
+        if anc == st_dt:
+            return False
+        st, en, b2 = ho_windows_for_shift(cfg, int(row["branch_id"] or 0), anc)
+        return (not st) or (not b2) or st.isoformat() != str(row["sched_start"])
+    except Exception as e:
+        logger.warning(f"ho_row_misplaced: {e}")
+        return False
+
+
 def ho_get_or_create(db, cfg, sh):
     """1. vardiya icin devir satiri (yoksa acar). Akis kapaliysa / pencere
     yoksa / 2. vardiya penceresi yoksa / vardiya barista vardiyasi DEGILSE
@@ -5268,7 +5300,7 @@ def ho_get_or_create(db, cfg, sh):
     bid = int(sh.get("branch_id") or 0)
     if ho_solo(db, bid, st_dt):
         return None                      # «один за двоих» — devir yok
-    st, en, b2 = ho_windows_for_shift(cfg, bid, st_dt)
+    st, en, b2 = ho_windows_for_shift(cfg, bid, ho_anchor(db, int(sh.get("user_id") or 0), st_dt))
     if not st or not b2:
         return None
     nm = display_name_for(db, int(sh.get("user_id") or 0), fallback="?")
@@ -5688,6 +5720,14 @@ def ho_tick(db, now, cfg=None):
     ho_void_non_barista(db)
     rows = db.execute("SELECT * FROM handover WHERE finalized=0").fetchall()
     for r in rows:
+        if not r["b2_arrived_at"] and ho_row_misplaced(db, cfg, r):
+            # Plana göre bu kişi o pencerenin 1. baristası değil (ör. erken gelen akşamcı):
+            # yanlış devir satırı silinir — sverхурочно başlamaz / sayılmaz.
+            db.execute("DELETE FROM handover WHERE id=?", (int(r["id"]),))
+            db.commit()
+            log_action(db, "ho_row_dropped", 0, "system", int(r["user_id"] or 0), r["user_name"] or "",
+                       {"shift_id": r["shift_id"], "sched_end": r["sched_end"], "extra_from": r["extra_from"]})
+            continue
         try:
             en = datetime.fromisoformat(r["sched_end"])
         except Exception:
@@ -7936,7 +7976,7 @@ def start_shift(db, user_id, custom_start=None, branch_id=None, note=""):
     _ho_overlap = False
     try:
         _hoc = op_cfg(db)
-        _ho_overlap = ho_enabled(_hoc) and ho_is_second_window(_hoc, bid, start_dt)
+        _ho_overlap = ho_enabled(_hoc) and ho_is_second_window(_hoc, bid, ho_anchor(db, user_id, start_dt))
     except Exception:
         _ho_overlap = False
     try:
