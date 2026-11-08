@@ -83,5 +83,20 @@ check('лимит' in asyncio.run(bot.nero_ai_ask(db, 1, "x", client=NS(messages
 # anahtar yoksa kapalı
 os.environ.pop("ANTHROPIC_API_KEY")
 check(not bot.nero_ai_allowed(db, 1), 'anahtar yoksa kapalı')
+class FB:
+    async def send_message(self, *a, **k): return None
+    def __getattr__(self, n):
+        async def f(*a, **k): return None
+        return f
+def act(uid, p):
+    ctx = bot._ShimContext(FB(), {}, uid=uid)
+    asyncio.run(bot.handle_webapp_data(bot._ShimUpdate(FB(), uid, f'U{uid}', None, json.dumps(p)), ctx))
+    return getattr(ctx, 'result', None)
+r = act(1, {'action': 'nero_hist'})
+check(r and r['ok'] and r.get('nokey') == 1, 'anahtarsız: owner ekranı açar (önizleme)')
+r = act(1, {'action': 'nero_ask', 'q': 'x'})
+check(r and r['ok'] is False and 'ANTHROPIC_API_KEY' in r['error'], 'anahtarsız: soru sorunca açıklama')
+r = act(10, {'action': 'nero_hist'})
+check(r and r['ok'] is False, 'barista ekranı açamaz')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
