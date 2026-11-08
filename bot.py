@@ -2645,6 +2645,8 @@ def user_suspended(db, uid, on_date=None):
 
 
 SUSP_MSG = "⛔ Сотрудник заблокирован владельцем — смены назначать и открывать нельзя."
+SUSP_ORDER_MSG = "⛔ Вы заблокированы владельцем — отправлять заказы нельзя."
+SUSP_BLOCKED_ACTIONS = ("order", "schedule_order", "schedule_update")
 
 
 def user_suspend_set(db, uid, on, actor_id, actor_name, from_date=None):
@@ -12932,6 +12934,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # (None ise şubede group_chat_id yok + active_group/GROUP_CHAT_ID de boş demektir.)
         logger.info(f"WEBAPP action={action} uid={user.id} branch={acting_branch_id(db, user.id)} "
                     f"payload_branch={_payload_bid} group_id={group_id}")
+
+        # Engellenen çalışan sipariş de gönderemez (owner 2026-11-09).
+        if action in SUSP_BLOCKED_ACTIONS and get_role(db, user.id) != "owner" and user_suspended(db, user.id):
+            context.result = {"ok": False, "susp": 1, "error": SUSP_ORDER_MSG}
+            try:
+                await update.message.reply_text(SUSP_ORDER_MSG)
+            except Exception:
+                pass
+            return
 
         if action == "order":
             from html import escape as esc_html
