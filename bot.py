@@ -10635,7 +10635,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             if role == "owner":
                 parts.append(f"expv={quote(json.dumps(exp_view(db), ensure_ascii=False))}")
             if role == "owner":
-                parts.append(f"nai={1 if nero_ai_on() else 0}")
+                # Ekran owner'a HEP görünür; anahtar yoksa «bağlı değil» notu çıkar (naik=0).
+                parts.append("nai=1")
+                parts.append(f"naik={1 if nero_ai_on() else 0}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
@@ -18925,8 +18927,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         elif action in ("nero_ask", "nero_reset", "nero_hist"):
             # Nero AI ekranı (uygulama): soru sor / yeni sohbet / geçmiş.
             db = get_db()
-            if not nero_ai_allowed(db, user.id):
+            if get_role(db, user.id) != "owner":
                 context.result = {"ok": False, "error": "Nero AI пока недоступен."}
+                return
+            if not nero_ai_on():
+                if action == "nero_ask":
+                    context.result = {"ok": False, "error": "Nero AI ещё не подключён: нужен ключ ANTHROPIC_API_KEY в настройках Railway."}
+                else:
+                    context.result = {"ok": True, "hist": [], "use": nero_ai_usage(db), "nokey": 1}
                 return
             if action == "nero_reset":
                 nero_ai_reset(user.id)
