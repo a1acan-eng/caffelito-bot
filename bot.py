@@ -12934,6 +12934,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db = get_db()
             upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
             if user_suspended(db, user.id):
+                # Uygulama da sebebi bilsin: eskiden yalnız sohbet mesajı gidiyordu, ekran
+                # «Смена начата» gösterip birkaç saniye sonra geri dönüyordu.
+                context.result = {"ok": False, "susp": 1,
+                                  "error": "⛔ Вы заблокированы владельцем — начать смену нельзя."}
                 await update.message.reply_text("⛔ Вы временно отстранены от смен владельцем. Начать смену нельзя.")
                 return
             existing = get_active_shift(db, user.id)
@@ -15655,6 +15659,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("❌ Выберите сотрудника.")
                 return
             if user_suspended(db, target_id):
+                context.result = {"ok": False, "susp": 1, "error": SUSP_MSG}
                 await update.message.reply_text(SUSP_MSG + " Сначала разблокируйте (График → ячейка сотрудника).")
                 return
             if get_active_shift(db, target_id):
