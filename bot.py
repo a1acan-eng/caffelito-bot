@@ -12,7 +12,7 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     WebAppInfo, BotCommand, BotCommandScopeChat, BotCommandScopeDefault,
     MenuButtonCommands, MenuButtonWebApp, MenuButtonDefault,
-    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, ChatPermissions,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -2693,6 +2693,129 @@ def user_suspend_set(db, uid, on, actor_id, actor_name, from_date=None):
     return moved
 
 
+# ── Engellenen çalışan ve Telegram grupları (owner 2026-11-09: «gruba da giremesin») ──
+# Owner engellerken seçer: «ban» = tüm şube gruplarından çıkar, geri giremez;
+# «mute» = grupta kalır ama yazamaz. Durum meta `susp_grp_{uid}`de:
+# {mode, applied, was:[üye olduğu gruplar], done:[uygulanan], fail:[[grup, sebep]]}.
+# Tarihli blokta uygulama o gün gelince `susp_group_tick` ile yapılır.
+SUSP_GRP_MODES = ("ban", "mute")
+
+
+def susp_group_chats(db):
+    out = []
+    for b in get_branches(db, only_active=False):
+        g = str(b.get("group_chat_id") or "").strip()
+        if g and g not in out:
+            out.append(g)
+    if GROUP_CHAT_ID and str(GROUP_CHAT_ID).strip() not in out:
+        out.append(str(GROUP_CHAT_ID).strip())
+    return out
+
+
+def susp_group_state(db, uid):
+    r = db.execute("SELECT val FROM meta WHERE k=?", (f"susp_grp_{int(uid)}",)).fetchone()
+    try:
+        return json.loads(r["val"]) if r and r["val"] else None
+    except Exception:
+        return None
+
+
+def susp_group_save(db, uid, st):
+    k = f"susp_grp_{int(uid)}"
+    if st is None:
+        db.execute("DELETE FROM meta WHERE k=?", (k,))
+    else:
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, json.dumps(st, ensure_ascii=False)))
+    db.commit()
+
+
+def _chat_title(db, g):
+    for b in get_branches(db, only_active=False):
+        if str(b.get("group_chat_id") or "").strip() == str(g):
+            return b.get("name") or "группа"
+    return "группа"
+
+
+async def susp_group_apply(bot_obj, db, uid):
+    """Blok günü geldiyse kişiyi gruplardan çıkar / sustur. Bir kez yapılır."""
+    uid = int(uid)
+    st = susp_group_state(db, uid)
+    if not st or st.get("applied") or st.get("mode") not in SUSP_GRP_MODES or not user_suspended(db, uid):
+        return st
+    mode, was, done, fail = st["mode"], [], [], []
+    for g in susp_group_chats(db):
+        try:
+            m = await bot_obj.get_chat_member(int(g), uid)
+            status = str(getattr(m, "status", "") or "")
+        except Exception:
+            status = ""
+        if status in ("administrator", "creator"):
+            fail.append([g, "администратор группы — Telegram не даёт ограничить"])
+            continue
+        member = status in ("member", "restricted")
+        if member:
+            was.append(g)
+        try:
+            if mode == "ban":
+                await bot_obj.ban_chat_member(int(g), uid)
+                done.append(g)
+            elif member:
+                await bot_obj.restrict_chat_member(int(g), uid, ChatPermissions.no_permissions())
+                done.append(g)
+        except Exception as e:
+            fail.append([g, str(e)[:150]])
+    st.update(applied=1, was=was, done=done, fail=fail)
+    susp_group_save(db, uid, st)
+    nm = display_name_for(db, uid, fallback=f"ID {uid}")
+    log_action(db, "susp_group", 0, "system", uid, nm, {"mode": mode, "done": len(done), "fail": len(fail)})
+    if fail:
+        txt = (f"⚠️ {nm}: не удалось {'удалить из группы' if mode == 'ban' else 'запретить писать в группе'}:\n"
+               + "\n".join(f"• {_chat_title(db, g)} — {why}" for g, why in fail)
+               + "\n\nПроверьте, что бот — администратор группы с правом «Блокировка пользователей».")
+        for _o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+            try:
+                await bot_obj.send_message(int(_o["user_id"]), txt)
+            except Exception:
+                pass
+    return st
+
+
+async def susp_group_lift(bot_obj, db, uid):
+    """Blok kalktı: yasağı / susturmayı geri al. Ban'de üye olduğu gruplar için
+    tek kullanımlık davet linkleri döner (kişiye özelden gönderilir)."""
+    uid = int(uid)
+    st = susp_group_state(db, uid)
+    susp_group_save(db, uid, None)
+    links = []
+    if not st or not st.get("applied"):
+        return links
+    for g in st.get("done") or []:
+        try:
+            if st.get("mode") == "ban":
+                await bot_obj.unban_chat_member(int(g), uid, only_if_banned=True)
+                if g in (st.get("was") or []):
+                    lk = await bot_obj.create_chat_invite_link(
+                        int(g), member_limit=1, expire_date=datetime.now(timezone.utc) + timedelta(days=7),
+                        name=f"Возврат {uid}"[:32])
+                    links.append((_chat_title(db, g), lk.invite_link))
+            else:
+                ch = await bot_obj.get_chat(int(g))
+                await bot_obj.restrict_chat_member(int(g), uid, ch.permissions or ChatPermissions.all_permissions())
+        except Exception as e:
+            logger.warning(f"susp_group_lift {uid} {g}: {e}")
+    return links
+
+
+async def susp_group_tick(bot_obj, db):
+    for r in db.execute("SELECT k FROM meta WHERE k LIKE 'susp_grp_%'").fetchall():
+        try:
+            st = susp_group_state(db, int(r["k"][9:]))
+            if st and not st.get("applied"):
+                await susp_group_apply(bot_obj, db, int(r["k"][9:]))
+        except Exception as e:
+            logger.warning(f"susp_group_tick {r['k']}: {e}")
+
+
 def grid_mark_pending(db, uid, wk, day):
     """Owner bir çalışanın gününü değiştirmeden ÖNCE çağrılır: ilk değeri saklar."""
     try:
@@ -3910,6 +4033,10 @@ async def off7_loop(app):
             await intern_scan(app.bot, get_db())
         except Exception as e:
             logger.warning(f"intern_scan: {e}")
+        try:
+            await susp_group_tick(app.bot, get_db())
+        except Exception as e:
+            logger.warning(f"susp_group_tick: {e}")
         try:
             now = datetime.now(TZ).replace(tzinfo=None)
             if now.weekday() == OFF7_WEEKDAY and now.hour >= OFF7_HOUR:
@@ -18757,14 +18884,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 _from = None
             _n = user_suspend_set(db, _tid, _on, user.id, user.first_name, from_date=_from)
             _fs = (_from or _today).strftime("%d.%m")
+            # Telegram grubu: «ban» (çıkar) / «mute» (yazamasın) / boş (dokunma).
+            _gst, _links = None, []
+            try:
+                if _on:
+                    _gm = str(data.get("grp") or "")
+                    susp_group_save(db, _tid, {"mode": _gm} if _gm in SUSP_GRP_MODES else None)
+                    if _gm in SUSP_GRP_MODES:
+                        _gst = await susp_group_apply(context.bot, db, _tid)
+                else:
+                    _links = await susp_group_lift(context.bot, db, _tid)
+            except Exception as e:
+                logger.warning(f"susp group {_tid}: {e}")
             try:
                 await context.bot.send_message(_tid, (f"⛔ Владелец отстранил вас от смен с {_fs}. Смены с этого дня в графике сняты."
                                                       if (_from and _from > _today) else
                                                       "⛔ Владелец временно отстранил вас от смен. Смены в графике сняты.")
-                                               if _on else "✅ Владелец снял блокировку — вы снова в графике.")
+                                               if _on else "✅ Владелец снял блокировку — вы снова в графике."
+                                               + ("".join(f"\n\nВернуться в группу «{t}»: {u}" for t, u in _links)
+                                                  + ("\n\nСсылки одноразовые, действуют 7 дней." if _links else "")))
             except Exception:
                 pass
-            context.result = {"ok": True, "on": _on, "cells": _n, "from": (_from or _today).isoformat() if _on else None}
+            context.result = {"ok": True, "on": _on, "cells": _n, "from": (_from or _today).isoformat() if _on else None,
+                              "grp": (_gst or {}).get("mode") or "", "gdone": len((_gst or {}).get("done") or []),
+                              "gfail": len((_gst or {}).get("fail") or []), "links": len(_links)}
 
         elif action in ("intern_promote", "intern_extend"):
             # Owner: staj bitti → kategoriye geçir ya da N gün uzat (uygulamadan, owner 2026-11-02).
