@@ -1,3 +1,4 @@
 python-telegram-bot==21.6
 aiohttp==3.10.10
 fpdf2==2.8.8
+anthropic==2.6.0

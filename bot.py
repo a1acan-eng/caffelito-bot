@@ -3,7 +3,7 @@ CAFFELITO TELEGRAM BOT ☕
 Заказ, Задачи, Уборка и ОКК контроль
 """
 
-import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64, tempfile
+import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64, tempfile, time
 from datetime import datetime, timezone, timedelta
 from datetime import date as date_cls
 from urllib.parse import parse_qsl, quote
@@ -10634,6 +10634,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             # «Расходы» — yalnız owner (owner 2026-10-07)
             if role == "owner":
                 parts.append(f"expv={quote(json.dumps(exp_view(db), ensure_ascii=False))}")
+            if role == "owner":
+                parts.append(f"nai={1 if nero_ai_on() else 0}")
         except Exception as e:
             logger.warning(f"gdebt/brx payload: {e}")
     # ── Ekip listesi (HERKESE) — yalnız ad ve şube, PARA YOK ────────────────
@@ -18920,6 +18922,20 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                               "grp": (_gst or {}).get("mode") or "", "gdone": len((_gst or {}).get("done") or []),
                               "gfail": len((_gst or {}).get("fail") or []), "links": len(_links)}
 
+        elif action in ("nero_ask", "nero_reset", "nero_hist"):
+            # Nero AI ekranı (uygulama): soru sor / yeni sohbet / geçmiş.
+            db = get_db()
+            if not nero_ai_allowed(db, user.id):
+                context.result = {"ok": False, "error": "Nero AI пока недоступен."}
+                return
+            if action == "nero_reset":
+                nero_ai_reset(user.id)
+            elif action == "nero_ask":
+                _a = await nero_ai_ask(db, user.id, data.get("q"))
+                context.result = {"ok": True, "a": _a, "hist": nero_ai_history(user.id), "use": nero_ai_usage(db)}
+                return
+            context.result = {"ok": True, "hist": nero_ai_history(user.id), "use": nero_ai_usage(db)}
+
         elif action in ("intern_promote", "intern_extend"):
             # Owner: staj bitti → kategoriye geçir ya da N gün uzat (uygulamadan, owner 2026-11-02).
             db = get_db()
@@ -22957,6 +22973,337 @@ async def start_web_server(app):
     logger.info(f"🌐 Web sunucusu açıldı: 0.0.0.0:{port}")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# NERO AI — konuşan asistan (owner 2026-11-09: «önce ben deneyeyim», ekonomik model).
+# Telegram'da bota düz yazı ya da uygulamada «Nero AI» ekranı. Şimdilik YALNIZ owner.
+# Nero sadece OKUR: veritabanında salt-okunur sorgu + birkaç hazır özet. Hiçbir şeyi
+# değiştirmez. ANTHROPIC_API_KEY yoksa kapalıdır.
+# ══════════════════════════════════════════════════════════════════════════
+NERO_AI_MODEL = os.getenv("NERO_AI_MODEL", "claude-haiku-5-5")
+NERO_AI_DAY_LIMIT = int(os.getenv("NERO_AI_DAY_LIMIT", "150"))   # kişi başı günlük soru sınırı
+NERO_AI_PRICE = (0.10, 0.50)        # $ / 1M token (giriş, çıkış) — Haiku 5.5
+NERO_AI_HIST = {}                   # uid → {"at": ts, "msgs": [(role, text), ...]}
+NERO_AI_LOCKS = {}
+_nero_ai_client = None
+# Nero'nun hiç göremeyeceği tablolar / sütunlar (şifre, cihaz, davet jetonu vb.)
+NERO_AI_DENY_TABLES = {"devices", "invites", "avatars", "api_oids", "meta", "pay_feed", "sent_msgs"}
+NERO_AI_DENY_COLS = {("users", "password"), ("users", "pin")}
+
+NERO_AI_SYSTEM = """Ты — Nero, помощник владельца сети кофеен Caffelito (Ташкент, филиалы C5, Magic и др.).
+Отвечай на языке собеседника (владелец часто пишет по-турецки — тогда отвечай по-турецки; по-русски — по-русски).
+Пиши коротко и по делу, как в мессенджере: без длинных вступлений, без markdown-таблиц; можно короткие списки.
+Деньги — в сумах, с пробелами по тысячам (120 000 сум). Время — Ташкент (UTC+5).
+
+У тебя есть инструменты для чтения данных бота. Ты НИЧЕГО не меняешь — только читаешь.
+Если просят что-то изменить (поставить смену, выплатить, оштрафовать) — объясни, где это сделать в приложении.
+Не выдумывай цифры: если данных нет — так и скажи. Если вопрос неясен — уточни одним вопросом.
+
+Структура базы (SQLite) для sql_query. Время в start_time/end_time/created_at — ISO, местное (+05:00).
+- users(user_id, name, display_name, role[owner|barista|assistant|observer], branch_id, archived, approved, suspended, suspended_from, intern_from)
+  Имя человека: COALESCE(display_name, name).
+- branches(id, name, active, open_hour, close_hour, max_staff)
+- shifts(id, user_id, branch_id, start_time, end_time, hours, drinks, bonus, hourly_pay, total, rate, cat_name, overtime_h, night_h, night_pay, period)
+  Открытая смена: end_time IS NULL (и start_time IS NOT NULL). period — 'YYYY-MM'.
+- cashreports(id, user_id, user_name, branch_id, date, start_time, end_time, bylo, restock, ostalos, sold, cups_total, itogo, click, payme, karta, terminal, cashless, schitano, vyshlo, na_sdachi, kassa, expenses_total, daily_pay, hours, note)
+  Кассовый отчёт смены: itogo — выручка, kassa — наличные в кассе, sold/cups_total — стаканы.
+- fines(id, user_id, amount, reason, type, period, created_at, settled)
+- payments(id, user_id, amount, period, paid_at, kind, note) — выплаты зарплаты/аванса
+- advances(id, user_id, month, amount, status, created_at)
+- adjustments(id, user_id, amount, note, period, created_at) — доплаты/удержания
+- tips(id, user_id, amount, period, created_at)
+- orders(id, user_id, user_name, branch_id, items, created_at) — заказы товаров
+- opening_delays(id, user_id, user_name, branch_id, date, scheduled, actual, delay_min, amount, status) — опоздания к открытию
+- late_notices(id, user_id, user_name, branch_id, date, expected_at, status)
+- dayoff_requests(id, user_id, week_key, day, status, created_at)
+- guests(id, name, branch_id), guest_tx(id, guest_id, kind, amount, at, voided) — долги гостей
+- brx_items(id, name, unit), brx_tx(id, from_bid, to_bid, item, qty, at, voided) — перемещения товара
+- salary_categories(id, name, hourly_rate)
+- logs(id, action, actor_name, target_name, details, created_at) — журнал действий
+График смен — используй инструмент schedule (он сам переводит коды смен в часы и филиалы).
+Кто сейчас на смене — инструмент now_on_shift."""
+
+NERO_AI_TOOLS = [
+    {"name": "now_on_shift",
+     "description": "Кто сейчас на смене (открытые смены): имя, филиал, с какого времени; плюс кто по графику работает сегодня.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "schedule",
+     "description": "График смен по дням за период (включительно): кто, когда, в каком филиале, выходные. Не больше 31 дня.",
+     "input_schema": {"type": "object", "properties": {
+         "date_from": {"type": "string", "description": "YYYY-MM-DD"},
+         "date_to": {"type": "string", "description": "YYYY-MM-DD"},
+         "branch": {"type": "string", "description": "Название филиала (необязательно)"}},
+         "required": ["date_from", "date_to"], "additionalProperties": False}},
+    {"name": "sql_query",
+     "description": "Один SELECT-запрос (SQLite) к базе бота, только чтение. Возвращает до 200 строк. "
+                    "Структура таблиц описана в системной подсказке.",
+     "input_schema": {"type": "object", "properties": {"sql": {"type": "string"}},
+                      "required": ["sql"], "additionalProperties": False}},
+]
+
+
+def nero_ai_on():
+    return bool(os.getenv("ANTHROPIC_API_KEY"))
+
+
+def nero_ai_allowed(db, uid):
+    """Deneme: yalnız owner (sonra çalışanlara açılabilir)."""
+    try:
+        return nero_ai_on() and get_role(db, int(uid)) == "owner"
+    except Exception:
+        return False
+
+
+def _nero_ai_authorizer(action, arg1, arg2, dbname, source):
+    if action == sqlite3.SQLITE_READ:
+        if arg1 in NERO_AI_DENY_TABLES:
+            return sqlite3.SQLITE_DENY
+        if (arg1, arg2) in NERO_AI_DENY_COLS:
+            return sqlite3.SQLITE_IGNORE    # sütun NULL okunur (SELECT * yine çalışır)
+        return sqlite3.SQLITE_OK
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE):
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def nero_ai_sql(sql):
+    q = str(sql or "").strip().rstrip(";").strip()
+    if not q or ";" in q or not q.lower().startswith(("select", "with")):
+        return "Ошибка: разрешён только один запрос SELECT."
+    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+    try:
+        con.set_authorizer(_nero_ai_authorizer)
+        steps = [0]
+        def _guard():
+            steps[0] += 1
+            return 1 if steps[0] > 4000 else 0   # ~4 млн VM-шагов → прерывание
+        con.set_progress_handler(_guard, 1000)
+        cur = con.execute(q)
+        cols = [d[0] for d in (cur.description or [])]
+        rows = cur.fetchmany(201)
+    except sqlite3.DatabaseError as e:
+        return f"Ошибка SQL: {e}"
+    finally:
+        con.close()
+    more = len(rows) > 200
+    rows = rows[:200]
+    def _c(v):
+        s = "" if v is None else str(v)
+        return s if len(s) <= 300 else s[:300] + "…"
+    out = [" | ".join(cols)] + [" | ".join(_c(v) for v in r) for r in rows]
+    if more:
+        out.append("… (показаны первые 200 строк)")
+    if not rows:
+        out.append("(нет строк)")
+    return "\n".join(out)
+
+
+def nero_ai_now(db):
+    now = datetime.now(TZ).replace(tzinfo=None)
+    lines = [f"Сейчас {now.strftime('%Y-%m-%d %H:%M')}.", "Открытые смены:"]
+    rows = db.execute("SELECT user_id, branch_id, start_time FROM shifts WHERE end_time IS NULL "
+                      "AND start_time IS NOT NULL ORDER BY start_time").fetchall()
+    for r in rows:
+        b = (get_branch(db, r["branch_id"]) or {}).get("name", "?")
+        lines.append(f"- {display_name_for(db, r['user_id'], fallback='?')} · {b} · с {str(r['start_time'])[:16].replace('T', ' ')}")
+    if not rows:
+        lines.append("- никого")
+    lines.append("По графику сегодня:")
+    lines.append(nero_ai_schedule(db, now.date(), now.date(), None, header=False) or "- нет записей")
+    return "\n".join(lines)
+
+
+def nero_ai_schedule(db, d1, d2, branch=None, header=True):
+    if (d2 - d1).days > 31:
+        d2 = d1 + timedelta(days=31)
+    bid = None
+    if branch:
+        for b in get_branches(db, only_active=False):
+            if str(b.get("name") or "").strip().lower() == str(branch).strip().lower():
+                bid = int(b["id"])
+        if bid is None:
+            return f"Филиал «{branch}» не найден."
+    tpls = grid_templates(db)
+    out = []
+    d = d1
+    WD = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    while d <= d2:
+        wk = (d - timedelta(days=d.weekday())).isoformat()
+        day = []
+        for r in db.execute("SELECT user_id, code FROM shift_grid WHERE week_key=? AND day=?", (wk, d.weekday())).fetchall():
+            code = r["code"] or ""
+            if not code:
+                continue
+            if bid is not None:
+                parts = [c for c in grid_parts(code) if (tpls.get(c) or {}).get("branch_id") and int(tpls[c]["branch_id"]) == bid]
+                if not parts:
+                    continue
+                code = GRID_SEP.join(parts)
+            day.append(f"  {display_name_for(db, r['user_id'], fallback='?')}: {grid_code_text(db, code, tpls)}")
+        out.append(f"{d.isoformat()} ({WD[d.weekday()]}):" + ("\n" + "\n".join(sorted(day)) if day else " —"))
+        d += timedelta(days=1)
+    return "\n".join(out)
+
+
+def nero_ai_run_tool(db, name, inp):
+    try:
+        if name == "now_on_shift":
+            return nero_ai_now(db)
+        if name == "schedule":
+            d1 = datetime.strptime(str(inp.get("date_from"))[:10], "%Y-%m-%d").date()
+            d2 = datetime.strptime(str(inp.get("date_to"))[:10], "%Y-%m-%d").date()
+            if d2 < d1:
+                d1, d2 = d2, d1
+            return nero_ai_schedule(db, d1, d2, inp.get("branch"))
+        if name == "sql_query":
+            return nero_ai_sql(inp.get("sql"))
+        return f"Неизвестный инструмент {name}"
+    except Exception as e:
+        return f"Ошибка: {e}"
+
+
+def nero_ai_usage_add(db, inp_t, out_t):
+    k = "nero_ai_usage_" + datetime.now(TZ).strftime("%Y-%m")
+    r = db.execute("SELECT val FROM meta WHERE k=?", (k,)).fetchone()
+    try:
+        u = json.loads(r["val"]) if r and r["val"] else {}
+    except Exception:
+        u = {}
+    u["in"] = int(u.get("in", 0)) + int(inp_t or 0)
+    u["out"] = int(u.get("out", 0)) + int(out_t or 0)
+    u["n"] = int(u.get("n", 0)) + 1
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (k, json.dumps(u)))
+    db.commit()
+    return u
+
+
+def nero_ai_usage(db):
+    k = "nero_ai_usage_" + datetime.now(TZ).strftime("%Y-%m")
+    r = db.execute("SELECT val FROM meta WHERE k=?", (k,)).fetchone()
+    try:
+        u = json.loads(r["val"]) if r and r["val"] else {}
+    except Exception:
+        u = {}
+    cost = int(u.get("in", 0)) / 1e6 * NERO_AI_PRICE[0] + int(u.get("out", 0)) / 1e6 * NERO_AI_PRICE[1]
+    return {"n": int(u.get("n", 0)), "usd": round(cost, 4)}
+
+
+def _nero_ai_day_count(db, uid):
+    k = f"nero_ai_day_{int(uid)}_" + datetime.now(TZ).strftime("%Y-%m-%d")
+    r = db.execute("SELECT val FROM meta WHERE k=?", (k,)).fetchone()
+    n = int(r["val"]) if r and str(r["val"] or "").isdigit() else 0
+    return k, n
+
+
+def nero_ai_reset(uid):
+    NERO_AI_HIST.pop(int(uid), None)
+
+
+def nero_ai_history(uid):
+    h = NERO_AI_HIST.get(int(uid))
+    if not h or time.time() - h["at"] > 3 * 3600:
+        return []
+    return [{"r": r, "t": t} for r, t in h["msgs"]]
+
+
+async def nero_ai_ask(db, uid, text, client=None):
+    """Bir soru → cevap metni. Geçmiş: son 10 tur (yalnız metin), 3 saat sessizlikte sıfırlanır."""
+    global _nero_ai_client
+    uid = int(uid)
+    text = str(text or "").strip()[:2000]
+    if not text:
+        return "Напишите вопрос."
+    if not nero_ai_allowed(db, uid):
+        return "Nero AI пока недоступен."
+    dk, dn = _nero_ai_day_count(db, uid)
+    if dn >= NERO_AI_DAY_LIMIT:
+        return f"На сегодня лимит вопросов ({NERO_AI_DAY_LIMIT}) исчерпан. Завтра снова можно."
+    lock = NERO_AI_LOCKS.setdefault(uid, asyncio.Lock())
+    async with lock:
+        if client is None:
+            if _nero_ai_client is None:
+                import anthropic
+                _nero_ai_client = anthropic.AsyncAnthropic(max_retries=2, timeout=90.0)
+            client = _nero_ai_client
+        h = NERO_AI_HIST.get(uid)
+        if not h or time.time() - h["at"] > 3 * 3600:
+            h = {"at": time.time(), "msgs": []}
+        msgs = [{"role": r, "content": t} for r, t in h["msgs"][-20:]]
+        now = datetime.now(TZ)
+        WD = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        msgs.append({"role": "user", "content": f"[{now.strftime('%Y-%m-%d %H:%M')}, {WD[now.weekday()]}]\n{text}"})
+        answer, tin, tout = "", 0, 0
+        try:
+            for _step in range(8):
+                resp = await client.messages.create(
+                    model=NERO_AI_MODEL, max_tokens=4000,
+                    output_config={"effort": "low"},
+                    system=[{"type": "text", "text": NERO_AI_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                    tools=NERO_AI_TOOLS, messages=msgs)
+                u = getattr(resp, "usage", None)
+                if u is not None:
+                    tin += int(getattr(u, "input_tokens", 0) or 0) + int(getattr(u, "cache_read_input_tokens", 0) or 0) \
+                        + int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+                    tout += int(getattr(u, "output_tokens", 0) or 0)
+                if resp.stop_reason == "refusal":
+                    answer = "Не могу ответить на этот вопрос."
+                    break
+                msgs.append({"role": "assistant", "content": resp.content})
+                calls = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
+                if resp.stop_reason == "tool_use" and calls:
+                    results = []
+                    for b in calls:
+                        res = nero_ai_run_tool(db, b.name, b.input or {})   # kısa, salt-okunur sorgular
+                        results.append({"type": "tool_result", "tool_use_id": b.id, "content": res[:20000]})
+                    msgs.append({"role": "user", "content": results})
+                    continue
+                answer = "\n".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+                break
+            else:
+                answer = "Не успел разобраться — сформулируйте вопрос проще."
+        except Exception as e:
+            logger.warning(f"nero_ai: {e}")
+            return "⚠️ Nero AI сейчас недоступен. Попробуйте позже."
+        finally:
+            if tin or tout:
+                try:
+                    nero_ai_usage_add(db, tin, tout)
+                except Exception:
+                    pass
+        answer = answer or "…"
+        h["msgs"] = (h["msgs"] + [("user", text), ("assistant", answer)])[-20:]
+        h["at"] = time.time()
+        NERO_AI_HIST[uid] = h
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (dk, str(dn + 1)))
+        db.commit()
+        return answer
+
+
+async def nero_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Telegram: bota özelden düz yazı → Nero AI (yalnız izinli kişiler; diğerleri eskisi gibi yok sayılır)."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user or not msg.text:
+        return
+    db = get_db()
+    if not nero_ai_allowed(db, user.id):
+        return
+    try:
+        await context.bot.send_chat_action(msg.chat_id, "typing")
+    except Exception:
+        pass
+    ans = await nero_ai_ask(db, user.id, msg.text)
+    for i in range(0, len(ans), 3900):
+        await msg.reply_text(ans[i:i + 3900])
+
+
+async def cmd_nero(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = get_db()
+    if not nero_ai_allowed(db, update.effective_user.id):
+        return
+    nero_ai_reset(update.effective_user.id)
+    await update.message.reply_text("🤖 Nero AI: новый разговор. Спрашивайте — смены, кассы, график, штрафы…")
+
+
 def main():
     # NeroBot: ExtBot'un kendisi + gruba giden mesaj kaydi (duzeltilebilsin).
     # Istek havuzlari ApplicationBuilder varsayilanlariyla AYNI: bot 256,
@@ -23000,6 +23347,9 @@ def main():
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
+    app.add_handler(CommandHandler("nero", cmd_nero))
+    # Nero AI: özelden düz yazı (komut değil). İzinsiz kişiler için hiçbir şey değişmez.
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, nero_ai_message))
     # Click/Payme yakalama İPTAL edildi (notifier'lar bot, grup bot-to-bot engeli, admin gerekiyor).
     # Handler'lar kayıt edilmiyor → capture/paydebug/my_chat_member çalışmaz.
     print("☕ Caffelito Bot запущен!")
