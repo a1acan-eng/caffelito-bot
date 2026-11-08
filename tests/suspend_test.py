@@ -45,6 +45,11 @@ check(r and r.get('ok') is False and r.get('susp') == 1 and r.get('error'), 'uyg
 r = act(1, {'action': 'force_start_shift', 'target': 10, 'branch_id': 1})
 check(bot.get_active_shift(db, 10) is None, 'owner da başlatamaz')
 check(r and r.get('ok') is False and r.get('susp') == 1, 'owner\'a da red sebebi döner')
+r = act(10, {'action': 'order', 'items': {'milk': 1}, 'branch_id': 1, 'c': 1, 'g': ['Молоко|Молоко 3,2%:1']})
+check(r and r.get('ok') is False and r.get('susp') == 1, 'engelli sipariş gönderemez')
+r = act(10, {'action': 'schedule_order', 'items': {'milk': 1}, 'at': '2099-01-01T10:00'})
+check(r and r.get('ok') is False and r.get('susp') == 1, 'engelli planlı sipariş de veremez')
+check(not any('Заказ' in (t or '') and c != 10 for c, t in sent[-3:]), 'gruba sipariş gitmedi')
 check(bot.cov_user(db, 10)['arch'] == 1, 'yedek aramaya girmez')
 pl = bot.build_hash_payload(db, 1, 'Owner')
 from urllib.parse import unquote
