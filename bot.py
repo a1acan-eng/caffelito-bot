@@ -569,7 +569,10 @@ def get_db():
                      # NULL = ilk vardiyadan say; owner «заново» deyince bugün olur.
                      ("intern_from", "TEXT"),
                      # owner 2026-11-02: stajyerlik bu kişi için kaç gün UZATILDI (kategori gününe eklenir).
-                     ("intern_extra", "INTEGER")):
+                     ("intern_extra", "INTEGER"),
+                     # owner 2026-11-08: çalışan ASKIDA — hiçbir gün çalışamaz (vardiya açamaz,
+                     # Grafik'e atanamaz, yedek aramaya girmez). Owner tekrar basınca açılır.
+                     ("suspended", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -2609,6 +2612,59 @@ def grid_pick(code, tpls, when_dt=None):
     return min(ps, key=_dist)
 
 
+def user_suspended(db, uid):
+    try:
+        r = db.execute("SELECT COALESCE(suspended,0) AS s FROM users WHERE user_id=?", (int(uid),)).fetchone()
+        return bool(r and int(r["s"] or 0))
+    except Exception:
+        return False
+
+
+SUSP_MSG = "⛔ Сотрудник заблокирован владельцем — смены назначать и открывать нельзя."
+
+
+def user_suspend_set(db, uid, on, actor_id, actor_name):
+    """Askıya al / aç. Askıya alınca BUGÜNDEN itibaren Grafik hücreleri saklanıp silinir
+    (meta susp_cells_{uid}); açılınca hâlâ boş olan gelecek hücreler geri yazılır."""
+    uid = int(uid)
+    today = datetime.now(TZ).replace(tzinfo=None).date()
+    key = f"susp_cells_{uid}"
+    moved = 0
+    if on:
+        cells = []
+        for r in db.execute("SELECT week_key, day, code FROM shift_grid WHERE user_id=? AND week_key>=?",
+                            (uid, (today - timedelta(days=6)).isoformat())).fetchall():
+            d = grid_day_date(r["week_key"], r["day"])
+            if d and d >= today and (r["code"] or "") not in ("", "off", "sick"):
+                cells.append([r["week_key"], int(r["day"]), r["code"]])
+        for wk, dy, _c in cells:
+            db.execute("DELETE FROM shift_grid WHERE week_key=? AND day=? AND user_id=?", (wk, dy, uid))
+        if cells:
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (key, json.dumps(cells)))
+        moved = len(cells)
+        db.execute("UPDATE users SET suspended=1 WHERE user_id=?", (uid,))
+    else:
+        db.execute("UPDATE users SET suspended=0 WHERE user_id=?", (uid,))
+        r = db.execute("SELECT val FROM meta WHERE k=?", (key,)).fetchone()
+        try:
+            cells = json.loads(r["val"]) if r and r["val"] else []
+        except Exception:
+            cells = []
+        for wk, dy, code in cells:
+            d = grid_day_date(wk, dy)
+            if d and d >= today and not db.execute("SELECT 1 FROM shift_grid WHERE week_key=? AND day=? AND user_id=?",
+                                                   (wk, int(dy), uid)).fetchone():
+                db.execute("INSERT INTO shift_grid (week_key, day, user_id, code, updated_by, updated_by_name, updated_at) "
+                           "VALUES (?,?,?,?,?,?,?)", (wk, int(dy), uid, code, int(actor_id), actor_name,
+                                                      datetime.now(TZ).isoformat()))
+                moved += 1
+        db.execute("DELETE FROM meta WHERE k=?", (key,))
+    db.commit()
+    log_action(db, "user_suspend", int(actor_id), actor_name, uid, display_name_for(db, uid, fallback=f"ID {uid}"),
+               {"on": 1 if on else 0, "cells": moved})
+    return moved
+
+
 def grid_mark_pending(db, uid, wk, day):
     """Owner bir çalışanın gününü değiştirmeden ÖNCE çağrılır: ilk değeri saklar."""
     try:
@@ -2687,6 +2743,8 @@ def grid_check(db, week_key, day, user_id, code, tpls=None):
     if code == "off":
         return True, ""
     tpls = tpls if tpls is not None else grid_templates(db)
+    if user_suspended(db, user_id):
+        return False, SUSP_MSG
     if GRID_SEP in code:
         ps = grid_parts(code)
         if len(ps) != 2 or len(set(ps)) != 2 or any(c in ("off", "sick") for c in ps):
@@ -2912,7 +2970,7 @@ def cov_user(db, uid):
     ex = r["cov_extra"] if r["cov_extra"] in COV_EXTRA else "own"
     wk = r["cov_work"] if r["cov_work"] in COV_WORK else "normal"
     return {"uid": int(r["user_id"]), "role": r["role"] or "barista", "bid": int(r["bid"] or 1),
-            "arch": int(r["arch"]), "appr": int(r["appr"]), "extra": ex, "work": wk,
+            "arch": int(r["arch"]) or (1 if user_suspended(db, int(r["user_id"])) else 0), "appr": int(r["appr"]), "extra": ex, "work": wk,
             "barista_ok": r["cov_barista_ok"], "nm": display_name_for(db, int(r["user_id"]), fallback="?")}
 
 
@@ -10427,9 +10485,9 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _roster = [
             {"id": _r["user_id"],
              "n": (_r["display_name"] or _r["name"] or ("ID " + str(_r["user_id"]))),
-             "bid": int(_r["branch_id"] or 1)}
+             "bid": int(_r["branch_id"] or 1), "sp": int(_r["sp"] or 0)}
             for _r in db.execute(
-                "SELECT user_id, name, display_name, COALESCE(branch_id,1) AS branch_id "
+                "SELECT user_id, name, display_name, COALESCE(branch_id,1) AS branch_id, COALESCE(suspended,0) AS sp "
                 "FROM users WHERE COALESCE(approved,0)=1 AND COALESCE(archived,0)=0 "
                 "ORDER BY COALESCE(display_name,name)").fetchall()]
     except Exception as e:
@@ -12843,6 +12901,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Vardiya başlat (geliş zamanını kaydet)
             db = get_db()
             upsert_user(db, user.id, user.first_name, user.username, update.effective_chat.id)
+            if user_suspended(db, user.id):
+                await update.message.reply_text("⛔ Вы временно отстранены от смен владельцем. Начать смену нельзя.")
+                return
             existing = get_active_shift(db, user.id)
             if existing:
                 start_dt = datetime.fromisoformat(existing["start_time"])
@@ -15560,6 +15621,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 target_id = 0
             if not target_id:
                 await update.message.reply_text("❌ Выберите сотрудника.")
+                return
+            if user_suspended(db, target_id):
+                await update.message.reply_text(SUSP_MSG + " Сначала разблокируйте (График → ячейка сотрудника).")
                 return
             if get_active_shift(db, target_id):
                 await update.message.reply_text("ℹ️ У сотрудника уже есть открытая смена.")
@@ -18591,6 +18655,29 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "close_free_set", user.id, user.first_name, _tid,
                        display_name_for(db, _tid, fallback=f"ID {_tid}"),
                        {"close": "сам, в любое время" if _on else "как обычно"})
+
+        elif action == "user_suspend":
+            # Owner: çalışanı askıya al / aç (owner 2026-11-08: «tamamen bloke, tüm günler»).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except (TypeError, ValueError):
+                _tid = 0
+            _tr = db.execute("SELECT role FROM users WHERE user_id=?", (_tid,)).fetchone() if _tid else None
+            if not _tr or (_tr["role"] or "") == "owner":
+                context.result = {"ok": False, "error": "Сотрудник не найден."}
+                return
+            _on = 1 if str(data.get("on")).lower() in ("1", "true") else 0
+            _n = user_suspend_set(db, _tid, _on, user.id, user.first_name)
+            try:
+                await context.bot.send_message(_tid, "⛔ Владелец временно отстранил вас от смен. Смены в графике сняты."
+                                               if _on else "✅ Владелец снял блокировку — вы снова в графике.")
+            except Exception:
+                pass
+            context.result = {"ok": True, "on": _on, "cells": _n}
 
         elif action in ("intern_promote", "intern_extend"):
             # Owner: staj bitti → kategoriye geçir ya da N gün uzat (uygulamadan, owner 2026-11-02).
