@@ -17250,7 +17250,14 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     if _crr:
                         # Kayıttan kurulan metin = düzeltmede yeniden kurulacak metin.
                         t = cash_report_group_text(db, _crr)
-                    _gm_cr = await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                    try:
+                        _gm_cr = await context.bot.send_message(chat_id=int(group_id), text=t, parse_mode="HTML")
+                    except Exception as _e_html:
+                        # HTML reddedildiyse (bozuk etiket vb.) rapor YİNE gitsin — sade metin.
+                        logger.warning(f"KASA report HTML rejected, plain retry: {_e_html}")
+                        _gm_cr = await context.bot.send_message(chat_id=int(group_id), text=re.sub(r"<[^>]+>", "", t)
+                            .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+                            .replace("&#x27;", "'").replace("&amp;", "&"))
                     if _crr:
                         sent_msg_tag(db, _gm_cr, "cash_report", int(_crr["id"]))
                 except Exception as e:
@@ -18655,6 +18662,37 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "close_free_set", user.id, user.first_name, _tid,
                        display_name_for(db, _tid, fallback=f"ID {_tid}"),
                        {"close": "сам, в любое время" if _on else "как обычно"})
+
+        elif action == "cash_report_resend":
+            # Owner: kasa raporunu gruba (yeniden) gönder. Grupta mesajı varsa onu günceller,
+            # yoksa yeni mesaj atar (owner 2026-11-09).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                _rid = int(data.get("id") or 0)
+            except (TypeError, ValueError):
+                _rid = 0
+            if not _rid or not db.execute("SELECT 1 FROM cashreports WHERE id=?", (_rid,)).fetchone():
+                context.result = {"ok": False, "error": "Отчёт не найден."}
+                return
+            _n = 0
+            try:
+                _n = await gmsg_sync_cash_report(context.bot, db, _rid)
+            except Exception as _e:
+                logger.warning(f"cash_report_resend sync {_rid}: {_e}")
+            _new = None
+            if not _n:
+                try:
+                    _new = await cash_report_post(context.bot, db, _rid)
+                except Exception as _e:
+                    logger.warning(f"cash_report_resend post {_rid}: {_e}")
+            if not _n and _new is None:
+                context.result = {"ok": False, "error": "Не удалось отправить: у филиала нет группы или Telegram отказал."}
+                return
+            log_action(db, "cash_report_resend", user.id, user.first_name, None, "", {"report_id": _rid, "updated": _n})
+            context.result = {"ok": True, "mode": "updated" if _n else "sent"}
 
         elif action == "user_suspend":
             # Owner: çalışanı askıya al / aç (owner 2026-11-08: «tamamen bloke, tüm günler»).
@@ -22207,6 +22245,33 @@ def cash_report_group_text(db, rep):
             _ea = ""
         t += f"\n✏️ <i>исправлено владельцем {_ea}</i>"
     return t
+
+
+async def cash_report_post(bot, db, rid):
+    """Kasa raporunu şubenin grubuna YENİ mesaj olarak gönder (owner 2026-11-09: grupta
+    yalnız «закрыл(а) смену» vardı, bardak dökümü yoktu). HTML reddedilirse sade metin.
+    Döner: gönderilen Message ya da None."""
+    rep = db.execute("SELECT * FROM cashreports WHERE id=?", (int(rid),)).fetchone()
+    if not rep:
+        return None
+    gid = branch_group_id(db, rep["branch_id"]) if rep["branch_id"] else None
+    if not gid:
+        try:
+            gid = resolve_group_id(db, int(rep["user_id"] or 0), None, branch_id=rep["branch_id"])
+        except Exception:
+            gid = None
+    if not gid:
+        return None
+    html = cash_report_group_text(db, rep)
+    try:
+        m = await bot.send_message(chat_id=int(gid), text=html, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"cash_report_post {rid} HTML: {e}")
+        plain = re.sub(r"<[^>]+>", "", html).replace("&lt;", "<").replace("&gt;", ">").replace(
+            "&quot;", '"').replace("&#x27;", "'").replace("&amp;", "&")
+        m = await bot.send_message(chat_id=int(gid), text=plain)
+    sent_msg_tag(db, m, "cash_report", int(rid))
+    return m
 
 
 async def gmsg_sync_cash_report(bot, db, rid):
