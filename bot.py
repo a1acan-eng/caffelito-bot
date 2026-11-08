@@ -5,6 +5,7 @@ CAFFELITO TELEGRAM BOT ☕
 
 import json, os, logging, sqlite3, hmac, hashlib, asyncio, re, io, base64, tempfile
 from datetime import datetime, timezone, timedelta
+from datetime import date as date_cls
 from urllib.parse import parse_qsl, quote
 from aiohttp import web  # Yol B: Mini App'i + API'yi sunan HTTP sunucusu
 from telegram import (
@@ -352,6 +353,10 @@ def get_db():
     # Telegram'da duzenleme yapilamaz; `NeroBot.send_message` her grup mesajini
     # buraya yazar. `ents`: kalin/italik parcalar (duzeltmede korunur), `kb`:
     # satir ici dugmeler (duzeltmede SILINMESIN diye geri gonderilir).
+    # Giden kutusu tekrarları (owner 2026-11-09): istemci önemli eylemi sunucu cevap verene
+    # kadar yeniden yollar; aynı `_oid` ikinci kez İŞLENMEZ (çift kapanış / çift rapor yok).
+    db.execute("""CREATE TABLE IF NOT EXISTS api_oids (oid TEXT PRIMARY KEY, uid INTEGER, action TEXT, at TEXT,
+        st TEXT DEFAULT 'done')""")
     db.execute("""CREATE TABLE IF NOT EXISTS sent_msgs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER, message_id INTEGER, text TEXT, ents TEXT, kb TEXT,
@@ -572,7 +577,9 @@ def get_db():
                      ("intern_extra", "INTEGER"),
                      # owner 2026-11-08: çalışan ASKIDA — hiçbir gün çalışamaz (vardiya açamaz,
                      # Grafik'e atanamaz, yedek aramaya girmez). Owner tekrar basınca açılır.
-                     ("suspended", "INTEGER")):
+                     ("suspended", "INTEGER"),
+                     # owner 2026-11-09: blok HANGİ GÜNDEN geçerli (YYYY-MM-DD); NULL = hemen.
+                     ("suspended_from", "TEXT")):
         try:
             db.execute(f"ALTER TABLE users ADD COLUMN {_rc} {_rt}")
         except sqlite3.OperationalError:
@@ -2612,22 +2619,42 @@ def grid_pick(code, tpls, when_dt=None):
     return min(ps, key=_dist)
 
 
-def user_suspended(db, uid):
+def user_suspend_from(db, uid):
+    """Blok başlangıç günü (date) — blok yoksa None; tarihsiz blok = date.min."""
     try:
-        r = db.execute("SELECT COALESCE(suspended,0) AS s FROM users WHERE user_id=?", (int(uid),)).fetchone()
-        return bool(r and int(r["s"] or 0))
+        r = db.execute("SELECT COALESCE(suspended,0) AS s, suspended_from AS f FROM users WHERE user_id=?",
+                       (int(uid),)).fetchone()
+        if not r or not int(r["s"] or 0):
+            return None
+        try:
+            return datetime.strptime(str(r["f"])[:10], "%Y-%m-%d").date() if r["f"] else date_cls.min
+        except Exception:
+            return date_cls.min
     except Exception:
+        return None
+
+
+def user_suspended(db, uid, on_date=None):
+    """Kişi `on_date` günü (varsayılan bugün) bloklu mu. Tarihli blokta önceki günler serbest
+    (owner 2026-11-09: «Suhrob 9'u ve 10'u çalışsın, 11'inden itibaren bloke»)."""
+    f = user_suspend_from(db, uid)
+    if f is None:
         return False
+    d = on_date or datetime.now(TZ).replace(tzinfo=None).date()
+    return d >= f
 
 
 SUSP_MSG = "⛔ Сотрудник заблокирован владельцем — смены назначать и открывать нельзя."
 
 
-def user_suspend_set(db, uid, on, actor_id, actor_name):
-    """Askıya al / aç. Askıya alınca BUGÜNDEN itibaren Grafik hücreleri saklanıp silinir
-    (meta susp_cells_{uid}); açılınca hâlâ boş olan gelecek hücreler geri yazılır."""
+def user_suspend_set(db, uid, on, actor_id, actor_name, from_date=None):
+    """Askıya al / aç. Askıya alınca BLOK GÜNÜNDEN (from_date, yoksa bugün) itibaren Grafik
+    hücreleri saklanıp silinir (meta susp_cells_{uid}); açılınca hâlâ boş olan gelecek
+    hücreler geri yazılır."""
     uid = int(uid)
     today = datetime.now(TZ).replace(tzinfo=None).date()
+    if on and from_date and from_date > today:
+        today = from_date
     key = f"susp_cells_{uid}"
     moved = 0
     if on:
@@ -2642,9 +2669,10 @@ def user_suspend_set(db, uid, on, actor_id, actor_name):
         if cells:
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (key, json.dumps(cells)))
         moved = len(cells)
-        db.execute("UPDATE users SET suspended=1 WHERE user_id=?", (uid,))
+        db.execute("UPDATE users SET suspended=1, suspended_from=? WHERE user_id=?", (today.isoformat(), uid))
     else:
-        db.execute("UPDATE users SET suspended=0 WHERE user_id=?", (uid,))
+        today = datetime.now(TZ).replace(tzinfo=None).date()
+        db.execute("UPDATE users SET suspended=0, suspended_from=NULL WHERE user_id=?", (uid,))
         r = db.execute("SELECT val FROM meta WHERE k=?", (key,)).fetchone()
         try:
             cells = json.loads(r["val"]) if r and r["val"] else []
@@ -2661,7 +2689,7 @@ def user_suspend_set(db, uid, on, actor_id, actor_name):
         db.execute("DELETE FROM meta WHERE k=?", (key,))
     db.commit()
     log_action(db, "user_suspend", int(actor_id), actor_name, uid, display_name_for(db, uid, fallback=f"ID {uid}"),
-               {"on": 1 if on else 0, "cells": moved})
+               {"on": 1 if on else 0, "cells": moved, "from": today.isoformat() if on else None})
     return moved
 
 
@@ -2743,7 +2771,7 @@ def grid_check(db, week_key, day, user_id, code, tpls=None):
     if code == "off":
         return True, ""
     tpls = tpls if tpls is not None else grid_templates(db)
-    if user_suspended(db, user_id):
+    if user_suspended(db, user_id, grid_day_date(week_key, day)):
         return False, SUSP_MSG
     if GRID_SEP in code:
         ps = grid_parts(code)
@@ -2971,6 +2999,7 @@ def cov_user(db, uid):
     wk = r["cov_work"] if r["cov_work"] in COV_WORK else "normal"
     return {"uid": int(r["user_id"]), "role": r["role"] or "barista", "bid": int(r["bid"] or 1),
             "arch": int(r["arch"]) or (1 if user_suspended(db, int(r["user_id"])) else 0), "appr": int(r["appr"]), "extra": ex, "work": wk,
+            "spf": user_suspend_from(db, int(r["user_id"])),
             "barista_ok": r["cov_barista_ok"], "nm": display_name_for(db, int(r["user_id"]), fallback="?")}
 
 
@@ -3198,6 +3227,8 @@ def cov_eval(db, gap, u, cfg=None, tpls=None, exclude=()):
         res["why"] = "уже спрашивали"; return res
     if u["role"] in ("owner", "observer") or u["arch"] or not u["appr"]:
         res["why"] = "не в штате"; return res
+    if u.get("spf") is not None and gap.get("date") and gap["date"] >= u["spf"]:
+        res["why"] = "заблокирован"; return res
     if u["extra"] == "off":
         res["why"] = "доп. смены выключены"; return res
     if gap["need_role"] == "barista" and not cov_can_barista(db, u):
@@ -10485,9 +10516,10 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         _roster = [
             {"id": _r["user_id"],
              "n": (_r["display_name"] or _r["name"] or ("ID " + str(_r["user_id"]))),
-             "bid": int(_r["branch_id"] or 1), "sp": int(_r["sp"] or 0)}
+             "bid": int(_r["branch_id"] or 1), "sp": int(_r["sp"] or 0), "spf": (_r["spf"] or "") if _r["sp"] else ""}
             for _r in db.execute(
-                "SELECT user_id, name, display_name, COALESCE(branch_id,1) AS branch_id, COALESCE(suspended,0) AS sp "
+                "SELECT user_id, name, display_name, COALESCE(branch_id,1) AS branch_id, COALESCE(suspended,0) AS sp, "
+                "suspended_from AS spf "
                 "FROM users WHERE COALESCE(approved,0)=1 AND COALESCE(archived,0)=0 "
                 "ORDER BY COALESCE(display_name,name)").fetchall()]
     except Exception as e:
@@ -18709,13 +18741,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 context.result = {"ok": False, "error": "Сотрудник не найден."}
                 return
             _on = 1 if str(data.get("on")).lower() in ("1", "true") else 0
-            _n = user_suspend_set(db, _tid, _on, user.id, user.first_name)
+            _from = None
             try:
-                await context.bot.send_message(_tid, "⛔ Владелец временно отстранил вас от смен. Смены в графике сняты."
+                if data.get("from"):
+                    _from = datetime.strptime(str(data.get("from"))[:10], "%Y-%m-%d").date()
+            except ValueError:
+                _from = None
+            _today = datetime.now(TZ).replace(tzinfo=None).date()
+            if _from and _from < _today:
+                _from = None
+            _n = user_suspend_set(db, _tid, _on, user.id, user.first_name, from_date=_from)
+            _fs = (_from or _today).strftime("%d.%m")
+            try:
+                await context.bot.send_message(_tid, (f"⛔ Владелец отстранил вас от смен с {_fs}. Смены с этого дня в графике сняты."
+                                                      if (_from and _from > _today) else
+                                                      "⛔ Владелец временно отстранил вас от смен. Смены в графике сняты.")
                                                if _on else "✅ Владелец снял блокировку — вы снова в графике.")
             except Exception:
                 pass
-            context.result = {"ok": True, "on": _on, "cells": _n}
+            context.result = {"ok": True, "on": _on, "cells": _n, "from": (_from or _today).isoformat() if _on else None}
 
         elif action in ("intern_promote", "intern_extend"):
             # Owner: staj bitti → kategoriye geçir ya da N gün uzat (uygulamadan, owner 2026-11-02).
@@ -22612,11 +22656,13 @@ async def api_action(request):
     # olarak gelir; sunucu SIRAYLA işler: önce kapanış, sonra rapor (sıra korunur).
     _report = None
     _act = ""
+    _oid = ""
     _watch_uid = int(user["id"])
     try:
         _dj = json.loads(data_str)
         if isinstance(_dj, dict):
             _act = str(_dj.get("action") or "")
+            _oid = re.sub(r"[^A-Za-z0-9_-]", "", str(_dj.get("_oid") or ""))[:40]
             try:
                 if _act == "shift_end" and _dj.get("as_uid"):
                     _watch_uid = int(_dj.get("as_uid"))
@@ -22629,6 +22675,21 @@ async def api_action(request):
                 data_str = json.dumps(_dj, ensure_ascii=False)
     except Exception:
         _report = None
+    if _oid:
+        try:
+            _db_o = get_db()
+            _ro = _db_o.execute("SELECT st, at FROM api_oids WHERE oid=?", (_oid,)).fetchone()
+            if _ro and (_ro["st"] or "done") == "done":
+                logger.info(f"api_action tekrar atlandı oid={_oid} action={_act} uid={user.get('id')}")
+                return _cors(web.json_response({"ok": True, "dup": True}))
+            if _ro and str(_ro["at"] or "") > (datetime.now(TZ) - timedelta(minutes=2)).isoformat():
+                # İlki hâlâ işleniyor → istemci kutuda tutup sonra yeniden dener.
+                return _cors(web.json_response({"error": "in progress"}, status=503))
+            _db_o.execute("INSERT OR REPLACE INTO api_oids (oid, uid, action, at, st) VALUES (?,?,?,?, 'run')",
+                          (_oid, int(user["id"]), _act, datetime.now(TZ).isoformat()))
+            _db_o.commit()
+        except Exception as e:
+            logger.warning(f"api_oids check: {e}")
     shim_update = _ShimUpdate(
         tg_app.bot, user["id"], user.get("first_name", "Бариста"),
         user.get("username"), data_str)
@@ -22654,6 +22715,17 @@ async def api_action(request):
 
     # İstemci bağlantıyı koparsa bile işlem yarıda kalmasın.
     err = await asyncio.shield(asyncio.ensure_future(_run()))
+    if _oid:
+        try:
+            _db_o = get_db()
+            if err is None:
+                _db_o.execute("UPDATE api_oids SET st='done', at=? WHERE oid=?", (datetime.now(TZ).isoformat(), _oid))
+            else:
+                _db_o.execute("DELETE FROM api_oids WHERE oid=?", (_oid,))   # hata → yeniden deneme işlensin
+            _db_o.execute("DELETE FROM api_oids WHERE at<?", ((datetime.now(TZ) - timedelta(days=7)).isoformat(),))
+            _db_o.commit()
+        except Exception as e:
+            logger.warning(f"api_oids save: {e}")
     if _act == "shift_end":
         try:
             asyncio.ensure_future(cash_report_watch(tg_app.bot, _watch_uid))
