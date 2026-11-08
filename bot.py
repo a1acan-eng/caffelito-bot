@@ -22540,6 +22540,57 @@ async def api_gmsg(request):
         "orig": r["orig_text"] or ""})))
 
 
+CR_WATCH_SEC = 300
+
+
+async def cash_report_watch(bot_obj, uid, delay=None):
+    """GÜVENLİK AĞI (owner 2026-11-09, canlı: Сухроб 01:16 kapattı, kasa raporu sunucuya hiç
+    gelmedi — grupta yalnız «закрыл(а) смену»). Kapanıştan `delay` sn sonra bu vardiyanın
+    kasa raporu yoksa barista + owner'a haber. Asistan / paralel hafif kapanış hariç."""
+    await asyncio.sleep(CR_WATCH_SEC if delay is None else delay)
+    try:
+        db = get_db()
+        sh = db.execute("SELECT * FROM shifts WHERE user_id=? AND end_time IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        (int(uid),)).fetchone()
+        if not sh or not sh["start_time"]:
+            return
+        if "par_light" in sh.keys() and int(sh["par_light"] or 0) == 1:
+            return
+        if (sh["shift_role"] if "shift_role" in sh.keys() else "barista") == "assistant":
+            return
+        pi = barista_pay_info(db, int(uid), branch_id=sh["branch_id"])
+        if int(pi.get("does_kasa", 1) or 0) == 0 or (pi.get("slot_role") or "barista") == "assistant":
+            return
+        if db.execute("SELECT 1 FROM cashreports WHERE user_id=? AND created_at>=?",
+                      (int(uid), str(sh["start_time"])[:19])).fetchone():
+            return
+        key = f"cr_watch_{int(sh['id'])}"
+        if db.execute("SELECT 1 FROM meta WHERE k=?", (key,)).fetchone():
+            return
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?, '1')", (key,))
+        db.commit()
+        nm = display_name_for(db, int(uid), fallback="?")
+        try:
+            _e = datetime.fromisoformat(sh["end_time"]).strftime("%d.%m %H:%M")
+        except Exception:
+            _e = ""
+        try:
+            await bot_obj.send_message(int(uid), "⚠️ Отчёт кассы по закрытой смене не дошёл до Nero "
+                                       "(стаканы и деньги). Напишите владельцу или отправьте фото листа.")
+        except Exception:
+            pass
+        for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+            try:
+                await bot_obj.send_message(int(o["user_id"]),
+                    f"⚠️ {nm} закрыл(а) смену ({_e}), но отчёт кассы не пришёл.\n"
+                    "Отчёт → Смены и кассы → эта смена → «Внести отчёт», затем «Отправить отчёт в группу».")
+            except Exception:
+                pass
+        log_action(db, "cash_report_missing", 0, "system", int(uid), nm, {"shift_id": int(sh["id"])})
+    except Exception as e:
+        logger.warning(f"cash_report_watch {uid}: {e}")
+
+
 async def api_action(request):
     """POST {initData|token, data} → sendData ile aynı işi yapar (sipariş/vardiya vb.).
     Kimlik: initData imzası VEYA imzalı jeton (#t=); sonra handle_webapp_data
@@ -22554,17 +22605,63 @@ async def api_action(request):
     if not data_str:
         return _cors(web.json_response({"error": "no data"}, status=400))
     tg_app = request.app["tg_app"]
+    # KAPANIŞ + KASA RAPORU TEK İSTEKTE (owner 2026-11-09). Eskiden istemci önce shift_end'i,
+    # cevabı gelince cash_report'u ayrı istekle yolluyordu; kişi «Смена закрыта»yı görüp
+    # uygulamayı hemen kapatınca / telefon kilitlenince ikinci istek HİÇ çıkmıyordu (Сухроб
+    # 08.11 01:16: vardiya kapandı, rapor yok). Artık rapor shift_end'in içinde `report`
+    # olarak gelir; sunucu SIRAYLA işler: önce kapanış, sonra rapor (sıra korunur).
+    _report = None
+    _act = ""
+    _watch_uid = int(user["id"])
+    try:
+        _dj = json.loads(data_str)
+        if isinstance(_dj, dict):
+            _act = str(_dj.get("action") or "")
+            try:
+                if _act == "shift_end" and _dj.get("as_uid"):
+                    _watch_uid = int(_dj.get("as_uid"))
+            except (TypeError, ValueError):
+                pass
+            if _act == "shift_end" and isinstance(_dj.get("report"), dict):
+                _report = dict(_dj.pop("report"), action="cash_report")
+                if _dj.get("as_uid") and not _report.get("as_uid"):
+                    _report["as_uid"] = _dj.get("as_uid")
+                data_str = json.dumps(_dj, ensure_ascii=False)
+    except Exception:
+        _report = None
     shim_update = _ShimUpdate(
         tg_app.bot, user["id"], user.get("first_name", "Бариста"),
         user.get("username"), data_str)
     shim_context = _ShimContext(tg_app.bot, tg_app.bot_data, uid=user["id"])
-    try:
-        await handle_webapp_data(shim_update, shim_context)
-    except Exception as e:
-        # TAM traceback — «eylem işlendi ama grup mesajı gitmedi» gibi sessiz hataların
-        # gerçek istisnası görünsün. İstemci sessizce başarılı sanmasın diye 500.
-        logger.exception(f"api_action handle_webapp_data FAILED uid={user.get('id')} data={str(data_str)[:200]}")
-        return _cors(web.json_response({"error": str(e)}, status=500))
+
+    async def _run():
+        err = None
+        try:
+            await handle_webapp_data(shim_update, shim_context)
+        except Exception as e:
+            err = e
+            logger.exception(f"api_action handle_webapp_data FAILED uid={user.get('id')} data={str(data_str)[:200]}")
+        if _report is not None:
+            # shift_end başarısız olsa bile rapor yazılır (kasa kaybolmasın) — eski istemcideki kural.
+            try:
+                await handle_webapp_data(
+                    _ShimUpdate(tg_app.bot, user["id"], user.get("first_name", "Бариста"), user.get("username"),
+                                json.dumps(_report, ensure_ascii=False)),
+                    _ShimContext(tg_app.bot, tg_app.bot_data, uid=user["id"]))
+            except Exception:
+                logger.exception(f"api_action combined cash_report FAILED uid={user.get('id')}")
+        return err
+
+    # İstemci bağlantıyı koparsa bile işlem yarıda kalmasın.
+    err = await asyncio.shield(asyncio.ensure_future(_run()))
+    if _act == "shift_end":
+        try:
+            asyncio.ensure_future(cash_report_watch(tg_app.bot, _watch_uid))
+        except Exception:
+            pass
+    if err is not None:
+        # TAM traceback yukarıda — istemci sessizce başarılı sanmasın diye 500.
+        return _cors(web.json_response({"error": str(err)}, status=500))
     # Bazı eylemler (Сейф долгов) sonucu doğrudan döner: ok/hata/kayıt.
     _res = getattr(shim_context, "result", None)
     if isinstance(_res, dict):
