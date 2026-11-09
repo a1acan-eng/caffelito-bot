@@ -79,5 +79,18 @@ check(xf.get(11)[0]['a'] == 1530000 and xf.get(11)[0]['who'].startswith('от ')
 check(10 not in xf, 'iptal edilen transfer görünmez')
 check(bot.build_payroll_all_pdf(db, '2026-10')[:4] == b'%PDF' and bot.build_payroll_decade_pdf(db, '2026-10', 3)[:4] == b'%PDF',
       'PDF transferlerle üretiliyor')
+# ── Dönem sonuna kadar (owner 2026-11-09: «1–10 seçince 10'unu da hesapla; izin verilen gün sayılmasın») ──
+N9, N10, N11 = date(2026, 11, 9), date(2026, 11, 10), date(2026, 11, 11)
+wkn = (N9 - timedelta(days=N9.weekday())).isoformat()
+for uid, d, code in ((11, N9, 'off'), (11, N10, 'c5n'), (10, N9, 'mgd'), (10, N10, 'mgd'), (10, N11, 'mgd')):
+    db.execute("INSERT OR REPLACE INTO shift_grid (week_key, day, user_id, code) VALUES (?,?,?,?)", (wkn, d.weekday(), uid, code))
+db.commit()
+fc = bot.payroll_forecast(db, '2026-11', today=N9, until=N10)
+check([x['d'] for x in fc.get(11, [])] == ['10.11'], f"izinli gün sayılmaz, 10'u sayılır ({fc.get(11)})")
+check([x['d'] for x in fc.get(10, [])] == ['09.11', '10.11'], f"dönem sonuna kadar her gün ({[x['d'] for x in fc.get(10, [])]})")
+check(bot.payroll_forecast(db, '2026-11', today=N9) .get(11) is None, 'until verilmezse yalnız bugün (eski davranış)')
+fc = bot.payroll_forecast(db, '2026-11', today=N9, until=date(2026, 12, 5))
+check([x['d'] for x in fc.get(10, [])] == ['09.11', '10.11', '11.11'], 'ay dışına taşmaz, ay sonuna kadar')
+check(bot.payroll_fc_label(N9, N10) == '09.11–10.11' and bot.payroll_fc_label(N9, N9) == 'Сегодня 09.11', 'etiket')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)

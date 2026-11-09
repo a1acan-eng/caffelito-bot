@@ -9554,7 +9554,8 @@ def build_payroll_decade_pdf(db, period, k):
     rows = [(uid, nm, arch, decade_statement(db, uid, period, k)) for uid, nm, arch, _su in people]
     a, b = decade_bounds(period, k)
     _td = datetime.now(TZ).replace(tzinfo=None).date()
-    FC = payroll_forecast(db, period) if (payroll_fc_on(db) and a <= _td <= b) else {}
+    FC = payroll_forecast(db, period, until=b) if (payroll_fc_on(db) and a <= _td <= b) else {}
+    _fc_lbl = payroll_fc_label(_td, b)
     rows = [r for r in rows if r[3]["dec"]["work"] or r[3]["dec"]["net"] or r[3]["due"] or r[0] in FC]
     for _fu in FC:
         if _fu not in {r[0] for r in rows}:
@@ -9625,7 +9626,7 @@ def build_payroll_decade_pdf(db, period, k):
         line("У отправителя перевод вычтен, у получателя добавлен — см. строки «перевод» у каждого.", 8, "", gap=5, col=XFC)
     if fcp:
         row("К выплате по отработанным сменам", _pdf_fmt(S_(lambda d: d["due"])), 10.5, "B")
-        row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
+        row(f"+ {_fc_lbl} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
         row("К ВЫПЛАТЕ ВСЕМ · с прогнозом", _pdf_fmt(S_(lambda d: d["due"]) + sum(fcp.values())), 13, "B", gap=9)
         line("Прогноз = часы по графику, умноженные на ставку (+ ночная надбавка). Фактическая сумма будет после закрытия смен.",
              8, "", gap=5, col=FCC)
@@ -9644,7 +9645,7 @@ def build_payroll_decade_pdf(db, period, k):
         for x in d["branches"]:
             row(f"   {x['name']} · {x['days']} дн. · {x['hours']:g} ч", _pdf_fmt(x["pay"]), 9.5)
         for x in FC.get(_uid, []):
-            row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
+            row(f"   * прогноз {x.get('d') or _today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
                 + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
         _pdf_xfer_lines(row, XF, _uid, XFC)
         parts = []
@@ -9684,16 +9685,22 @@ def payroll_fc_on(db):
         return False
 
 
-def payroll_forecast(db, period, today=None):
-    """{uid: [{bid, br, s, e, h, pay}]} — bugünün Grafik vardiyaları (henüz kapanmamış).
-    Yalnız bugün bu döneme aitse. Kapanmış vardiyası olan plan atlanır; açık vardiya
-    varsa prognoz gerçek başlangıçtan plan bitişine kadar."""
+def payroll_forecast(db, period, today=None, until=None):
+    """{uid: [{d, bid, br, s, e, h, pay}]} — Grafik'teki vardiyalar, BUGÜNDEN `until` gününe kadar
+    (owner 2026-11-09: «1–10 dersem 10'unu da hesapla»; varsayılan: yalnız bugün). Yalnız bu
+    ayın günleri. Kapanmış vardiyası olan plan atlanır; açık vardiya varsa prognoz gerçek
+    başlangıçtan plan bitişine kadar. Grafik değişirse (izin, OFF) prognoz da değişir."""
     today = today or datetime.now(TZ).replace(tzinfo=None).date()
     if today.strftime("%Y-%m") != period:
         return {}
+    until = until or today
+    if until < today:
+        return {}
+    while until.strftime("%Y-%m") != period:
+        until -= timedelta(days=1)
     out = {}
     tpls = grid_templates(db)
-    for c in cov_cells(db, today, today, tpls=tpls):
+    for c in cov_cells(db, today, until, tpls=tpls):
         uid, s, e, bid = c["uid"], c["s"], c["e"], c["bid"]
         if not s or not e:
             continue
@@ -9722,7 +9729,7 @@ def payroll_forecast(db, period, today=None):
         except Exception as ex:
             logger.warning(f"payroll_forecast {uid}: {ex}")
             continue
-        out.setdefault(uid, []).append({"bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
+        out.setdefault(uid, []).append({"d": c["date"].strftime("%d.%m"), "bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
                                         "s": st.strftime("%H:%M"), "e": e.strftime("%H:%M"),
                                         "h": round(h, 2), "pay": pay, "open": 1 if rows else 0, "sid": rows[0]["id"] if rows else 0})
     # Grafik'te OLMAYAN ama bugün vardiyası AÇIK olan (owner 2026-10-31: «Ubay da çalışıyor,
@@ -9748,10 +9755,19 @@ def payroll_forecast(db, period, today=None):
         except Exception as ex:
             logger.warning(f"payroll_forecast open {r['id']}: {ex}")
             continue
-        out.setdefault(uid, []).append({"bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
+        out.setdefault(uid, []).append({"d": today.strftime("%d.%m"), "bid": bid, "br": (get_branch(db, bid) or {}).get("name", ""),
                                         "s": st.strftime("%H:%M"), "e": e.strftime("%H:%M"),
                                         "h": round(h, 2), "pay": pay, "open": 1, "sid": int(r["id"])})
+    for v in out.values():
+        v.sort(key=lambda x: (x["d"][3:5], x["d"][:2], x["s"]))
     return out
+
+
+def payroll_fc_label(today, until):
+    """«Сегодня 09.11» ya da «09.11–10.11» — prognozun kapsadığı günler."""
+    if until <= today:
+        return "Сегодня " + today.strftime("%d.%m")
+    return today.strftime("%d.%m") + "–" + until.strftime("%d.%m")
 
 
 def payroll_xfers(db, period):
@@ -9790,7 +9806,14 @@ def build_payroll_all_pdf(db, period):
     Her rakam calc_summary'den (tek kişilik raporla aynı)."""
     from fpdf import FPDF
     people = payroll_people(db, period)
-    FC = payroll_forecast(db, period) if payroll_fc_on(db) else {}
+    _td = datetime.now(TZ).replace(tzinfo=None).date()
+    try:
+        _y, _m = int(period[:4]), int(period[5:7])
+        _mend = (date_cls(_y + (_m == 12), _m % 12 + 1, 1) - timedelta(days=1))
+    except Exception:
+        _mend = _td
+    FC = payroll_forecast(db, period, until=_mend) if payroll_fc_on(db) else {}
+    _fc_lbl = payroll_fc_label(_td, max(_td, _mend))
     _have = {p[0] for p in people}
     for _fu in FC:
         if _fu not in _have:
@@ -9868,7 +9891,7 @@ def build_payroll_all_pdf(db, period):
         line("У отправителя перевод вычтен, у получателя добавлен — см. строки «перевод» у каждого.", 8, "", gap=5, col=XFC)
     if fcp:
         row("К выплате по отработанным сменам", _pdf_fmt(T["net"]), 10.5, "B")
-        row(f"+ Сегодня {_today_s} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
+        row(f"+ {_fc_lbl} по графику (прогноз, ещё не отработано)", "+" + _pdf_fmt(sum(fcp.values())), 9.5, col=FCC)
         row("К ВЫПЛАТЕ ВСЕМ · с прогнозом", _pdf_fmt(T["net"] + sum(fcp.values())), 13, "B", gap=9)
         line("Прогноз = часы по графику, умноженные на ставку (+ ночная надбавка). Фактическая сумма будет после закрытия смен.",
              8, "", gap=5, col=FCC)
@@ -9885,7 +9908,7 @@ def build_payroll_all_pdf(db, period):
         for b in payroll_branch_split(db, su.get("shifts") or []):
             row(f"   {b['name']} · {b['days']} дн. · {b['hours']:g} ч", _pdf_fmt(b["pay"]), 9.5)
         for x in FC.get(_uid, []):
-            row(f"   * прогноз {_today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
+            row(f"   * прогноз {x.get('d') or _today_s} · {x['br']} {x['s']}–{x['e']} · {x['h']:g} ч"
                 + (" (смена идёт)" if x["open"] else ""), "+" + _pdf_fmt(x["pay"]), 9.5, col=FCC)
         _pdf_xfer_lines(row, XF, _uid, XFC)
         parts = []
@@ -18276,7 +18299,8 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('payroll_fc',?)", (str(_on),))
             db.commit()
             log_action(db, "payroll_fc_set", user.id, user.first_name, None, None, {"on": _on})
-            _fc = payroll_forecast(db, current_period()) if _on else {}
+            _tdd = datetime.now(TZ).replace(tzinfo=None).date()
+            _fc = payroll_forecast(db, current_period(), until=decade_bounds(current_period(), 1 if _tdd.day <= 10 else (2 if _tdd.day <= 20 else 3))[1]) if _on else {}
             context.result = {"ok": True, "on": _on, "n": sum(len(v) for v in _fc.values()),
                               "sum": sum(x["pay"] for v in _fc.values() for x in v)}
 
