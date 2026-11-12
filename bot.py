@@ -10112,27 +10112,6 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "status": r["status"], "at": r["created_at"],
             "decision_note": r["decision_note"] or ""
         } for r in loan_rows]
-    # Resmi sınav daveti — beklemede mi?
-    pending_invite = db.execute(
-        "SELECT id, owner_name, created_at FROM rt_exam_invites "
-        "WHERE barista_id=? AND status IN ('pending','active') ORDER BY id DESC LIMIT 1",
-        (user_id,)).fetchone()
-    pending_exam = (
-        {"id": pending_invite["id"], "by": pending_invite["owner_name"] or "Шеф", "at": pending_invite["created_at"]}
-        if pending_invite else None
-    )
-    # Recipe trainer — bu kullanıcının progress'ı
-    rt_row = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (user_id,)).fetchone()
-    rt_self = {
-        "level": rt_row["level"] if rt_row else 1,
-        "maxLevel": rt_row["max_level"] if rt_row else 1,
-        "xp": rt_row["xp"] if rt_row else 0,
-        "bestStreak": rt_row["best_streak"] if rt_row else 0,
-        "totalSessions": rt_row["total_sessions"] if rt_row else 0,
-        "totalCorrect": rt_row["total_correct"] if rt_row else 0,
-        "totalQuestions": rt_row["total_questions"] if rt_row else 0,
-        "lastPlayed": rt_row["last_played_at"] if rt_row else None,
-    }
     import hashlib
     ts = int(datetime.now(TZ).timestamp())
     pwd_row = db.execute("SELECT password FROM users WHERE user_id=?", (user_id,)).fetchone()
@@ -10499,8 +10478,6 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"std_ack={1 if std_acked else 0}",
         f"summary={quote(json.dumps(summary, ensure_ascii=False))}",
         f"prices={quote(json.dumps(prices, ensure_ascii=False))}",
-        f"rt={quote(json.dumps(rt_self, ensure_ascii=False))}",
-        f"exam={quote(json.dumps(pending_exam, ensure_ascii=False) if pending_exam else '')}",
         f"loans={quote(json.dumps(loans_data, ensure_ascii=False))}",
         f"adv={quote(json.dumps(adv_self, ensure_ascii=False) if adv_self else '')}",
         f"adv_pend={quote(json.dumps(adv_pend, ensure_ascii=False))}",
@@ -10898,26 +10875,6 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             except Exception:
                 _broles = {}
             real_name = (b["display_name"] or b["name"] or "?").strip()
-            # Recipe trainer progress for this barista
-            rtp = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (b["user_id"],)).fetchone()
-            rt_sess = db.execute(
-                "SELECT level, correct, total, passed, played_at FROM rt_sessions "
-                "WHERE user_id=? ORDER BY id DESC LIMIT 5", (b["user_id"],)).fetchall()
-            rt_exam = db.execute(
-                "SELECT score, passed, taken_at FROM rt_exams "
-                "WHERE user_id=? ORDER BY id DESC LIMIT 1", (b["user_id"],)).fetchone()
-            rt_data = {
-                "lvl": rtp["level"] if rtp else 1,
-                "max": rtp["max_level"] if rtp else 1,
-                "xp": rtp["xp"] if rtp else 0,
-                "bs": rtp["best_streak"] if rtp else 0,
-                "ts": rtp["total_sessions"] if rtp else 0,
-                "tc": rtp["total_correct"] if rtp else 0,
-                "tq": rtp["total_questions"] if rtp else 0,
-                "lp": rtp["last_played_at"] if rtp else None,
-                "rec": [{"l":r["level"],"c":r["correct"],"t":r["total"],"p":r["passed"],"d":r["played_at"]} for r in rt_sess],
-                "exam": ({"s":rt_exam["score"],"p":rt_exam["passed"],"d":rt_exam["taken_at"]} if rt_exam else None),
-            }
             baristas.append({
                 "id": b["user_id"], "n": real_name,
                 "rn": b["name"] or "",
@@ -10961,7 +10918,6 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                 "pays": _pay_list,
                 "adjs": _adj_list,
                 "broles": _broles,
-                "rt": rt_data,
                 "pw": 1 if (b["password"] or "").strip() else 0,
                 "auth": 1 if (b["authorized"] or 0) else 0,
                 "arch": 1 if (b["archived"] or 0) else 0,
@@ -19412,245 +19368,6 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await _decide_loan(context, db, user, loan_id, decision, note,
                                update.message.reply_text)
 
-        # ─── Owner: Resmi sınav daveti (uzaktan) ───
-        elif action == "exam_invite":
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец может назначать зачёт.")
-                return
-            target_id = int(data.get("target", 0) or 0)
-            if not target_id:
-                await update.message.reply_text("❌ Укажите бариста.")
-                return
-            target_row = db.execute("SELECT * FROM users WHERE user_id=?", (target_id,)).fetchone()
-            if not target_row:
-                await update.message.reply_text("❌ Бариста не найден.")
-                return
-            # Aktif daveti varsa engelle
-            existing = db.execute(
-                "SELECT id FROM rt_exam_invites WHERE barista_id=? AND status IN ('pending','active')",
-                (target_id,)).fetchone()
-            if existing:
-                await update.message.reply_text("⚠️ У этого бариста уже есть активная сессия.")
-                return
-            now = datetime.now(TZ).isoformat()
-            cur = db.execute(
-                "INSERT INTO rt_exam_invites (barista_id, owner_id, owner_name, status, created_at) "
-                "VALUES (?,?,?,'pending',?)",
-                (target_id, user.id, user.first_name, now))
-            db.commit()
-            invite_id = cur.lastrowid
-            log_action(db, "exam_invite", user.id, user.first_name, target_id,
-                       display_name_for(db, target_id), {"invite_id": invite_id})
-            # Baristaya bildirim + taze web_app butonu (kolay erişim)
-            try:
-                shown = display_name_for(db, target_id, fallback=target_row["name"])
-                await context.bot.send_message(
-                    target_id,
-                    f"🎓 *ОФИЦИАЛЬНЫЙ ЗАЧЁТ*\n\n"
-                    f"От: *{md_safe(user.first_name)}*\n\n"
-                    f"⚠️ Перед началом убедитесь:\n"
-                    f"🔋 Заряд телефона ≥ 50%\n"
-                    f"📷 Камера работает\n"
-                    f"🟢 Вы в смене\n\n"
-                    f"После начала экран нельзя закрыть до окончания.\n\n"
-                    f"Нажмите *☕ Открыть Caffelito* ниже, и зачёт запустится автоматически.",
-                    parse_mode="Markdown")
-                # Taze webapp butonu — barista tek tuşla girsin
-                if WEBAPP_URL:
-                    fresh_url = build_webapp_url(WEBAPP_URL, target_id, target_row["name"] or "Бариста", db)
-                    kb = ReplyKeyboardMarkup(
-                        [[KeyboardButton("☕ Открыть Caffelito", web_app=WebAppInfo(url=fresh_url))]],
-                        resize_keyboard=True)
-                    await context.bot.send_message(target_id, "👇 Откройте, чтобы начать зачёт", reply_markup=kb)
-            except Exception as e:
-                logger.warning(f"exam invite notify failed: {e}")
-                await update.message.reply_text("⚠️ Не удалось отправить уведомление баристе.")
-                return
-            await update.message.reply_text(
-                f"✅ Зачёт назначен\n\nКому: {display_name_for(db, target_id)}\n"
-                f"Уведомление отправлено. Ожидание начала…")
-
-        # ─── Owner: davet iptali ───
-        elif action == "exam_invite_cancel":
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                return
-            invite_id = int(data.get("invite_id", 0) or 0)
-            if not invite_id:
-                return
-            db.execute("UPDATE rt_exam_invites SET status='cancelled' WHERE id=? AND status IN ('pending','active')",
-                       (invite_id,))
-            db.commit()
-            await update.message.reply_text("🚫 Зачёт отменён.")
-
-        # ─── Barista: zaten resmi sınav cevabı (her sorudan sonra opsiyonel canlı log) ───
-        elif action == "exam_progress":
-            db = get_db()
-            invite_id = int(data.get("invite_id", 0) or 0)
-            inv = db.execute("SELECT * FROM rt_exam_invites WHERE id=? AND barista_id=?",
-                             (invite_id, user.id)).fetchone()
-            if not inv:
-                return
-            db.execute("UPDATE rt_exam_invites SET status='active' WHERE id=?", (invite_id,))
-            db.commit()
-            # Owner'a canlı bildirim (opsiyonel — Phase 2'de daha detaylı)
-            try:
-                shown = display_name_for(db, user.id)
-                idx = int(data.get("idx", 0))
-                total = int(data.get("total", 0))
-                kind = data.get("kind", "")
-                ok = data.get("ok")
-                emoji = "✅" if ok else ("📷" if kind == "photo" else "❌")
-                await context.bot.send_message(
-                    inv["owner_id"],
-                    f"{emoji} {md_safe(shown)} · {idx}/{total} · {kind}",
-                    parse_mode="Markdown")
-            except Exception:
-                pass
-
-        # ─── Owner: sertifikayı geri al (yanlışlıkla/şüpheli geçen barista) ───
-        elif action == "cert_revoke":
-            db = get_db()
-            if get_role(db, user.id) != "owner":
-                await update.message.reply_text("❌ Только владелец может отзывать сертификат.")
-                return
-            target_id = int(data.get("target", 0) or 0)
-            if not target_id:
-                return
-            # Geçmiş başarılı sınavları sıfırla → artık sertifikalı sayılmaz; yeni sınav atanabilir
-            db.execute("UPDATE rt_exams SET passed=0 WHERE user_id=? AND passed=1", (target_id,))
-            db.execute("UPDATE rt_exam_invites SET status='revoked' WHERE barista_id=? AND status IN ('pending','active')", (target_id,))
-            db.commit()
-            log_action(db, "cert_revoke", user.id, user.first_name, target_id,
-                       display_name_for(db, target_id), {})
-            try:
-                await context.bot.send_message(
-                    target_id,
-                    "⚠️ *Сертификат отозван*\n\nВладелец отозвал ваш сертификат Caffelito. "
-                    "При необходимости вы сможете пройти сертификационный экзамен заново.",
-                    parse_mode="Markdown")
-            except Exception:
-                pass
-
-        # ─── Barista: resmi sınavı bitirir ───
-        elif action == "exam_finish":
-            db = get_db()
-            invite_id = int(data.get("invite_id", 0) or 0)
-            correct = int(data.get("correct", 0) or 0)
-            total = int(data.get("total", 0) or 0)
-            score = int(data.get("score", 0) or 0)
-            passed = 1 if score >= 100 else 0  # 1 000 000 prizi için TAM скор şart (sunucu da doğrular)
-            now = datetime.now(TZ).isoformat()
-            inv = db.execute("SELECT * FROM rt_exam_invites WHERE id=? AND barista_id=?",
-                             (invite_id, user.id)).fetchone()
-            if not inv:
-                # Davet yoksa basit kayıt
-                db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
-                           "VALUES (?,?,?,?,?,?)",
-                           (user.id, correct, total, score, passed, now))
-                db.commit()
-                return
-            db.execute("UPDATE rt_exam_invites SET status='done', score=?, correct=?, total=?, finished_at=? WHERE id=?",
-                       (score, correct, total, now, invite_id))
-            db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
-                       "VALUES (?,?,?,?,?,?)",
-                       (user.id, correct, total, score, passed, now))
-            db.commit()
-            log_action(db, "exam_finish", user.id, user.first_name, user.id, user.first_name,
-                       {"score": score, "passed": passed, "invite_id": invite_id})
-            # Owner'a sonuç bildirimi
-            try:
-                shown = display_name_for(db, user.id, fallback=user.first_name)
-                cert_name = (data.get("name") or "").strip()
-                msg = (
-                    f"🎓 *Зачёт завершён*\n\n"
-                    f"Бариста: *{md_safe(shown)}*\n"
-                    + (f"На сертификате: *{md_safe(cert_name)}*\n" if cert_name else "")
-                    + f"Результат: *{score}%* ({correct}/{total})\n"
-                    f"Статус: {'🏆 Сдан' if passed else '❌ Не сдан'}"
-                )
-                if passed:
-                    msg += "\n\n💰 *Приз: 1 000 000 сум* — выплатите бариста через ✅ Выплатить."
-                await context.bot.send_message(inv["owner_id"], msg, parse_mode="Markdown")
-            except Exception as e:
-                logger.warning(f"exam finish notify failed: {e}")
-            # Baristaya tebrik
-            try:
-                if passed:
-                    await update.message.reply_text(
-                        f"🏆 *Зачёт сдан!* {score}%\n\n💰 Приз *1 000 000 сум* — шеф скоро выплатит. Молодец!",
-                        parse_mode="Markdown")
-                else:
-                    await update.message.reply_text(f"💪 Не сдан · {score}%\n\nПродолжайте тренироваться.")
-            except Exception:
-                pass
-
-        # ─── Resmi Sınav (Зачёт) — sertifika kaydı + owner bildirimi ───
-        elif action == "rt_exam":
-            db = get_db()
-            correct = int(data.get("correct", 0) or 0)
-            total = int(data.get("total", 0) or 0)
-            score = int(data.get("score", 0) or 0)
-            passed = 1 if data.get("passed") else 0
-            now = datetime.now(TZ).isoformat()
-            db.execute("INSERT INTO rt_exams (user_id, correct, total, score, passed, taken_at) "
-                       "VALUES (?,?,?,?,?,?)",
-                       (user.id, correct, total, score, passed, now))
-            db.commit()
-            log_action(db, "exam_taken", user.id, user.first_name, user.id, user.first_name,
-                       {"score": score, "passed": passed})
-            # NOT: Bu PROBA (Пробный тест / hazırlık) — owner'a bildirim GİTMEZ (spam olmasın).
-            # Sertifika + 1 000 000 sadece owner-atamalı resmi sınavdan (exam_finish) gelir.
-            # Baristaya sessiz, kısa hazırlık geri bildirimi:
-            try:
-                await update.message.reply_text(
-                    f"📝 Пробный тест: {score}% ({correct}/{total})\n"
-                    f"На сертификационном экзамене нужно 100%. Тренируйтесь!")
-            except Exception:
-                pass
-
-        # ─── Recipe Trainer — session bitince progress kaydı ───
-        elif action == "rt_session":
-            db = get_db()
-            lvl = int(data.get("level", 1) or 1)
-            correct = int(data.get("correct", 0) or 0)
-            total = int(data.get("total", 0) or 0)
-            xp = int(data.get("xp", 0) or 0)
-            max_streak = int(data.get("maxStreak", 0) or 0)
-            passed = 1 if data.get("passed") else 0
-            now = datetime.now(TZ).isoformat()
-            db.execute("""INSERT INTO rt_sessions
-                (user_id, level, correct, total, xp_earned, max_streak, passed, played_at)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (user.id, lvl, correct, total, xp, max_streak, passed, now))
-            row = db.execute("SELECT * FROM rt_progress WHERE user_id=?", (user.id,)).fetchone()
-            if row:
-                new_level = row["level"]
-                new_max = row["max_level"]
-                if passed and lvl >= row["level"]:
-                    new_level = min(5, lvl + 1)
-                    new_max = max(row["max_level"], new_level)
-                db.execute("""UPDATE rt_progress SET
-                    level=?, max_level=?, xp=xp+?, best_streak=MAX(best_streak,?),
-                    total_sessions=total_sessions+1, total_correct=total_correct+?,
-                    total_questions=total_questions+?, last_played_at=?
-                    WHERE user_id=?""",
-                    (new_level, new_max, xp, max_streak, correct, total, now, user.id))
-            else:
-                new_level = min(5, lvl + 1) if passed else lvl
-                new_max = max(1, new_level if passed else lvl)
-                db.execute("""INSERT INTO rt_progress
-                    (user_id, level, max_level, xp, best_streak, total_sessions,
-                     total_correct, total_questions, last_played_at)
-                    VALUES (?,?,?,?,?,1,?,?,?)""",
-                    (user.id, new_level, new_max, xp, max_streak, correct, total, now))
-            db.commit()
-
-        # ═══════════════════════════════════════════════════════════════════
-        # НЕРО — eski uygulamada OLMAYAN action'lar (eski uygulama silindi).
-        # Bot bunları tanımazsa değişiklik sessizce kaybolur (bkz HANDOFF.md).
-        # ═══════════════════════════════════════════════════════════════════
         elif action in ("gdebt_pin_set", "gdebt_unlock", "gdebt_lock"):
             # PIN: owner koyar/kaldırır; çalışan doğru PIN'le 6 saat açar (owner 2026-10-07).
             db = get_db()
@@ -22161,7 +21878,7 @@ async def web_index(request):
 async def web_image(request):
     """nero.jpg gibi yerel görselleri sun."""
     fname = request.match_info.get("fname", "")
-    if fname not in ("nero.jpg", "sertifikat.png"):
+    if fname not in ("nero.jpg",):
         return web.Response(status=404)
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), fname)
     if not os.path.exists(path):
