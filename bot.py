@@ -10532,6 +10532,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
         f"xfers={quote(json.dumps(xfer_rows(db, user_id, role), ensure_ascii=False))}",
         f"night_cfg={quote(json.dumps(night_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"payday={quote(json.dumps(payday_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
+        f"assist={quote(json.dumps(assist_cfg(db) if role == 'owner' else {}, ensure_ascii=False))}",
         f"prfc={1 if (role == 'owner' and payroll_fc_on(db)) else 0}",
         f"f2s={quote(json.dumps(f2s_view(db, user_id) if role == 'owner' else {}, ensure_ascii=False))}",
         f"par_intern={1 if par_is_intern(db, user_id, user_branch_id(db, user_id)) else 0}",
@@ -18223,6 +18224,43 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
                        {"period": per, "size": len(blob)})
 
+        elif action in ("assist_set", "digest_now"):
+            # Утренняя сводка + напоминание о смене: ayar / «şimdi gönder» (owner).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            if action == "digest_now":
+                try:
+                    await context.bot.send_message(user.id, digest_text(db, datetime.now(TZ).replace(tzinfo=None)), parse_mode="HTML")
+                    context.result = {"ok": True}
+                except Exception as e:
+                    logger.warning(f"digest_now: {e}")
+                    context.result = {"ok": False, "error": "Не удалось отправить."}
+                return
+            _old = assist_cfg(db)
+            _new = dict(_old)
+            for _k in ("dg_on", "rm_on"):
+                if _k in data:
+                    _new[_k] = 1 if str(data.get(_k)).lower() in ("1", "true") else 0
+            if "dg_at" in data:
+                _at = str(data.get("dg_at") or "").strip()
+                if not _hm_ok(_at):
+                    context.result = {"ok": False, "error": "Время — ЧЧ:ММ, например 09:00."}
+                    return
+                _h, _m = _at.split(":")
+                _new["dg_at"] = f"{int(_h):02d}:{int(_m):02d}"
+            if "rm_min" in data:
+                try:
+                    _new["rm_min"] = max(10, min(240, int(data.get("rm_min"))))
+                except (TypeError, ValueError):
+                    context.result = {"ok": False, "error": "Минуты — число от 10 до 240."}
+                    return
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('assist_cfg',?)", (json.dumps(_new),))
+            db.commit()
+            log_action(db, "assist_set", user.id, user.first_name, None, None, {"old": _old, "new": _new})
+            context.result = {"ok": True, "cfg": _new}
+
         elif action == "payday_auto_set":
             # Maaş günü otomatik PDF: aç/kapa + saat (owner).
             db = get_db()
@@ -21574,6 +21612,203 @@ async def payday_run(bot_obj, db, now):
     return tag
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# NERO ПОМОЩНИК (owner 2026-11-12: «geliştirelim»): 
+#  1) УТРЕННЯЯ СВОДКА — her sabah owner'a tek mesaj: dün (kasalar, vardiyalar, geç
+#     kalanlar, cezalar) + bugün kim çalışıyor, hangi şubede plan boş.
+#  2) НАПОМИНАНИЕ О СМЕНЕ — vardiyadan N dakika önce çalışana DM.
+# Ayar meta 'assist_cfg': {dg_on, dg_at 'HH:MM', rm_on, rm_min}. İkisi de açık gelir.
+# ══════════════════════════════════════════════════════════════════════════
+ASSIST_DEFAULTS = {"dg_on": 1, "dg_at": "09:00", "rm_on": 1, "rm_min": 60}
+ASSIST_DAY_CUT = 5   # «dün» = dün 05:00 → bugün 05:00 (gece vardiyası düne sayılır)
+
+
+def assist_cfg(db):
+    cfg = dict(ASSIST_DEFAULTS)
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='assist_cfg'").fetchone()
+        if r and r["val"]:
+            j = json.loads(r["val"])
+            if isinstance(j, dict):
+                cfg.update({k: j[k] for k in cfg if k in j})
+    except Exception:
+        pass
+    return cfg
+
+
+def digest_text(db, now):
+    """Sabah özeti metni (HTML). now: naive Taşkent zamanı."""
+    from html import escape as _e
+    d0 = datetime(now.year, now.month, now.day, ASSIST_DAY_CUT)
+    a, b = (d0 - timedelta(days=1)).isoformat(), d0.isoformat()
+    yday = (now - timedelta(days=1)).date()
+    brs = [x for x in get_branches(db, only_active=True)]
+    bname = {int(x["id"]): x["name"] for x in brs}
+    WD = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    t = f"☀️ <b>Доброе утро! Сводка Nero</b>\n{now.strftime('%d.%m.%Y')}, {WD[now.weekday()]}\n"
+    # ── Вчера ──
+    t += f"\n<b>Вчера · {yday.strftime('%d.%m')}</b>\n"
+    any_y = False
+    for x in brs:
+        bid = int(x["id"])
+        sh = db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(hours),0) AS h FROM shifts WHERE COALESCE(branch_id,1)=? "
+                        "AND end_time IS NOT NULL AND start_time>=? AND start_time<?", (bid, a, b)).fetchone()
+        cr = db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(cups_total),0) AS c, COALESCE(SUM(expenses_total),0) AS e "
+                        "FROM cashreports WHERE COALESCE(branch_id,1)=? AND created_at>=? AND created_at<?",
+                        (bid, a, b)).fetchone()
+        if not sh["n"] and not cr["n"]:
+            continue
+        any_y = True
+        t += f"• <b>{_e(x['name'])}</b>: смен {sh['n']} · {float(sh['h'] or 0):g} ч"
+        if cr["n"]:
+            t += f" · продано {int(cr['c'] or 0)} стак."
+            if int(cr["e"] or 0):
+                t += f" · расходы {fmt_sum(int(cr['e']))}"
+        # Kasa raporu yalnız «does_kasa» kategorilerinden beklenir (ассистент/стажёр saymaz).
+        need = db.execute("SELECT COUNT(*) AS n FROM shifts s LEFT JOIN salary_categories c ON c.id=s.cat_id "
+                          "WHERE COALESCE(s.branch_id,1)=? AND s.end_time IS NOT NULL AND s.start_time>=? AND s.start_time<? "
+                          "AND COALESCE(c.does_kasa,1)=1", (bid, a, b)).fetchone()["n"]
+        if need > cr["n"]:
+            t += f" · ⚠️ кассовых отчётов {cr['n']} из {need}"
+        t += "\n"
+    if not any_y:
+        t += "• смен не было\n"
+    late = db.execute("SELECT user_id, user_name, branch_id, delay_min FROM opening_delays WHERE date=? "
+                      "AND COALESCE(delay_min,0)>0 ORDER BY delay_min DESC", (yday.isoformat(),)).fetchall()
+    if late:
+        t += "⏰ Опоздания: " + ", ".join(
+            f"{_e(display_name_for(db, r['user_id'], fallback=r['user_name'] or '?'))} +{int(r['delay_min'])} мин"
+            for r in late[:8]) + "\n"
+    fn = db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS s FROM fines WHERE created_at>=? AND created_at<?",
+                    (a, b)).fetchone()
+    if fn["n"]:
+        t += f"⚠️ Штрафы: {fn['n']} · {fmt_sum(int(fn['s']))} сум\n"
+    still = db.execute("SELECT user_id, branch_id, start_time FROM shifts WHERE end_time IS NULL AND start_time IS NOT NULL "
+                       "AND start_time<?", (a,)).fetchall()
+    if still:
+        t += "🟠 Не закрыты смены: " + ", ".join(
+            f"{_e(display_name_for(db, r['user_id'], fallback='?'))} (с {str(r['start_time'])[8:10]}.{str(r['start_time'])[5:7]})"
+            for r in still[:8]) + "\n"
+    # ── Сегодня ──
+    t += f"\n<b>Сегодня · {now.strftime('%d.%m')}</b>\n"
+    tpls = grid_templates(db)
+    cells = cov_cells(db, now.date(), now.date(), tpls=tpls)
+    for x in brs:
+        bid = int(x["id"])
+        if not branch_ready(x):
+            continue
+        mine = sorted((c for c in cells if c["bid"] == bid), key=lambda c: c["s"])
+        if mine:
+            t += f"• <b>{_e(x['name'])}</b>: " + ", ".join(
+                f"{_e(display_name_for(db, c['uid'], fallback='?'))} {c['s'].strftime('%H:%M')}–{c['e'].strftime('%H:%M')}"
+                for c in mine) + "\n"
+        else:
+            t += f"• <b>{_e(x['name'])}</b>: ⚠️ в графике никого\n"
+    wk = (now.date() - timedelta(days=now.weekday())).isoformat()
+    off = [display_name_for(db, r["user_id"], fallback="?") for r in db.execute(
+        "SELECT user_id FROM shift_grid WHERE week_key=? AND day=? AND code='off'", (wk, now.weekday())).fetchall()]
+    if off:
+        t += "🌴 Выходной: " + ", ".join(_e(n) for n in off) + "\n"
+    try:
+        pend = db.execute("SELECT COUNT(*) AS n FROM dayoff_requests WHERE status='pending'").fetchone()["n"]
+        if pend:
+            t += f"📝 Заявок на выходной ждут решения: {pend}\n"
+    except Exception:
+        pass
+    return t.rstrip()
+
+
+async def digest_run(bot_obj, db, now=None):
+    """Günde bir kez, ayarlanan saatten sonra. Döner: gönderildiyse tarih, yoksa None."""
+    now = now or datetime.now(TZ).replace(tzinfo=None)
+    cfg = assist_cfg(db)
+    if not cfg["dg_on"]:
+        return None
+    try:
+        hh, mm = (int(x) for x in str(cfg["dg_at"]).split(":"))
+    except Exception:
+        hh, mm = 9, 0
+    if (now.hour, now.minute) < (hh, mm):
+        return None
+    tag = now.date().isoformat()
+    r = db.execute("SELECT val FROM meta WHERE k='digest_sent'").fetchone()
+    if r and r["val"] == tag:
+        return None
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('digest_sent',?)", (tag,))
+    db.commit()
+    txt = digest_text(db, now)
+    for o in db.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+        try:
+            await bot_obj.send_message(int(o["user_id"]), txt, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"digest {o['user_id']}: {e}")
+    return tag
+
+
+async def shift_remind_run(bot_obj, db, now=None):
+    """Vardiyadan rm_min dakika önce çalışana hatırlatma (her vardiya için bir kez).
+    Vardiyası zaten açıksa ya da engelliyse gönderilmez. Döner: gönderilen [(uid, code)]."""
+    now = now or datetime.now(TZ).replace(tzinfo=None)
+    cfg = assist_cfg(db)
+    if not cfg["rm_on"]:
+        return []
+    try:
+        lead = max(10, min(240, int(cfg["rm_min"])))
+    except Exception:
+        lead = 60
+    try:
+        r = db.execute("SELECT val FROM meta WHERE k='shrem_sent'").fetchone()
+        sent = json.loads(r["val"]) if r and r["val"] else {}
+    except Exception:
+        sent = {}
+    keep_from = (now.date() - timedelta(days=1)).isoformat()
+    sent = {k: v for k, v in sent.items() if v >= keep_from}
+    out = []
+    tpls = grid_templates(db)
+    for c in cov_cells(db, now.date(), now.date(), tpls=tpls):
+        s = c["s"]
+        mins = (s - now).total_seconds() / 60
+        if not (0 < mins <= lead):
+            continue
+        key = f"{c['uid']}|{c['date'].isoformat()}|{c['code']}"
+        if key in sent:
+            continue
+        sent[key] = now.date().isoformat()
+        uid = int(c["uid"])
+        if user_suspended(db, uid) or get_active_shift(db, uid) is not None:
+            continue
+        u = db.execute("SELECT role, COALESCE(archived,0) AS a FROM users WHERE user_id=?", (uid,)).fetchone()
+        if not u or u["a"] or (u["role"] or "") in ("owner", "observer"):
+            continue
+        br = (get_branch(db, c["bid"]) or {}).get("name", "")
+        m = int(round(mins))
+        when = "через 1 час" if 55 <= m <= 65 else f"через {m} мин"
+        try:
+            await bot_obj.send_message(uid, f"⏰ Напоминание: смена {when}\n"
+                                            f"{br} · {s.strftime('%H:%M')}–{c['e'].strftime('%H:%M')}\n"
+                                            "Не забудьте нажать «Начать смену» в Nero.")
+            out.append((uid, c["code"]))
+        except Exception as e:
+            logger.warning(f"shift_remind {uid}: {e}")
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('shrem_sent',?)", (json.dumps(sent),))
+    db.commit()
+    return out
+
+
+async def assist_loop(app):
+    await asyncio.sleep(70)
+    while True:
+        try:
+            await shift_remind_run(app.bot, get_db())
+        except Exception as e:
+            logger.warning(f"shift_remind_run: {e}")
+        try:
+            await digest_run(app.bot, get_db())
+        except Exception as e:
+            logger.warning(f"digest_run: {e}")
+        await asyncio.sleep(120)
+
+
 async def payday_loop(app):
     """MAAŞ GÜNÜ: 10'u, 20'si, 30'u (owner 2026-10-27) — «Зарплата всех» dönem PDF'i owner'lara
     KENDİLİĞİNDEN. Dönem başına bir kez (meta 'payday_sent'). 10 dakikada bir kontrol."""
@@ -21688,6 +21923,7 @@ async def setup_commands(app):
     asyncio.create_task(backup_loop(app))
     asyncio.create_task(ava_loop(app))
     asyncio.create_task(payday_loop(app))
+    asyncio.create_task(assist_loop(app))
 
 
 # ═══════════════════════════════════════════════════════════════════
