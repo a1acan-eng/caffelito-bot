@@ -1,35 +1,59 @@
-# Çalışanların Telegram avatarı (owner 2026-10-11): indir, sakla, imzalı bağlantı, gizli foto.
+# Çalışan fotoğrafı: Telegram'dan anında yenileme, elle yükleme, Telegram'a dönüş (owner 2026-11-14).
 # Çalıştırma: rm -f /tmp/av.db; PYTHONPATH=. DB_PATH=/tmp/av.db BOT_TOKEN=123:abc python tests/ava_test.py
-import json, asyncio, urllib.parse as up, bot
+import json, asyncio, base64, types, bot
 FAIL = []
 def check(c, m):
     print(('  ok  ' if c else '  FAIL ') + m)
     if not c: FAIL.append(m)
-class Sz:
-    def __init__(s, w, fid): s.width, s.file_id, s.file_unique_id = w, fid, 'u' + fid
-class Ph:
-    def __init__(s, photos): s.photos = photos
-class F:
-    async def download_as_bytearray(s): return bytearray(b'\xff\xd8JPEGDATA')
+NS = types.SimpleNamespace
+PHOTOS = {10: 'tgA', 11: None}
 class FB:
-    calls = 0
-    async def get_user_profile_photos(s, uid, limit=1):
-        return Ph([[Sz(160, 'a'), Sz(320, 'b'), Sz(640, 'c')]]) if uid == 10 else Ph([])
-    async def get_file(s, fid):
-        FB.calls += 1; FB.last = fid; return F()
+    async def get_user_profile_photos(self, uid, limit=1):
+        u = PHOTOS.get(uid)
+        if not u: return NS(photos=[])
+        return NS(photos=[[NS(width=160, file_id='f' + u, file_unique_id=u)]])
+    async def get_file(self, fid):
+        async def dl(): return bytearray(b'\xff\xd8TG' + fid.encode())
+        return NS(download_as_bytearray=dl)
+    async def send_message(self, *a, **k): return None
+    def __getattr__(self, n):
+        async def f(*a, **k): return None
+        return f
+def act(uid, p):
+    ctx = bot._ShimContext(FB(), {}, uid=uid)
+    asyncio.run(bot.handle_webapp_data(bot._ShimUpdate(FB(), uid, f'U{uid}', None, json.dumps(p)), ctx))
+    return getattr(ctx, 'result', None)
+bot.get_db()
 db = bot.get_db()
-db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (10,'Бек','barista',1,1,1)")
-db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (11,'Али','barista',1,1,1)")
+db.execute("INSERT OR REPLACE INTO users (user_id,name,role,approved,authorized,branch_id) VALUES (1,'Owner','owner',1,1,1)")
+for uid, nm in ((10, 'Akmal'), (11, 'Karina')):
+    db.execute("INSERT OR REPLACE INTO users (user_id,name,role,branch_id,approved,authorized) VALUES (?,?,'barista',1,1,1)", (uid, nm))
 db.commit()
-fb = FB()
-check(asyncio.run(bot.ava_fetch(fb, db, 10)) is True and FB.last == 'a', 'foto indirildi (en küçük ≥160px boy)')
-check(asyncio.run(bot.ava_fetch(fb, db, 11)) is False, 'fotoğrafı olmayan/gizleyen: none')
-asyncio.run(bot.ava_fetch(fb, db, 10))
-check(FB.calls == 1, 'aynı foto tekrar indirilmez')
+data = lambda u: bytes(db.execute("SELECT data FROM avatars WHERE user_id=?", (u,)).fetchone()["data"] or b'')
+
+# Telegram'da fotoğraf değişti → «hemen yenile» TTL beklemeden alır
+asyncio.run(bot.ava_fetch(FB(), db, 10))
+check(data(10).endswith(b'ftgA'), 'ilk foto')
+PHOTOS[10] = 'tgB'
+r = act(1, {'action': 'ava_refresh'})
+check(r and r['ok'] and r['hidden'] == [x for x in r['hidden'] if x != 'Akmal'] and 'Karina' in r['hidden'] and data(10).endswith(b'ftgB'),
+      f'hepsini yenile: yeni foto + gizleyenler listesi ({r})')
+# elle yükleme
+jpg = b'\xff\xd8MANUAL' + b'x' * 100
+r = act(1, {'action': 'ava_set', 'target': 11, 'data': 'data:image/jpeg;base64,' + base64.b64encode(jpg).decode()})
+check(r and r['ok'] and data(11) == jpg, 'elle yükleme')
 m = bot.ava_map(db)
-check(set(m) == {'10'} and ('s=' + bot.ava_sig(10)) in m['10'], 'payload yalnız fotoğrafı olanı imzalı bağlantıyla verir')
-s = bot.build_hash_payload(db, 10, 'x')
-d = dict(p.split('=', 1) for p in s.lstrip('#').split('&') if '=' in p)
-check('10' in json.loads(up.unquote(d['ava'])), 'çalışan payload\'ında ava var')
-check(bot.ava_sig(10) != bot.ava_sig(11), 'imza kişiye özel')
-print('FAIL' if FAIL else 'ALL OK', FAIL)
+check('v=m' in m.get('11', ''), f'harita: elle yüklenen işaretli ({m.get("11")})')
+PHOTOS[11] = 'tgK'
+act(1, {'action': 'ava_refresh'})
+asyncio.run(bot.ava_fetch(FB(), db, 11))
+check(data(11) == jpg, 'yenileme elle yüklenen fotoya dokunmaz')
+r = act(1, {'action': 'ava_reset', 'target': 11})
+check(r and r['n'] == 1 and data(11).endswith(b'ftgK'), 'Telegram fotoğrafına dönüş')
+# güvenlik
+check(act(10, {'action': 'ava_refresh'})['ok'] is False, 'barista yenileyemez')
+check(act(1, {'action': 'ava_set', 'target': 10, 'data': base64.b64encode(b'<svg>').decode()})['ok'] is False, 'JPEG olmayan reddedilir')
+check(act(1, {'action': 'ava_set', 'target': 10, 'data': base64.b64encode(b'\xff\xd8' + b'x' * 500_000).decode()})['ok'] is False, 'çok büyük reddedilir')
+check(bot.AVA_TTL_H <= 6, 'otomatik yenileme sıklaştı')
+print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
+raise SystemExit(1 if FAIL else 0)

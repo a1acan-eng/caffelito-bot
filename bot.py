@@ -649,6 +649,11 @@ def get_db():
     # kendi Telegram avatarı. none=1 → fotoğrafı yok / gizli (baş harf kalır).
     db.execute("""CREATE TABLE IF NOT EXISTS avatars (
         user_id INTEGER PRIMARY KEY, data BLOB, mime TEXT, uid_file TEXT, none INTEGER DEFAULT 0, fetched_at TEXT)""")
+    # owner 2026-11-14: owner'ın elle yüklediği foto (manual=1) Telegram'la ezilmez.
+    try:
+        db.execute("ALTER TABLE avatars ADD COLUMN manual INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     db.execute("""CREATE TABLE IF NOT EXISTS brx_ext (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, by_name TEXT, at TEXT, archived INTEGER DEFAULT 0)""")
     db.execute("""CREATE TABLE IF NOT EXISTS brx_tx (
@@ -2232,7 +2237,7 @@ def order_catalog_season_mig(db):
     order_catalog_lucky_1l_mig(db)
 
 
-AVA_TTL_H = 24          # avatar bu kadar saatte bir tazelenir
+AVA_TTL_H = 6           # avatar bu kadar saatte bir tazelenir (owner 2026-11-14: «Telegram'dakiyle farklı»)
 
 
 def ava_sig(uid):
@@ -2245,7 +2250,8 @@ def ava_map(db):
     out = {}
     try:
         for r in db.execute("SELECT user_id, fetched_at, uid_file FROM avatars WHERE COALESCE(none,0)=0 AND data IS NOT NULL").fetchall():
-            v = (r["uid_file"] or r["fetched_at"] or "")[-10:]
+            _uf = r["uid_file"] or ""
+            v = _uf if _uf.startswith("m") else (_uf or r["fetched_at"] or "")[-10:]   # «m…» = elle yüklendi
             out[str(r["user_id"])] = f"/ava/{int(r['user_id'])}.jpg?v={quote(v)}&s={ava_sig(r['user_id'])}"
     except Exception as e:
         logger.warning(f"ava_map: {e}")
@@ -2253,8 +2259,15 @@ def ava_map(db):
 
 
 async def ava_fetch(bot_obj, db, uid):
-    """Kişinin Telegram profil fotoğrafını (en küçük boy ≥ 160px) indir ve sakla."""
+    """Kişinin Telegram profil fotoğrafını (en küçük boy ≥ 160px) indir ve sakla.
+    Owner'ın elle yüklediği foto (manual=1) varsa dokunulmaz."""
     now_s = datetime.now(TZ).isoformat()
+    try:
+        _m = db.execute("SELECT COALESCE(manual,0) AS m FROM avatars WHERE user_id=?", (int(uid),)).fetchone()
+        if _m and _m["m"]:
+            return True
+    except Exception:
+        pass
     try:
         ph = await bot_obj.get_user_profile_photos(int(uid), limit=1)
         if not ph or not ph.photos:
@@ -2271,7 +2284,7 @@ async def ava_fetch(bot_obj, db, uid):
             return True
         f = await bot_obj.get_file(pick.file_id)
         data = bytes(await f.download_as_bytearray())
-        db.execute("INSERT OR REPLACE INTO avatars (user_id, data, mime, uid_file, none, fetched_at) VALUES (?,?,?,?,0,?)",
+        db.execute("INSERT OR REPLACE INTO avatars (user_id, data, mime, uid_file, none, fetched_at, manual) VALUES (?,?,?,?,0,?,0)",
                    (int(uid), sqlite3.Binary(data), "image/jpeg", pick.file_unique_id, now_s))
         db.commit()
         return True
@@ -2298,7 +2311,7 @@ async def ava_loop(app):
             lim_none = (datetime.now(TZ) - timedelta(hours=2)).isoformat()
             for r in db.execute(
                     "SELECT u.user_id FROM users u LEFT JOIN avatars a ON a.user_id=u.user_id "
-                    "WHERE COALESCE(u.archived,0)=0 AND COALESCE(u.approved,0)=1 "
+                    "WHERE COALESCE(u.archived,0)=0 AND COALESCE(u.approved,0)=1 AND COALESCE(a.manual,0)=0 "
                     "AND (a.user_id IS NULL OR a.fetched_at IS NULL OR a.fetched_at < ? "
                     "OR (COALESCE(a.none,0)=1 AND a.fetched_at < ?))", (lim, lim_none)).fetchall():
                 await ava_fetch(app.bot, db, r["user_id"])
@@ -18223,6 +18236,50 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             log_action(db, "payroll_pdf", user.id, user.first_name, uid, _nm2,
                        {"period": per, "size": len(blob)})
+
+        elif action in ("ava_refresh", "ava_set", "ava_reset"):
+            # Çalışan fotoğrafı (owner 2026-11-14): Telegram'dan HEMEN yenile / elle yükle / Telegram'a dön.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                _tid = int(data.get("target") or 0)
+            except (TypeError, ValueError):
+                _tid = 0
+            if action == "ava_set":
+                _raw = str(data.get("data") or "")
+                if "," in _raw:
+                    _raw = _raw.split(",", 1)[1]
+                try:
+                    _img = base64.b64decode(_raw, validate=True)
+                except Exception:
+                    _img = b""
+                if not _tid or not _img.startswith(b"\xff\xd8") or len(_img) > 400_000:
+                    context.result = {"ok": False, "error": "Не удалось загрузить фото."}
+                    return
+                _now = datetime.now(TZ).isoformat()
+                db.execute("INSERT OR REPLACE INTO avatars (user_id, data, mime, uid_file, none, fetched_at, manual) "
+                           "VALUES (?,?,?,?,0,?,1)", (_tid, sqlite3.Binary(_img), "image/jpeg",
+                                                     "m" + str(int(time.time())), _now))
+                db.commit()
+                log_action(db, "ava_set", user.id, user.first_name, _tid, display_name_for(db, _tid, fallback=str(_tid)), {})
+                context.result = {"ok": True}
+                return
+            if action == "ava_reset" and _tid:
+                db.execute("UPDATE avatars SET manual=0 WHERE user_id=?", (_tid,))
+                db.commit()
+            _ids = [_tid] if _tid else [int(r["user_id"]) for r in db.execute(
+                "SELECT u.user_id FROM users u LEFT JOIN avatars a ON a.user_id=u.user_id "
+                "WHERE COALESCE(u.archived,0)=0 AND COALESCE(u.approved,0)=1 AND COALESCE(a.manual,0)=0").fetchall()]
+            _ok, _hidden = 0, []
+            for _u in _ids:
+                if await ava_fetch(context.bot, db, _u):
+                    _ok += 1
+                else:
+                    _hidden.append(display_name_for(db, _u, fallback=str(_u)))
+                await asyncio.sleep(0.2)
+            context.result = {"ok": True, "n": _ok, "hidden": _hidden}
 
         elif action in ("assist_set", "digest_now"):
             # Утренняя сводка + напоминание о смене: ayar / «şimdi gönder» (owner).
