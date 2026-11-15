@@ -36,11 +36,15 @@ check([x['id'] for x in c if x['on']] == [10, 11] and 12 in [x['id'] for x in c]
 # 1) 96% → listede olmayan (people yok) → şu an vardiyadakilere prim 300.000
 sent.clear()
 act(1, {'action': 'cps_insp_add', 'branch_id': 1, 'score': 96.5, 'period': per})
-check(len(adj(10)) == 1 and adj(10)[0]['amount'] == 600000 and len(adj(11)) == 1 and not adj(12), f'96.5 → vardiyadakilere 600.000 ({adj(10)})')
+check(not adj(10) and not adj(11), 'kişi seçilmedi + vardiyada 2 kişi → kimseye yazılmaz')
+r0 = db.execute("SELECT id FROM cps_inspections ORDER BY id DESC").fetchone()
+act(1, {'action': 'cps_insp_del', 'id': r0['id']})
+act(1, {'action': 'cps_insp_add', 'branch_id': 1, 'score': 96.5, 'people': [10], 'period': per})
+check(len(adj(10)) == 1 and adj(10)[0]['amount'] == 600000 and not adj(11) and not adj(12), f'96.5 → yalnız seçilen kişiye 600.000 ({adj(10)})')
 check(any(ch == 10 and 'Сюрприз' in (tx or '') for ch, tx in sent), 'kişiye DM')
 check(any(str(ch) == '-100' and 'Сюрприз-премия' in (tx or '') for ch, tx in sent), 'gruba duyuru')
-r = db.execute("SELECT * FROM cps_inspections WHERE idx=1").fetchone()
-check([p['n'] for p in json.loads(r['people'])] == ['Damir', 'Ubay'], 'kim vardı kaydedildi')
+r = db.execute("SELECT * FROM cps_inspections ORDER BY id DESC").fetchone()
+check([p['n'] for p in json.loads(r['people'])] == ['Damir'], 'kontrolü geçen kaydedildi')
 # 2) silince prim geri alınır
 act(1, {'action': 'cps_insp_del', 'id': r['id']})
 check(not adj(10) and not adj(11), 'silince prim geri alındı')

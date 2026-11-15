@@ -666,6 +666,14 @@ def get_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, from_bid INTEGER, to_bid INTEGER,
         item TEXT, unit TEXT, qty REAL, note TEXT,
         by_id INTEGER, by_name TEXT, at TEXT, voided INTEGER DEFAULT 0)""")
+    # Gönderim paketi (owner 2026-11-15): adım adım gönderimde 10 dk «Изменить / Отменить».
+    # `msgs`: gruplara giden mesajlar [[chat_id, message_id]] → düzeltilince aynı mesaj güncellenir.
+    try:
+        db.execute("ALTER TABLE brx_tx ADD COLUMN batch TEXT")
+    except sqlite3.OperationalError:
+        pass
+    db.execute("""CREATE TABLE IF NOT EXISTS brx_batch (
+        batch TEXT PRIMARY KEY, by_id INTEGER, at TEXT, msgs TEXT, cancelled INTEGER DEFAULT 0)""")
     # Kaydedilmiş ürünler (owner 2026-10-07): «+ Добавить» ile bir kez eklenen ürün
     # listede kalır (ad + birim); herkes ekler, owner siler.
     db.execute("""CREATE TABLE IF NOT EXISTS brx_items (
@@ -2563,19 +2571,82 @@ def brx_cup_pending(db, branch_id):
     return out
 
 
-async def branch_group_say(bot_obj, db, branch_ids, text):
-    """Şube gruplarına kısa bildirim (aynı grup iki kez almaz)."""
-    seen = set()
+def branch_group_chats(db, branch_ids):
+    """Şubelerin grup sohbetleri (tekrarsız, sıralı)."""
+    out = []
     for bid in branch_ids:
-        b = get_branch(db, bid) or {}
-        g = str(b.get("group_chat_id") or "").strip()
-        if not g or g in seen:
-            continue
-        seen.add(g)
+        g = str((get_branch(db, bid) or {}).get("group_chat_id") or "").strip()
+        if g and g not in out:
+            out.append(g)
+    return out
+
+
+async def branch_group_say(bot_obj, db, branch_ids, text):
+    """Şube gruplarına kısa bildirim (aynı grup iki kez almaz). Döner [[chat_id, message_id]]."""
+    sent = []
+    for g in branch_group_chats(db, branch_ids):
         try:
-            await bot_obj.send_message(chat_id=int(g), text=text, parse_mode="HTML")
+            m = await bot_obj.send_message(chat_id=int(g), text=text, parse_mode="HTML")
+            mid = getattr(m, "message_id", None)
+            if mid is not None:
+                sent.append([str(g), int(mid)])
         except Exception as e:
-            logger.warning(f"branch_group_say {bid}: {e}")
+            logger.warning(f"branch_group_say {g}: {e}")
+    return sent
+
+
+BRX_EDIT_MIN = 10   # gönderen kişi 10 dk içinde düzeltir / iptal eder (owner 2026-11-15)
+
+
+def brx_batch_editable(db, batch, uid):
+    """(satır, hata) — paket düzeltilebilir mi: yazan kişi + 10 dk, ya da owner."""
+    r = db.execute("SELECT * FROM brx_batch WHERE batch=?", (str(batch or ""),)).fetchone()
+    if not r or r["cancelled"]:
+        return None, "Запись не найдена."
+    if get_role(db, uid) == "owner":
+        return r, ""
+    if int(r["by_id"] or 0) != int(uid):
+        return None, "Изменить может только тот, кто отправил."
+    try:
+        age = datetime.now(TZ) - datetime.fromisoformat(r["at"])
+    except Exception:
+        age = timedelta(hours=1)
+    if age > timedelta(minutes=BRX_EDIT_MIN):
+        return None, f"Прошло больше {BRX_EDIT_MIN} минут — изменить может только владелец (История → ✎)."
+    return r, ""
+
+
+async def brx_batch_msgs_update(bot_obj, db, batch_row, branch_ids, text, gone_text):
+    """Düzeltmede grup mesajlarını GÜNCELLE: aynı grup → mesaj metni değişir; artık ilgisiz
+    grup → «отменено»; yeni grup → yeni mesaj. Döner yeni msgs listesi."""
+    try:
+        old = json.loads(batch_row["msgs"] or "[]")
+    except Exception:
+        old = []
+    want = branch_group_chats(db, branch_ids) if text else []
+    out = []
+    for ch, mid in old:
+        try:
+            if str(ch) in want:
+                await bot_obj.edit_message_text(chat_id=int(ch), message_id=int(mid), text=text, parse_mode="HTML")
+                out.append([str(ch), int(mid)])
+            else:
+                await bot_obj.edit_message_text(chat_id=int(ch), message_id=int(mid), text=gone_text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"brx msg edit {ch}/{mid}: {e}")
+            if str(ch) in want:
+                out.append([str(ch), int(mid)])
+    have = {c for c, _m in out}
+    for g in want:
+        if g in have:
+            continue
+        try:
+            m = await bot_obj.send_message(chat_id=int(g), text=text, parse_mode="HTML")
+            if getattr(m, "message_id", None) is not None:
+                out.append([g, int(m.message_id)])
+        except Exception as e:
+            logger.warning(f"brx msg send {g}: {e}")
+    return out
 
 
 def grid_week_key(week_offset):
@@ -4659,10 +4730,10 @@ def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
         ids.append(cur.lastrowid)
         if amt > 0:
             dm = (f"🎉 Сюрприз! Проверка №{r['idx']}: {_fp}%.\n"
-                  f"Вы были на смене — вам начислена премия {fmt_sum(amt)} сум. Спасибо за отличную работу!")
+                  f"Вы проходили проверку — вам начислена премия {fmt_sum(amt)} сум. Спасибо за отличную работу!")
         else:
             dm = (f"⚠️ Проверка №{r['idx']}: {_fp}% — ниже {int(cfg['insp_fail_below'])}%.\n"
-                  f"Вы были на смене — удержание {fmt_sum(-amt)} сум.")
+                  f"Вы проходили проверку — удержание {fmt_sum(-amt)} сум.")
         out.append((uid, amt, dm))
     db.execute("UPDATE cps_inspections SET adj=? WHERE id=?", (json.dumps(ids), int(insp_id)))
     db.commit()
@@ -15212,10 +15283,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"\u0447\u0442\u043e\u0431\u044b \u0432\u043d\u0435\u0441\u0442\u0438 \u0434\u0440\u0443\u0433\u0443\u044e.")
                 return
             now_s = datetime.now(TZ).isoformat()
-            # KIM VARDI (owner 2026-11-15): formdan gelen liste; yoksa şu an vardiyada olanlar.
+            # KONTROLU KIM GECTI (owner 2026-11-15): kontrolcü bardaki TEK baristayı seçer;
+            # prim yalnız ona. Formdan gelen kişi; gelmezse yalnız vardiyada TEK kişi varsa o.
             _pp = data.get("people")
             if _pp is None:
                 _people = insp_people_default(db, bid)
+                if len(_people) != 1:
+                    _people = []
             else:
                 if isinstance(_pp, str):
                     _pp = [x for x in _pp.split(",") if x.strip()]
@@ -15245,7 +15319,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _fp = lambda v: (f"{float(v):.2f}").rstrip("0").rstrip(".")
             _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {_fp(sc)}"
                     f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_fp(_tot)} / {int(_cfg['fr_target'])}")
-            _msg += "\nНа смене: " + (", ".join(q["n"] for q in _people) if _people else "никого не отмечено")
+            _msg += "\nПроходил(а) проверку: " + (", ".join(q["n"] for q in _people) if _people else "не отмечено")
             if _money:
                 _ma = _money[0][1]
                 _msg += (f"\n{'🎉 Премия' if _ma > 0 else '⚠️ Удержание'} {fmt_sum(abs(_ma))} сум × {len(_money)}")
@@ -20282,11 +20356,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             _own = get_role(db, user.id) == "owner"
             try:
-                _fresh = datetime.now(TZ) - datetime.fromisoformat(_t["at"]) < timedelta(hours=24)
+                _fresh = datetime.now(TZ) - datetime.fromisoformat(_t["at"]) < timedelta(minutes=BRX_EDIT_MIN)
             except Exception:
                 _fresh = False
             if not _own and not (int(_t["by_id"] or 0) == user.id and _fresh):
-                await update.message.reply_text("❌ Изменить запись может владелец или автор (24 часа).")
+                await update.message.reply_text(f"❌ Изменить запись может владелец или автор ({BRX_EDIT_MIN} минут).")
                 return
             try:
                 _q = round(float(str(data.get("qty") or 0).replace(",", ".")), 3)
@@ -20415,9 +20489,26 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not _lines:
                 await update.message.reply_text("❌ Укажите товар и количество.")
                 return
+            # PAKET (owner 2026-11-15): istemci kimliği. `edit`=1 → aynı paket DÜZELTİLİR
+            # (10 dk, yazan kişi): eski satırlar iptal, grup mesajları güncellenir.
+            _batch = "".join(ch for ch in str(data.get("batch") or "") if ch.isalnum())[:40]
+            _brow = None
+            if _batch and data.get("edit"):
+                _brow, _berr = brx_batch_editable(db, _batch, user.id)
+                if not _brow:
+                    context.result = {"ok": False, "error": _berr}
+                    await update.message.reply_text("❌ " + _berr)
+                    return
+                db.execute("UPDATE brx_tx SET voided=1 WHERE batch=? AND COALESCE(voided,0)=0", (_batch,))
+            elif _batch and db.execute("SELECT 1 FROM brx_batch WHERE batch=?", (_batch,)).fetchone():
+                context.result = {"ok": True, "batch": _batch, "dup": True}
+                return   # aynı paket ikinci kez (yeniden gönderim) — yazılmaz
             for _nm, _un, _qq in _lines:
-                db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at) VALUES (?,?,?,?,?,?,?,?,?)",
-                           (_f, _t2, _nm, _un, _qq, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat()))
+                db.execute("INSERT INTO brx_tx (from_bid, to_bid, item, unit, qty, note, by_id, by_name, at, batch) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (_f, _t2, _nm, _un, _qq, str(data.get("note") or "")[:200], user.id, _shown, now.isoformat(), _batch or None))
+            if _batch and not _brow:
+                db.execute("INSERT OR IGNORE INTO brx_batch (batch, by_id, at, msgs) VALUES (?,?,?,?)",
+                           (_batch, user.id, now.isoformat(), "[]"))
             db.commit()
             _fn, _tn = brx_place(db, _f)["name"], brx_place(db, _t2)["name"]
             log_action(db, "brx_add", user.id, user.first_name, None, ", ".join(l[0] for l in _lines),
@@ -20426,11 +20517,38 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _qf = lambda v: (str(int(v)) if v == int(v) else str(v).replace(".", ","))
             _wst = _t2 in brx_waste_ids(db)
             _nt = str(data.get("note") or "").strip()
-            await branch_group_say(context.bot, db, (_f, _t2),
-                (f"🗑 <b>{esc_html(_fn)} · брак / списание</b>\n" if _wst else f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n")
-                + "\n".join(f"• {esc_html(a)} — <b>{_qf(c)} {esc_html(b)}</b>" for a, b, c in _lines)
-                + (f"\nпричина: {esc_html(_nt)}" if (_wst and _nt) else "")
-                + (f"\nсписал(а): {esc_html(_shown)}" if _wst else f"\nпередал(а): {esc_html(_shown)}"))
+            _gtxt = ((f"🗑 <b>{esc_html(_fn)} · брак / списание</b>\n" if _wst else f"📦 <b>{esc_html(_fn)} → {esc_html(_tn)}</b>\n")
+                     + "\n".join(f"• {esc_html(a)} — <b>{_qf(c)} {esc_html(b)}</b>" for a, b, c in _lines)
+                     + (f"\nпричина: {esc_html(_nt)}" if (_wst and _nt) else "")
+                     + (f"\nсписал(а): {esc_html(_shown)}" if _wst else f"\nпередал(а): {esc_html(_shown)}"))
+            if _brow:
+                _gtxt += "\n✏️ исправлено"
+                _msgs = await brx_batch_msgs_update(context.bot, db, _brow, (_f, _t2), _gtxt,
+                                                    "❌ <s>Запись исправлена</s> — смотрите новое сообщение.")
+                log_action(db, "brx_batch_edit", user.id, user.first_name, None, _batch, {"lines": len(_lines)})
+            else:
+                _msgs = await branch_group_say(context.bot, db, (_f, _t2), _gtxt)
+            if _batch:
+                db.execute("UPDATE brx_batch SET msgs=? WHERE batch=?", (json.dumps(_msgs), _batch))
+                db.commit()
+            context.result = {"ok": True, "batch": _batch}
+
+        elif action == "brx_batch_cancel":
+            # Gönderen 10 dk içinde tamamen geri alır (owner 2026-11-15). Grup mesajı «отменено» olur.
+            db = get_db()
+            _batch = "".join(ch for ch in str(data.get("batch") or "") if ch.isalnum())[:40]
+            _brow, _berr = brx_batch_editable(db, _batch, user.id)
+            if not _brow:
+                context.result = {"ok": False, "error": _berr}
+                await update.message.reply_text("❌ " + _berr)
+                return
+            _n = db.execute("UPDATE brx_tx SET voided=1 WHERE batch=? AND COALESCE(voided,0)=0", (_batch,)).rowcount
+            db.execute("UPDATE brx_batch SET cancelled=1 WHERE batch=?", (_batch,))
+            db.commit()
+            await brx_batch_msgs_update(context.bot, db, _brow, (), "",
+                                        "❌ <s>Передача отменена</s> (" + __import__("html").escape(display_name_for(db, user.id, fallback=user.first_name)) + ")")
+            log_action(db, "brx_batch_cancel", user.id, user.first_name, None, _batch, {"rows": _n})
+            context.result = {"ok": True}
 
         elif action in ("grid_notify_send", "grid_notify_drop"):
             # Owner: biriken çizelge değişikliklerini çalışanlara TEK özetle gönder
