@@ -99,6 +99,30 @@ sh = db.execute("SELECT * FROM shifts WHERE user_id=11 AND end_time IS NULL").fe
 check((bot.shift_pay_from_live(db, sh) or '').startswith(D6.strftime('%Y-%m-%d') + 'T16:45'), f'açık vardiya: canlı ödeme 16:45 ({bot.shift_pay_from_live(db, sh)})')
 s = bot.calc_summary(db, 11, D6.strftime('%Y-%m'))
 check(((s.get('active') or {}).get('pay_from') or '').endswith('16:45:00'), 'özet: active.pay_from')
-close(10, D6 + timedelta(hours=17, minutes=15)); close(11, D6 + timedelta(hours=26))
+# owner istisnası: «оплатить с прихода» (owner 2026-11-15, Ubay)
+import json as _j, asyncio as _a
+class _FB:
+    async def send_message(self, *a, **k): return None
+    def __getattr__(self, n):
+        async def f(*a, **k): return None
+        return f
+def act(uid, p):
+    ctx = bot._ShimContext(_FB(), {}, uid=uid)
+    _a.run(bot.handle_webapp_data(bot._ShimUpdate(_FB(), uid, f'U{uid}', None, _j.dumps(p)), ctx))
+    return getattr(ctx, 'result', None)
+db.execute("INSERT OR REPLACE INTO users (user_id,name,role,approved,authorized,branch_id) VALUES (1,'Owner','owner',1,1,1)"); db.commit()
+r = act(11, {'action': 'shift_pay_full', 'id': sh['id']})
+check(r and not r.get('ok'), 'barista istisna koyamaz')
+act(1, {'action': 'shift_pay_full', 'id': sh['id']})
+sh = db.execute("SELECT * FROM shifts WHERE id=?", (sh['id'],)).fetchone()
+check(bot.shift_pay_from_live(db, sh) is None, 'istisna: canlı sayaç gelişten')
+close(10, D6 + timedelta(hours=17, minutes=15)); r = close(11, D6 + timedelta(hours=26))
+check(r['pay_start'] is None, 'istisna: kapanışta gelişten ödendi')
+act(1, {'action': 'shift_pay_full', 'id': sh['id'], 'on': 0})
+r = db.execute("SELECT * FROM shifts WHERE id=?", (sh['id'],)).fetchone()
+check((r['pay_start'] or '').endswith('16:45:00') and not r['pay_full'], f'kurala dönüş: kapalı vardiya yeniden hesaplandı ({r["pay_start"]}, {r["hours"]})')
+act(1, {'action': 'shift_pay_full', 'id': sh['id'], 'on': 1})
+r2 = db.execute("SELECT * FROM shifts WHERE id=?", (sh['id'],)).fetchone()
+check(r2['pay_start'] is None and r2['hours'] > r['hours'], f'kapalı vardiyada istisna: saat arttı ({r["hours"]} → {r2["hours"]})')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
