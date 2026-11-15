@@ -4741,54 +4741,65 @@ def op_cfg_save(db, patch):
 
 
 def overlap30_migrate(db):
-    """TEK SEFER (owner 2026-11-15, şefin önerisi: 12 m²'de 4 kişi, akşamcılar dışarıda bekliyor):
-    gündüz bitişinden TAM 1 saat önce başlayan akşam vardiyası 30 dk ileri alınır → devir 30 dk.
-    Hem Grafik şablonları hem «Штраф за открытие» şube pencereleri. Döner değişen [(yer, eski, yeni)]."""
-    if db.execute("SELECT 1 FROM meta WHERE k='overlap30_mig'").fetchone():
+    """TEK SEFER (owner 2026-11-15, şefin önerisi: 12 m²'de 4 kişi, akşamcılar dışarıda bekliyor).
+    Owner seçimi «B»: devir 30 dk, iki vardiya EŞİT uzunlukta (yarım saat ikiye bölünür):
+    C5 07:00–03:00 → 07:00–17:15 / 16:45–03:00; Magic 07:00–01:00 → 07:00–16:15 / 15:45–01:00.
+    Gündüz+akşam çifti: gündüz önce başlar, akşam gündüzden 30 ya da 60 dk önce başlar.
+    Açılış ve kapanış saati değişmez. Hem Grafik şablonları hem «Штраф за открытие» pencereleri.
+    Döner değişen [(yer, eski, yeni)] (yer «… начало» / «… конец»)."""
+    if db.execute("SELECT 1 FROM meta WHERE k='overlap_split_mig'").fetchone():
         return []
     def hm(m):
         m %= 1440
         return f"{m // 60:02d}:{m % 60:02d}"
     def fix(items, get_s, get_e):
-        """items: aynı şubenin (s, e) listesi → {indeks: yeni_başlangıç}."""
-        out = {}
+        """items: aynı şubenin (s, e) listesi → [(gündüz_i, yeni_bitiş, akşam_j, yeni_başlangıç)]."""
+        out = []
         for i, a in enumerate(items):
-            ae = _mins(get_e(a))
-            if ae is None:
+            a_s, a_e = _mins(get_s(a)), _mins(get_e(a))
+            if a_s is None or a_e is None:
                 continue
             for j, b in enumerate(items):
-                if i == j:
+                b_s, b_e = (None, None) if i == j else (_mins(get_s(b)), _mins(get_e(b)))
+                if b_s is None or b_e is None or not (a_s < b_s):
                     continue
-                bs = _mins(get_s(b))
-                if bs is not None and (ae - bs) % 1440 == 60 and _mins(get_s(a)) is not None and _mins(get_s(a)) < bs:
-                    out[j] = hm(ae - 30)
+                if (a_e - b_s) % 1440 not in (30, 60):
+                    continue
+                span = (b_e - a_s) % 1440 or 1440
+                L = (span + 30) // 2
+                ne, ns = hm(a_s + L), hm(b_e - L)
+                if ne != hm(a_e) or ns != hm(b_s):
+                    out.append((i, ne, j, ns))
         return out
     changed = []
     try:
+        now = datetime.now(TZ).isoformat()
         rows = db.execute("SELECT code, branch_id, start_t, end_t FROM shift_templates WHERE COALESCE(active,1)=1").fetchall()
         by_b = {}
         for r in rows:
             by_b.setdefault(int(r["branch_id"] or 0), []).append(dict(r))
         for bid, items in by_b.items():
-            for j, ns in fix(items, lambda x: x["start_t"], lambda x: x["end_t"]).items():
-                db.execute("UPDATE shift_templates SET start_t=?, updated_at=? WHERE code=?",
-                           (ns, datetime.now(TZ).isoformat(), items[j]["code"]))
-                changed.append((f"шаблон {items[j]['code']}", items[j]["start_t"], ns))
+            for i, ne, j, ns in fix(items, lambda x: x["start_t"], lambda x: x["end_t"]):
+                db.execute("UPDATE shift_templates SET end_t=?, updated_at=? WHERE code=?", (ne, now, items[i]["code"]))
+                db.execute("UPDATE shift_templates SET start_t=?, updated_at=? WHERE code=?", (ns, now, items[j]["code"]))
+                changed.append((f"шаблон {items[i]['code']} конец", items[i]["end_t"], ne))
+                changed.append((f"шаблон {items[j]['code']} начало", items[j]["start_t"], ns))
         cfg = op_cfg(db)
         wins = dict(cfg.get("windows") or {})
         wchg = False
         for bk, lst in wins.items():
             lst = [dict(x) for x in (lst or [])]
-            for j, ns in fix(lst, lambda x: x.get("s"), lambda x: x.get("e")).items():
-                changed.append((f"окно филиала {bk}", lst[j].get("s"), ns))
-                lst[j]["s"] = ns
+            for i, ne, j, ns in fix(lst, lambda x: x.get("s"), lambda x: x.get("e")):
+                changed.append((f"окно филиала {bk} конец", lst[i].get("e"), ne))
+                changed.append((f"окно филиала {bk} начало", lst[j].get("s"), ns))
+                lst[i]["e"], lst[j]["s"] = ne, ns
                 wchg = True
             wins[bk] = lst
         if wchg:
             cfg["windows"] = wins
             db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('opening_penalty', ?)",
                        (json.dumps(cfg, ensure_ascii=False),))
-        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('overlap30_mig', ?)",
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('overlap_split_mig', ?)",
                    (json.dumps(changed, ensure_ascii=False),))
         db.commit()
         if changed:
@@ -22133,8 +22144,10 @@ async def setup_commands(app):
         _db0 = get_db()
         _ch = overlap30_migrate(_db0)
         if _ch:
-            _txt = ("🕐 Передача смены сокращена до 30 минут\n\n" + "\n".join(f"• {w}: {a} → {b}" for w, a, b in _ch)
-                    + "\n\nВечерняя смена начинается на 30 минут позже; штраф за опоздание считается от нового времени. "
+            _txt = ("🕐 Новые часы смен: передача 30 минут, обе смены одинаковой длины\n\n"
+                    + "\n".join(f"• {w}: {a} → {b}" for w, a, b in _ch)
+                    + "\n\nДневная смена заканчивается раньше, вечерняя начинается позже; открытие и закрытие "
+                      "не меняются. Штраф за опоздание считается от нового времени. "
                       "Изменить можно в «График смен → Шаблоны» и в «Штраф за открытие».")
             for _o in _db0.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
                 try:
