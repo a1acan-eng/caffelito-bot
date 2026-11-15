@@ -230,6 +230,12 @@ def get_db():
         period TEXT, branch_id INTEGER, idx INTEGER,
         score INTEGER DEFAULT 0, note TEXT,
         added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
+    # Kontrolde kim vardi (owner 2026-11-15): [{"id","n"}] + otomatik prim/kesinti adjustment id'leri.
+    for _c in ("people", "adj"):
+        try:
+            db.execute(f"ALTER TABLE cps_inspections ADD COLUMN {_c} TEXT")
+        except sqlite3.OperationalError:
+            pass
     # Tek seferlik: dogrulanmis TEK katalog kalemi. Owner silerse geri gelmez.
     try:
         # BASLANGIC KATALOGU — 13 madde. Bu bir «kodda sabit liste» DEGIL:
@@ -4215,6 +4221,11 @@ CPS_DEFAULTS = {
     "fr_count": 2,       # aydaki proverka sayisi
     "fr_target": 160,    # takim odulu icin gereken TOPLAM
     "fr_restore": 100,   # odul saglanirsa puan buraya cekilir
+    # KONTROL PRIMI / KESINTISI (owner 2026-11-15): o kontrolde subede olan HER kisiye.
+    "insp_bonus_at": 95,        # bu yuzde ve ustu → surpriz prim
+    "insp_bonus_amt": 300000,   # сум, kisi basi (owner belirler)
+    "insp_fail_below": 80,      # bu yuzdenin ALTI → kesinti
+    "insp_fail_amt": 0,         # сум, kisi basi; 0 = kesinti kapali
 }
 
 
@@ -4566,6 +4577,97 @@ def cps_do_restore(db, period, branch_id, cfg, actor_id, actor_name):
                    {"period": period, "branch_id": int(branch_id), "total": _tot,
                     "to": _to, "people": done})
     return done, notes
+
+
+INSP_TAG = "[insp:{}]"
+
+
+def insp_people_default(db, branch_id):
+    """Kontrol girilirken şubede şu an vardiyası açık olanlar → [{"id","n"}]."""
+    out = []
+    try:
+        for r in db.execute("SELECT DISTINCT s.user_id AS id, u.name AS n FROM shifts s JOIN users u ON u.user_id=s.user_id "
+                            "WHERE s.end_time IS NULL AND s.start_time IS NOT NULL AND COALESCE(s.branch_id,0)=?",
+                            (int(branch_id),)).fetchall():
+            out.append({"id": int(r["id"]), "n": r["n"] or ""})
+    except Exception:
+        pass
+    return out
+
+
+def insp_candidates(db, branch_id):
+    """Kontrol formunda seçilebilecekler: şubenin aktif çalışanları + son 24 saatte orada
+    vardiyası olanlar. `on`=1 → şu an vardiyada (varsayılan işaretli)."""
+    on = {p["id"] for p in insp_people_default(db, branch_id)}
+    since = (datetime.now(TZ) - timedelta(hours=24)).replace(tzinfo=None).isoformat()
+    seen, out = set(), []
+    try:
+        rows = db.execute(
+            "SELECT user_id AS id, name AS n FROM users WHERE COALESCE(archived,0)=0 AND COALESCE(approved,0)=1 "
+            "AND role!='owner' AND COALESCE(branch_id,1)=? "
+            "UNION SELECT s.user_id, u.name FROM shifts s JOIN users u ON u.user_id=s.user_id "
+            "WHERE COALESCE(s.branch_id,0)=? AND (s.end_time IS NULL OR s.start_time>=?)",
+            (int(branch_id), int(branch_id), since)).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        i = int(r["id"])
+        if i in seen:
+            continue
+        seen.add(i)
+        out.append({"id": i, "n": r["n"] or "", "on": 1 if i in on else 0})
+    out.sort(key=lambda x: (-x["on"], x["n"]))
+    return out
+
+
+def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
+    """Kontrol sonucuna göre o kontrolde olan herkese prim (≥ insp_bonus_at) ya da kesinti
+    (< insp_fail_below). Ikinci kez yazmaz (tag). Döner [(uid, amount, dm_text)]."""
+    cfg = cfg or cps_cfg(db)
+    r = db.execute("SELECT * FROM cps_inspections WHERE id=?", (int(insp_id),)).fetchone()
+    if not r:
+        return []
+    try:
+        people = json.loads(r["people"] or "[]")
+    except Exception:
+        people = []
+    sc = float(r["score"] or 0)
+    _fp = (f"{sc:.2f}").rstrip("0").rstrip(".")
+    amt, txt = 0, ""
+    if sc >= float(cfg.get("insp_bonus_at") or 95) and int(cfg.get("insp_bonus_amt") or 0) > 0:
+        amt = int(cfg["insp_bonus_amt"])
+        txt = f"Премия за проверку №{r['idx']} · {_fp}%"
+    elif sc < float(cfg.get("insp_fail_below") or 0) and int(cfg.get("insp_fail_amt") or 0) > 0:
+        amt = -int(cfg["insp_fail_amt"])
+        txt = f"Удержание за проверку №{r['idx']} · {_fp}%"
+    if not amt or not people:
+        return []
+    tag = INSP_TAG.format(int(insp_id))
+    now_s = datetime.now(TZ).isoformat()
+    out, ids = [], []
+    for p in people:
+        uid = int(p.get("id") or 0)
+        if not uid or db.execute("SELECT 1 FROM adjustments WHERE user_id=? AND note LIKE ? LIMIT 1",
+                                 (uid, f"%{tag}%")).fetchone():
+            continue
+        cur = db.execute(
+            "INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (uid, amt, f"{txt} {tag}", r["period"], int(r["branch_id"] or 0), actor_id, actor_name, now_s))
+        ids.append(cur.lastrowid)
+        if amt > 0:
+            dm = (f"🎉 Сюрприз! Проверка №{r['idx']}: {_fp}%.\n"
+                  f"Вы были на смене — вам начислена премия {fmt_sum(amt)} сум. Спасибо за отличную работу!")
+        else:
+            dm = (f"⚠️ Проверка №{r['idx']}: {_fp}% — ниже {int(cfg['insp_fail_below'])}%.\n"
+                  f"Вы были на смене — удержание {fmt_sum(-amt)} сум.")
+        out.append((uid, amt, dm))
+    db.execute("UPDATE cps_inspections SET adj=? WHERE id=?", (json.dumps(ids), int(insp_id)))
+    db.commit()
+    if out:
+        log_action(db, "cps_insp_money", actor_id, actor_name, None, None,
+                   {"insp": int(insp_id), "score": sc, "amount": amt, "people": [u for u, _a, _d in out]})
+    return out
 
 
 def cps_fr_total(db, period, branch_id=None):
@@ -11287,7 +11389,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                  "ORDER BY COALESCE(sort_order,0), id").fetchall():
                 _bid = int(_b["id"])
                 _rs = db.execute(
-                    "SELECT id, idx, score, note, added_by_name, created_at FROM cps_inspections "
+                    "SELECT id, idx, score, note, added_by_name, created_at, people, adj FROM cps_inspections "
                     "WHERE period=? AND branch_id=? ORDER BY idx", (_selp, _bid)).fetchall()
                 _rch, _tt = cps_fr_reached(db, _selp, _bid, _ccfg)
                 _restored = bool(db.execute(
@@ -11301,9 +11403,15 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                               "reached": 1 if _rch else 0, "restored": 1 if _restored else 0,
                               "need": _need, "slots": int(_ccfg.get("fr_count", 2) or 2),
                               "target": int(_ccfg["fr_target"]),
+                              "cand": insp_candidates(db, _bid),
                               "rows": [{"id": r["id"], "idx": r["idx"], "score": r["score"],
                                         "note": r["note"] or "", "by": r["added_by_name"] or "",
-                                        "at": r["created_at"]} for r in _rs]})
+                                        "at": r["created_at"],
+                                        "ppl": [q.get("n", "") for q in (json.loads(r["people"]) if r["people"] else [])],
+                                        "money": int((db.execute("SELECT COALESCE(SUM(amount),0) AS a FROM adjustments "
+                                                                 "WHERE note LIKE ?", (f"%{INSP_TAG.format(r['id'])}%",)
+                                                                 ).fetchone() or {"a": 0})["a"] or 0)}
+                                       for r in _rs]})
             _cps["insp"] = _insp
         parts.append(f"cps={quote(json.dumps(_cps, ensure_ascii=False))}")
     except Exception as _e:
@@ -15102,13 +15210,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"\u0447\u0442\u043e\u0431\u044b \u0432\u043d\u0435\u0441\u0442\u0438 \u0434\u0440\u0443\u0433\u0443\u044e.")
                 return
             now_s = datetime.now(TZ).isoformat()
-            db.execute(
-                "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+            # KIM VARDI (owner 2026-11-15): formdan gelen liste; yoksa şu an vardiyada olanlar.
+            _pp = data.get("people")
+            if _pp is None:
+                _people = insp_people_default(db, bid)
+            else:
+                if isinstance(_pp, str):
+                    _pp = [x for x in _pp.split(",") if x.strip()]
+                _people = []
+                for _x in (_pp or []):
+                    try:
+                        _u = int(_x)
+                    except (TypeError, ValueError):
+                        continue
+                    _ur = db.execute("SELECT name FROM users WHERE user_id=?", (_u,)).fetchone()
+                    if _ur and _u not in [q["id"] for q in _people]:
+                        _people.append({"id": _u, "n": _ur["name"] or ""})
+            _cur = db.execute(
+                "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at,people) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (per, bid, int(_prev) + 1, sc, str(data.get("note") or "").strip(),
-                 user.id, user.first_name, now_s))
+                 user.id, user.first_name, now_s, json.dumps(_people, ensure_ascii=False)))
+            _iid = _cur.lastrowid
             db.commit()
             _cfg = cps_cfg(db)
+            _money = insp_apply_money(db, _iid, _cfg, user.id, user.first_name)
             _reached, _tot = cps_fr_reached(db, per, bid, _cfg)
             log_action(db, "cps_insp_add", user.id, user.first_name, None, None,
                        {"period": per, "branch_id": bid, "score": sc,
@@ -15117,6 +15243,25 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _fp = lambda v: (f"{float(v):.2f}").rstrip("0").rstrip(".")
             _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {_fp(sc)}"
                     f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_fp(_tot)} / {int(_cfg['fr_target'])}")
+            _msg += "\nНа смене: " + (", ".join(q["n"] for q in _people) if _people else "никого не отмечено")
+            if _money:
+                _ma = _money[0][1]
+                _msg += (f"\n{'🎉 Премия' if _ma > 0 else '⚠️ Удержание'} {fmt_sum(abs(_ma))} сум × {len(_money)}")
+                for _nu, _na, _nt in _money:
+                    try:
+                        await context.bot.send_message(chat_id=int(_nu), text=_nt)
+                    except Exception:
+                        pass
+                if _ma > 0:
+                    try:
+                        _g3 = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (bid,)).fetchone()
+                        if _g3 and _g3["group_chat_id"]:
+                            await context.bot.send_message(
+                                chat_id=int(_g3["group_chat_id"]),
+                                text=(f"🎉 Проверка №{int(_prev) + 1}: {_fp(sc)}%! Сюрприз-премия "
+                                      f"{fmt_sum(_ma)} сум: " + ", ".join(q["n"] for q in _people) + ". Молодцы!"))
+                    except Exception:
+                        pass
             if _reached:
                 # OTOMATIK (owner karari 2026-08-22): hedef asilinca CPS
                 # kendiliginden yenilenir. Onceden onaya bagliydi; owner
@@ -15165,11 +15310,42 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text("\u274c \u0417\u0430\u043f\u0438\u0441\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.")
                 return
             db.execute("DELETE FROM cps_inspections WHERE id=?", (iid,))
+            # Otomatik prim/kesinti de geri alınır.
+            _nadj = db.execute("DELETE FROM adjustments WHERE note LIKE ?",
+                               (f"%{INSP_TAG.format(iid)}%",)).rowcount
             db.commit()
             log_action(db, "cps_insp_del", user.id, user.first_name, None, None,
                        {"id": iid, "period": _ir["period"], "branch_id": _ir["branch_id"],
                         "score": _ir["score"]})
-            await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430.")
+            await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430."
+                                            + (f" Премия/удержание отменены ({_nadj})." if _nadj else ""))
+
+        elif action == "cps_insp_cfg":
+            # Kontrol primi/kesintisi ayarı (owner 2026-11-15). Geriye dönük uygulanmaz.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
+                return
+            _lim = {"insp_bonus_at": (1, 100), "insp_bonus_amt": (0, 100000000),
+                    "insp_fail_below": (0, 100), "insp_fail_amt": (0, 100000000)}
+            _set = {}
+            for _k, (_lo, _hi) in _lim.items():
+                if data.get(_k) is None or str(data.get(_k)).strip() == "":
+                    continue
+                try:
+                    _v = int(float(str(data.get(_k)).replace(",", ".").replace(" ", "")))
+                except (TypeError, ValueError):
+                    await update.message.reply_text("❌ Неверное число.")
+                    return
+                if not (_lo <= _v <= _hi):
+                    await update.message.reply_text("❌ Неверное число.")
+                    return
+                _set[_k] = _v
+            for _k, _v in _set.items():
+                db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", ("cps_" + _k, str(_v)))
+            db.commit()
+            log_action(db, "cps_insp_cfg", user.id, user.first_name, None, None, _set)
+            await update.message.reply_text("✅ Сохранено.")
 
         elif action == "cps_fr_restore":
             # ELLE TETIKLEME. Normalde OTOMATIK calisir (`cps_insp_add` icinde,
