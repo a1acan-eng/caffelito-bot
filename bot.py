@@ -1016,7 +1016,10 @@ def get_db():
                        # = taban (saat × ставка) + night_pay. night_cfg = o anki ayarın
                        # kopyası (saat düzeltmesi ayarı DEĞİL bu kopyayı kullanır).
                        ("night_h", "REAL"), ("night_k", "REAL"), ("night_pay", "INTEGER"),
-                       ("night_cfg", "TEXT")):
+                       ("night_cfg", "TEXT"),
+                       # ÖDEME SINIRI (owner 2026-11-15): plan bitişinden sonra sменщик geldiyse
+                       # ödeme burada durur (end_time = gerçek çıkış kalır). pay_by = gelen kişi.
+                       ("pay_end", "TEXT"), ("pay_by", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -8727,6 +8730,51 @@ def par_light_rows(db, shift_row, end_dt):
         return []
 
 
+def shift_plan_end(db, uid, start):
+    """Grafik'teki planın bitişi: başlangıca ±4 saat içindeki en yakın plan hücresi."""
+    best = None
+    try:
+        for c in cov_cells(db, start.date() - timedelta(days=1), start.date(), uid=uid):
+            d = abs((c["s"] - start).total_seconds())
+            if d <= 4 * 3600 and (best is None or d < best[0]):
+                best = (d, c["e"])
+    except Exception as e:
+        logger.warning(f"shift_plan_end {uid}: {e}")
+    return best[1] if best else None
+
+
+def shift_pay_cap(db, sh, start, end_dt):
+    """Ödeme nerede durur (owner 2026-11-15: «sменщик geldiyse plan saatinden sonra yazmasın,
+    gelmediyse devam ettikçe yazılsın»). Döner (cap_dt, sменщик_uid) ya da (None, None):
+      · plan yok ya da çıkış plan bitişinden önce → sınır yok;
+      · aynı şubede SONRAKİ vardiyadaki biri (bu vardiyadan ≥1 saat sonra başlamış, çıkıştan
+        önce gelmiş) varsa ödeme max(plan bitişi, onun geliş saati) — sменщик geç geldiyse
+        onu bekleyen kişi geliş saatine kadar alır;
+      · kimse gelmediyse sınır yok (gerçek çıkışa kadar)."""
+    try:
+        uid, sid = int(sh["user_id"]), int(sh["id"])
+        bid = int(sh["branch_id"] or 0)
+    except Exception:
+        return None, None
+    pe = shift_plan_end(db, uid, start)
+    if not pe or end_dt <= pe:
+        return None, None
+    r = db.execute("SELECT user_id, start_time FROM shifts WHERE COALESCE(branch_id,0)=? AND user_id!=? "
+                   "AND id!=? AND COALESCE(par_of,0)!=? AND start_time IS NOT NULL "
+                   "AND start_time>=? AND start_time<? ORDER BY start_time LIMIT 1",
+                   (bid, uid, sid, sid, (start + timedelta(hours=1)).isoformat(), end_dt.isoformat())).fetchone()
+    if not r:
+        return None, None
+    try:
+        arr = datetime.fromisoformat(r["start_time"]).replace(tzinfo=None)
+    except Exception:
+        return None, None
+    cap = max(pe, arr)
+    if cap >= end_dt:
+        return None, None
+    return cap, int(r["user_id"])
+
+
 def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     """
     Aktif vardiyayı sonlandır.
@@ -8759,7 +8807,10 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # şubede birden çok AÇIK vardiya (barista+barista, ассистент+barista vb.) serbesttir.
     # Ödenecek saat: ŞUBEYE ÖZEL kapalı pencere düşülür + max ile sınırlı.
     _pc = branch_pay_window(db, _bid)
-    hours = paid_hours(start, end_dt, _pc)
+    # Plan bitişinden sonra sменщик geldiyse ödeme orada durur; end_time gerçek çıkış kalır.
+    _pay_end, _pay_by = shift_pay_cap(db, active, start, end_dt)
+    _pend = _pay_end or end_dt
+    hours = paid_hours(start, _pend, _pc)
     # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
     # ise satış (bardak+tatlı) bonusundan etkilenmez. Bardak bonus değerleri
     # kategorinin bonus sistemine göre: 'caffelito' preset'i veya 'own' (bizim/Цены).
@@ -8804,7 +8855,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     hourly_pay = int(hours * _rate)
     # GECE PRİMİ: o anki ayarla hesaplanır ve vardiyaya DONDURULUR (night_cfg kopyası).
     _ncfg = night_cfg_for(db, user_id)
-    _np = night_premium(start, end_dt, _pc, _rate, _ncfg, paid_h=hours)
+    _np = night_premium(start, _pend, _pc, _rate, _ncfg, paid_h=hours)
     hourly_pay += _np["pay"]
     total = hourly_pay + bonus
     # ── Fazla mesai (сверхурочные): KAPANIŞ ANINDA dondurulur (geriye dönük DEĞİL) ──
@@ -8827,14 +8878,19 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
         "desserts=?, dessert_bonus=?, overtime=?, overtime_h=?, par_light=?, par_n=?, par_with=?, "
-        "night_h=?, night_k=?, night_pay=?, night_cfg=? WHERE id=?",
+        "night_h=?, night_k=?, night_pay=?, night_cfg=?, pay_end=?, pay_by=? WHERE id=?",
         (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
          bonus, hourly_pay, total, note or "",
          json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h,
          1 if _par_light else None, _par_n,
          ("," + ",".join(str(int(r["id"])) for r in _par_with_rows) + ",") if _par_light else None,
          _np["h"], _np["k"], _np["pay"], json.dumps(_ncfg, ensure_ascii=False),
+         _pay_end.isoformat() if _pay_end else None, _pay_by,
          active["id"]))
+    if _pay_end:
+        log_action(db, "pay_capped", 0, "Nero", int(user_id), display_name_for(db, user_id, fallback="?"),
+                   {"shift_id": int(active["id"]), "end": end_dt.isoformat(), "paid_to": _pay_end.isoformat(),
+                    "relief": _pay_by})
     db.commit()
     # RESERVE: çalışılan gün kapandı → o günün katkısı (tek sefer, idempotent).
     try:
@@ -10754,7 +10810,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
                     "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
@@ -10806,7 +10862,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
                     "? AS nm, s.user_id AS uid FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
@@ -10820,14 +10876,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "0 AS hourly_pay, 0 AS bonus, 0 AS overtime, s.branch_id AS bid, "
             "0 AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
             "s.drinks AS drinks, s.note AS note, 0 AS dessert_bonus, "
-            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, "
+            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
             "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
             "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
             "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)]
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"]} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"], "pay_end": (r["pay_end"] if "pay_end" in r.keys() else None), "pay_by_n": (display_name_for(db, r["pay_by"], fallback="") if "pay_by" in r.keys() and r["pay_by"] else "")} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
@@ -15946,7 +16002,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _bonus = int(sh["bonus"] or 0)  # bardak/tatlı bonusu KORUNUR (saat düzenlemesi satışı değiştirmez)
             if end_dt:
                 _pc = branch_pay_window(db, _bid)
-                hours = paid_hours(start_dt, end_dt, _pc)
+                # Kapanıştaki kural burada da: sменщик gelmişse ödeme plan bitişinde durur.
+                _pay_end, _pay_by = shift_pay_cap(db, sh, start_dt, end_dt)
+                _pend = _pay_end or end_dt
+                hours = paid_hours(start_dt, _pend, _pc)
                 hourly_pay = int(hours * _rate)
                 # Gece primi: vardiyanın KAPANIŞTAKİ ayar kopyasıyla (night_cfg) — bugünkü
                 # ayar eski vardiyayı değiştirmez. Kopyası olmayan (özellikten önce
@@ -15955,7 +16014,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _snc = json.loads(sh["night_cfg"]) if ("night_cfg" in sh.keys() and sh["night_cfg"]) else None
                 except Exception:
                     _snc = None
-                _np = night_premium(start_dt, end_dt, _pc, _rate, _snc, paid_h=hours)
+                _np = night_premium(start_dt, _pend, _pc, _rate, _snc, paid_h=hours)
                 hourly_pay += _np["pay"]
                 ot_shift, ot_h = 0, 0.0
                 try:
@@ -15970,11 +16029,11 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 total = hourly_pay + _bonus
                 db.execute(
                     "UPDATE shifts SET start_time=?, end_time=?, hours=?, hourly_pay=?, total=?, "
-                    "overtime=?, overtime_h=?, period=?, night_h=?, night_k=?, night_pay=? WHERE id=?",
+                    "overtime=?, overtime_h=?, period=?, night_h=?, night_k=?, night_pay=?, pay_end=?, pay_by=? WHERE id=?",
                     (start_dt.isoformat(), end_dt.isoformat(), hours, hourly_pay, total,
                      ot_shift, ot_h, start_dt.strftime("%Y-%m"),
                      _np["h"] if _snc else sh["night_h"], _np["k"] if _snc else sh["night_k"],
-                     _np["pay"] if _snc else 0, sid))
+                     _np["pay"] if _snc else 0, _pay_end.isoformat() if _pay_end else None, _pay_by, sid))
             else:
                 # Açık vardiya → sadece giriş saatini güncelle (hâlâ açık kalır).
                 db.execute("UPDATE shifts SET start_time=?, period=? WHERE id=?",
