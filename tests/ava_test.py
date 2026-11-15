@@ -55,5 +55,13 @@ check(act(10, {'action': 'ava_refresh'})['ok'] is False, 'barista yenileyemez')
 check(act(1, {'action': 'ava_set', 'target': 10, 'data': base64.b64encode(b'<svg>').decode()})['ok'] is False, 'JPEG olmayan reddedilir')
 check(act(1, {'action': 'ava_set', 'target': 10, 'data': base64.b64encode(b'\xff\xd8' + b'x' * 500_000).decode()})['ok'] is False, 'çok büyük reddedilir')
 check(bot.AVA_TTL_H <= 6, 'otomatik yenileme sıklaştı')
+# Sürüm fotoğrafın içeriğinden: kimliğin son harfleri aynı olsa da foto değişince adres değişir
+PHOTOS[10] = 'XXXXsameEND1'
+act(1, {'action': 'ava_refresh', 'target': 10}); v1 = bot.ava_map(db)['10']
+PHOTOS[10] = 'YYYYsameEND1'
+act(1, {'action': 'ava_refresh', 'target': 10}); v2 = bot.ava_map(db)['10']
+check(v1 != v2, f'foto değişince adres değişir ({v1} → {v2})')
+act(1, {'action': 'ava_refresh', 'target': 10})
+check(bot.ava_map(db)['10'] == v2, 'foto aynıysa adres aynı kalır')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)

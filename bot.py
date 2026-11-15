@@ -2249,9 +2249,12 @@ def ava_map(db):
     """{uid: "/ava/<uid>.jpg?v=..&s=.."} — yalnız fotoğrafı olanlar."""
     out = {}
     try:
-        for r in db.execute("SELECT user_id, fetched_at, uid_file FROM avatars WHERE COALESCE(none,0)=0 AND data IS NOT NULL").fetchall():
-            _uf = r["uid_file"] or ""
-            v = _uf if _uf.startswith("m") else (_uf or r["fetched_at"] or "")[-10:]   # «m…» = elle yüklendi
+        for r in db.execute("SELECT user_id, data, COALESCE(manual,0) AS manual FROM avatars "
+                            "WHERE COALESCE(none,0)=0 AND data IS NOT NULL").fetchall():
+            # Sürüm = fotoğrafın İÇERİĞİ (owner 2026-11-15: «değişti ama girip çıkınca eskiye döndü»):
+            # eskiden Telegram kimliğinin son 10 harfiydi; farklı fotoğraflarda aynı çıkınca
+            # telefon önbellekteki eski resmi gösteriyordu. «m…» = elle yüklendi.
+            v = ("m" if r["manual"] else "") + hashlib.md5(bytes(r["data"])).hexdigest()[:12]
             out[str(r["user_id"])] = f"/ava/{int(r['user_id'])}.jpg?v={quote(v)}&s={ava_sig(r['user_id'])}"
     except Exception as e:
         logger.warning(f"ava_map: {e}")
@@ -22191,7 +22194,7 @@ async def web_ava(request):
     if not r or not r["data"]:
         return web.Response(status=404)
     return web.Response(body=bytes(r["data"]), content_type=r["mime"] or "image/jpeg",
-                        headers={"Cache-Control": "private, max-age=86400"})
+                        headers={"Cache-Control": "private, max-age=3600"})
 
 
 async def web_health(request):
