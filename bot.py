@@ -4659,10 +4659,10 @@ def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
         ids.append(cur.lastrowid)
         if amt > 0:
             dm = (f"🎉 Сюрприз! Проверка №{r['idx']}: {_fp}%.\n"
-                  f"Вы были на смене — вам начислена премия {fmt_sum(amt)} сум. Спасибо за отличную работу!")
+                  f"Вы проходили проверку — вам начислена премия {fmt_sum(amt)} сум. Спасибо за отличную работу!")
         else:
             dm = (f"⚠️ Проверка №{r['idx']}: {_fp}% — ниже {int(cfg['insp_fail_below'])}%.\n"
-                  f"Вы были на смене — удержание {fmt_sum(-amt)} сум.")
+                  f"Вы проходили проверку — удержание {fmt_sum(-amt)} сум.")
         out.append((uid, amt, dm))
     db.execute("UPDATE cps_inspections SET adj=? WHERE id=?", (json.dumps(ids), int(insp_id)))
     db.commit()
@@ -15212,10 +15212,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"\u0447\u0442\u043e\u0431\u044b \u0432\u043d\u0435\u0441\u0442\u0438 \u0434\u0440\u0443\u0433\u0443\u044e.")
                 return
             now_s = datetime.now(TZ).isoformat()
-            # KIM VARDI (owner 2026-11-15): formdan gelen liste; yoksa şu an vardiyada olanlar.
+            # KONTROLU KIM GECTI (owner 2026-11-15): kontrolcü bardaki TEK baristayı seçer;
+            # prim yalnız ona. Formdan gelen kişi; gelmezse yalnız vardiyada TEK kişi varsa o.
             _pp = data.get("people")
             if _pp is None:
                 _people = insp_people_default(db, bid)
+                if len(_people) != 1:
+                    _people = []
             else:
                 if isinstance(_pp, str):
                     _pp = [x for x in _pp.split(",") if x.strip()]
@@ -15245,7 +15248,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _fp = lambda v: (f"{float(v):.2f}").rstrip("0").rstrip(".")
             _msg = (f"\u2705 \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u2116{int(_prev) + 1} \u00b7 {_bn}: {_fp(sc)}"
                     f"\n\u0421\u0443\u043c\u043c\u0430 \u0437\u0430 \u043c\u0435\u0441\u044f\u0446: {_fp(_tot)} / {int(_cfg['fr_target'])}")
-            _msg += "\nНа смене: " + (", ".join(q["n"] for q in _people) if _people else "никого не отмечено")
+            _msg += "\nПроходил(а) проверку: " + (", ".join(q["n"] for q in _people) if _people else "не отмечено")
             if _money:
                 _ma = _money[0][1]
                 _msg += (f"\n{'🎉 Премия' if _ma > 0 else '⚠️ Удержание'} {fmt_sum(abs(_ma))} сум × {len(_money)}")
