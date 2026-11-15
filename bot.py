@@ -1019,7 +1019,9 @@ def get_db():
                        ("night_cfg", "TEXT"),
                        # ÖDEME SINIRI (owner 2026-11-15): plan bitişinden sonra sменщик geldiyse
                        # ödeme burada durur (end_time = gerçek çıkış kalır). pay_by = gelen kişi.
-                       ("pay_end", "TEXT"), ("pay_by", "INTEGER")):
+                       ("pay_end", "TEXT"), ("pay_by", "INTEGER"),
+                       # owner 2026-11-15: grafik saatinden önce başlatıp bekleyenin ödemesi buradan başlar.
+                       ("pay_start", "TEXT")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -4736,6 +4738,64 @@ def op_cfg_save(db, patch):
     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('op_grace_migrated','1')")
     db.commit()
     return op_cfg(db)
+
+
+def overlap30_migrate(db):
+    """TEK SEFER (owner 2026-11-15, şefin önerisi: 12 m²'de 4 kişi, akşamcılar dışarıda bekliyor):
+    gündüz bitişinden TAM 1 saat önce başlayan akşam vardiyası 30 dk ileri alınır → devir 30 dk.
+    Hem Grafik şablonları hem «Штраф за открытие» şube pencereleri. Döner değişen [(yer, eski, yeni)]."""
+    if db.execute("SELECT 1 FROM meta WHERE k='overlap30_mig'").fetchone():
+        return []
+    def hm(m):
+        m %= 1440
+        return f"{m // 60:02d}:{m % 60:02d}"
+    def fix(items, get_s, get_e):
+        """items: aynı şubenin (s, e) listesi → {indeks: yeni_başlangıç}."""
+        out = {}
+        for i, a in enumerate(items):
+            ae = _mins(get_e(a))
+            if ae is None:
+                continue
+            for j, b in enumerate(items):
+                if i == j:
+                    continue
+                bs = _mins(get_s(b))
+                if bs is not None and (ae - bs) % 1440 == 60 and _mins(get_s(a)) is not None and _mins(get_s(a)) < bs:
+                    out[j] = hm(ae - 30)
+        return out
+    changed = []
+    try:
+        rows = db.execute("SELECT code, branch_id, start_t, end_t FROM shift_templates WHERE COALESCE(active,1)=1").fetchall()
+        by_b = {}
+        for r in rows:
+            by_b.setdefault(int(r["branch_id"] or 0), []).append(dict(r))
+        for bid, items in by_b.items():
+            for j, ns in fix(items, lambda x: x["start_t"], lambda x: x["end_t"]).items():
+                db.execute("UPDATE shift_templates SET start_t=?, updated_at=? WHERE code=?",
+                           (ns, datetime.now(TZ).isoformat(), items[j]["code"]))
+                changed.append((f"шаблон {items[j]['code']}", items[j]["start_t"], ns))
+        cfg = op_cfg(db)
+        wins = dict(cfg.get("windows") or {})
+        wchg = False
+        for bk, lst in wins.items():
+            lst = [dict(x) for x in (lst or [])]
+            for j, ns in fix(lst, lambda x: x.get("s"), lambda x: x.get("e")).items():
+                changed.append((f"окно филиала {bk}", lst[j].get("s"), ns))
+                lst[j]["s"] = ns
+                wchg = True
+            wins[bk] = lst
+        if wchg:
+            cfg["windows"] = wins
+            db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('opening_penalty', ?)",
+                       (json.dumps(cfg, ensure_ascii=False),))
+        db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('overlap30_mig', ?)",
+                   (json.dumps(changed, ensure_ascii=False),))
+        db.commit()
+        if changed:
+            log_action(db, "overlap30_migrate", 0, "Nero", None, None, {"changed": changed})
+    except Exception as e:
+        logger.warning(f"overlap30_migrate: {e}")
+    return changed
 
 
 def op_rate_for(cfg, branch_id):
@@ -8730,17 +8790,62 @@ def par_light_rows(db, shift_row, end_dt):
         return []
 
 
-def shift_plan_end(db, uid, start):
-    """Grafik'teki planın bitişi: başlangıca ±4 saat içindeki en yakın plan hücresi."""
+def shift_plan(db, uid, start):
+    """Grafik'teki plan (başlangıç, bitiş): başlangıca ±4 saat içindeki en yakın hücre; yoksa (None, None)."""
     best = None
     try:
         for c in cov_cells(db, start.date() - timedelta(days=1), start.date(), uid=uid):
             d = abs((c["s"] - start).total_seconds())
             if d <= 4 * 3600 and (best is None or d < best[0]):
-                best = (d, c["e"])
+                best = (d, c["s"], c["e"])
     except Exception as e:
-        logger.warning(f"shift_plan_end {uid}: {e}")
-    return best[1] if best else None
+        logger.warning(f"shift_plan {uid}: {e}")
+    return (best[1], best[2]) if best else (None, None)
+
+
+def shift_plan_end(db, uid, start):
+    return shift_plan(db, uid, start)[1]
+
+
+def shift_pay_start(db, sh, start):
+    """Erken gelenin ödemesi nereden başlar (owner 2026-11-15: «dışarıda bekliyorlar, süreleri
+    geçiyor»). Grafik saatinden önce başlatılan süre, ÖNCEKİ vardiyadaki kişi hâlâ şubedeyken
+    ödenmez (bekleme). Önceki kişi erken çıktıysa (tek başına çalışıyor) onun çıkışından,
+    kimse yoksa gerçek başlangıçtan ödenir. Owner erken çağırdıysa (devir «вызвать раньше»)
+    gerçek başlangıçtan. Döner: ödeme başlangıcı ya da None (değişiklik yok)."""
+    try:
+        uid, sid, bid = int(sh["user_id"]), int(sh["id"]), int(sh["branch_id"] or 0)
+    except Exception:
+        return None
+    ps, _pe = shift_plan(db, uid, start)
+    if not ps or start >= ps:
+        return None
+    try:
+        if db.execute("SELECT 1 FROM handover WHERE branch_id=? AND b2_uid=? AND call_status='used' "
+                      "AND b2_arrived_at>=? AND b2_arrived_at<=? LIMIT 1",
+                      (bid, uid, (start - timedelta(minutes=5)).isoformat(),
+                       (start + timedelta(minutes=5)).isoformat())).fetchone():
+            return None
+    except Exception:
+        pass
+    covered = None
+    try:
+        _grp = int(sh["par_of"] or 0) or sid      # paralel grup: aynı anda çalışan ikinci barista önceki değil
+    except Exception:
+        _grp = sid
+    for r in db.execute("SELECT start_time, end_time FROM shifts WHERE COALESCE(branch_id,0)=? AND user_id!=? "
+                        "AND id!=? AND start_time IS NOT NULL AND start_time<? "
+                        "AND (end_time IS NULL OR end_time>?) AND id!=? AND COALESCE(par_of,0) NOT IN (?,?)",
+                        (bid, uid, sid, start.isoformat(), start.isoformat(), _grp, _grp, sid)).fetchall():
+        try:
+            en = datetime.fromisoformat(r["end_time"]).replace(tzinfo=None) if r["end_time"] else ps
+        except Exception:
+            en = ps
+        covered = en if covered is None else max(covered, en)
+    if covered is None:
+        return None
+    pst = min(ps, covered)
+    return pst if pst > start else None
 
 
 def shift_pay_cap(db, sh, start, end_dt):
@@ -8810,7 +8915,9 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     # Plan bitişinden sonra sменщик geldiyse ödeme orada durur; end_time gerçek çıkış kalır.
     _pay_end, _pay_by = shift_pay_cap(db, active, start, end_dt)
     _pend = _pay_end or end_dt
-    hours = paid_hours(start, _pend, _pc)
+    _pay_from = shift_pay_start(db, active, start)
+    _pstart = min(_pay_from, _pend) if _pay_from else start
+    hours = paid_hours(_pstart, _pend, _pc)
     # Saatlik ücret: baristanın maaş kategorisinden (yoksa global). KPI kategorisi
     # ise satış (bardak+tatlı) bonusundan etkilenmez. Bardak bonus değerleri
     # kategorinin bonus sistemine göre: 'caffelito' preset'i veya 'own' (bizim/Цены).
@@ -8855,7 +8962,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     hourly_pay = int(hours * _rate)
     # GECE PRİMİ: o anki ayarla hesaplanır ve vardiyaya DONDURULUR (night_cfg kopyası).
     _ncfg = night_cfg_for(db, user_id)
-    _np = night_premium(start, _pend, _pc, _rate, _ncfg, paid_h=hours)
+    _np = night_premium(_pstart, _pend, _pc, _rate, _ncfg, paid_h=hours)
     hourly_pay += _np["pay"]
     total = hourly_pay + bonus
     # ── Fazla mesai (сверхурочные): KAPANIŞ ANINDA dondurulur (geriye dönük DEĞİL) ──
@@ -8878,7 +8985,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
     db.execute(
         "UPDATE shifts SET end_time=?, hours=?, drinks=?, bonus=?, hourly_pay=?, total=?, note=?, "
         "desserts=?, dessert_bonus=?, overtime=?, overtime_h=?, par_light=?, par_n=?, par_with=?, "
-        "night_h=?, night_k=?, night_pay=?, night_cfg=?, pay_end=?, pay_by=? WHERE id=?",
+        "night_h=?, night_k=?, night_pay=?, night_cfg=?, pay_end=?, pay_by=?, pay_start=? WHERE id=?",
         (end_dt.isoformat(), hours, json.dumps(drinks or {}, ensure_ascii=False),
          bonus, hourly_pay, total, note or "",
          json.dumps(desserts or {}, ensure_ascii=False), dessert_bonus, ot_shift, ot_h,
@@ -8886,6 +8993,7 @@ def end_shift(db, user_id, drinks, note="", desserts=None, custom_end=None):
          ("," + ",".join(str(int(r["id"])) for r in _par_with_rows) + ",") if _par_light else None,
          _np["h"], _np["k"], _np["pay"], json.dumps(_ncfg, ensure_ascii=False),
          _pay_end.isoformat() if _pay_end else None, _pay_by,
+         _pay_from.isoformat() if _pay_from else None,
          active["id"]))
     if _pay_end:
         log_action(db, "pay_capped", 0, "Nero", int(user_id), display_name_for(db, user_id, fallback="?"),
@@ -10810,7 +10918,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
                     "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
@@ -10862,7 +10970,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
                     "? AS nm, s.user_id AS uid FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
@@ -10876,14 +10984,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "0 AS hourly_pay, 0 AS bonus, 0 AS overtime, s.branch_id AS bid, "
             "0 AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
             "s.drinks AS drinks, s.note AS note, 0 AS dessert_bonus, "
-            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, "
+            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
             "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
             "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
             "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)]
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"], "pay_end": (r["pay_end"] if "pay_end" in r.keys() else None), "pay_by_n": (display_name_for(db, r["pay_by"], fallback="") if "pay_by" in r.keys() and r["pay_by"] else "")} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"], "pay_end": (r["pay_end"] if "pay_end" in r.keys() else None), "pay_start": (r["pay_start"] if "pay_start" in r.keys() else None), "pay_by_n": (display_name_for(db, r["pay_by"], fallback="") if "pay_by" in r.keys() and r["pay_by"] else "")} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
@@ -16005,7 +16113,9 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 # Kapanıştaki kural burada da: sменщик gelmişse ödeme plan bitişinde durur.
                 _pay_end, _pay_by = shift_pay_cap(db, sh, start_dt, end_dt)
                 _pend = _pay_end or end_dt
-                hours = paid_hours(start_dt, _pend, _pc)
+                _pay_from = shift_pay_start(db, sh, start_dt)
+                _pstart = min(_pay_from, _pend) if _pay_from else start_dt
+                hours = paid_hours(_pstart, _pend, _pc)
                 hourly_pay = int(hours * _rate)
                 # Gece primi: vardiyanın KAPANIŞTAKİ ayar kopyasıyla (night_cfg) — bugünkü
                 # ayar eski vardiyayı değiştirmez. Kopyası olmayan (özellikten önce
@@ -16014,7 +16124,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _snc = json.loads(sh["night_cfg"]) if ("night_cfg" in sh.keys() and sh["night_cfg"]) else None
                 except Exception:
                     _snc = None
-                _np = night_premium(start_dt, _pend, _pc, _rate, _snc, paid_h=hours)
+                _np = night_premium(_pstart, _pend, _pc, _rate, _snc, paid_h=hours)
                 hourly_pay += _np["pay"]
                 ot_shift, ot_h = 0, 0.0
                 try:
@@ -16029,11 +16139,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 total = hourly_pay + _bonus
                 db.execute(
                     "UPDATE shifts SET start_time=?, end_time=?, hours=?, hourly_pay=?, total=?, "
-                    "overtime=?, overtime_h=?, period=?, night_h=?, night_k=?, night_pay=?, pay_end=?, pay_by=? WHERE id=?",
+                    "overtime=?, overtime_h=?, period=?, night_h=?, night_k=?, night_pay=?, pay_end=?, pay_by=?, pay_start=? WHERE id=?",
                     (start_dt.isoformat(), end_dt.isoformat(), hours, hourly_pay, total,
                      ot_shift, ot_h, start_dt.strftime("%Y-%m"),
                      _np["h"] if _snc else sh["night_h"], _np["k"] if _snc else sh["night_k"],
-                     _np["pay"] if _snc else 0, _pay_end.isoformat() if _pay_end else None, _pay_by, sid))
+                     _np["pay"] if _snc else 0, _pay_end.isoformat() if _pay_end else None, _pay_by,
+                     _pay_from.isoformat() if _pay_from else None, sid))
             else:
                 # Açık vardiya → sadece giriş saatini güncelle (hâlâ açık kalır).
                 db.execute("UPDATE shifts SET start_time=?, period=? WHERE id=?",
@@ -22017,6 +22128,21 @@ async def scheduled_orders_loop(app):
 async def setup_commands(app):
     """Default komut listesi — barista minimali. Owner'lar per-chat override alır."""
     await app.bot.set_my_commands(BARISTA_COMMANDS, scope=BotCommandScopeDefault())
+    # Devir 1 saat → 30 dk (owner 2026-11-15): tek seferlik; owner'a ne değiştiğini yaz.
+    try:
+        _db0 = get_db()
+        _ch = overlap30_migrate(_db0)
+        if _ch:
+            _txt = ("🕐 Передача смены сокращена до 30 минут\n\n" + "\n".join(f"• {w}: {a} → {b}" for w, a, b in _ch)
+                    + "\n\nВечерняя смена начинается на 30 минут позже; штраф за опоздание считается от нового времени. "
+                      "Изменить можно в «График смен → Шаблоны» и в «Штраф за открытие».")
+            for _o in _db0.execute("SELECT user_id FROM users WHERE role='owner'").fetchall():
+                try:
+                    await app.bot.send_message(int(_o["user_id"]), _txt)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"overlap30 startup: {e}")
     # Kayıtlı aktif grup (test/şube için /setgroup ile değiştirilebilir) — restart'ta yüklensin
     try:
         _db = get_db()
