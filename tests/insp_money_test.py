@@ -36,7 +36,7 @@ check([x['id'] for x in c if x['on']] == [10, 11] and 12 in [x['id'] for x in c]
 # 1) 96% → listede olmayan (people yok) → şu an vardiyadakilere prim 300.000
 sent.clear()
 act(1, {'action': 'cps_insp_add', 'branch_id': 1, 'score': 96.5, 'period': per})
-check(len(adj(10)) == 1 and adj(10)[0]['amount'] == 300000 and len(adj(11)) == 1 and not adj(12), 'varsayılan: vardiyadakilere 300.000')
+check(len(adj(10)) == 1 and adj(10)[0]['amount'] == 600000 and len(adj(11)) == 1 and not adj(12), f'96.5 → vardiyadakilere 600.000 ({adj(10)})')
 check(any(ch == 10 and 'Сюрприз' in (tx or '') for ch, tx in sent), 'kişiye DM')
 check(any(str(ch) == '-100' and 'Сюрприз-премия' in (tx or '') for ch, tx in sent), 'gruba duyuru')
 r = db.execute("SELECT * FROM cps_inspections WHERE idx=1").fetchone()
@@ -50,7 +50,7 @@ check(not adj(12), 'kesinti 0 → yok')
 r = db.execute("SELECT id FROM cps_inspections ORDER BY id DESC").fetchone()
 act(1, {'action': 'cps_insp_del', 'id': r['id']})
 # 4) ayar: prim 500.000 ≥95, kesinti 100.000 <80
-act(1, {'action': 'cps_insp_cfg', 'insp_bonus_amt': '500000', 'insp_fail_amt': '100000', 'insp_fail_below': '80', 'insp_bonus_at': '95'})
+act(1, {'action': 'cps_insp_cfg', 'insp_bonus_amt': '500000', 'insp_bonus_step': '100000', 'insp_fail_amt': '100000', 'insp_fail_below': '80', 'insp_bonus_at': '95'})
 cfg = bot.cps_cfg(db)
 check(cfg['insp_bonus_amt'] == 500000 and cfg['insp_fail_amt'] == 100000, 'ayar kaydedildi')
 act(10, {'action': 'cps_insp_cfg', 'insp_bonus_amt': '1'})
@@ -63,5 +63,14 @@ check([a['amount'] for a in adj(10)] == [500000] and sorted(a['amount'] for a in
 db.execute("INSERT INTO cps_inspections (period,branch_id,idx,score,people) VALUES (?,1,9,88,?)", (per, json.dumps([{'id': 11, 'n': 'Ubay'}])))
 iid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 check(bot.insp_apply_money(db, iid) == [] and not adj(11), '88 → para yok')
+# kademe: 95→500k … 100→1M
+db.execute("INSERT INTO cps_inspections (period,branch_id,idx,score,people) VALUES (?,1,8,?,?)", (per, 0, json.dumps([{'id': 11, 'n': 'Ubay'}])))
+iid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+got = []
+for sc in (95, 96, 97.9, 99, 100):
+    db.execute("DELETE FROM adjustments WHERE note LIKE ?", (f"%[insp:{iid}]%",))
+    db.execute("UPDATE cps_inspections SET score=? WHERE id=?", (sc, iid)); db.commit()
+    got.append(bot.insp_apply_money(db, iid)[0][1])
+check(got == [500000, 600000, 700000, 900000, 1000000], f'kademe ({got})')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)

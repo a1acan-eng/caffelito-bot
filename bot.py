@@ -4223,7 +4223,8 @@ CPS_DEFAULTS = {
     "fr_restore": 100,   # odul saglanirsa puan buraya cekilir
     # KONTROL PRIMI / KESINTISI (owner 2026-11-15): o kontrolde subede olan HER kisiye.
     "insp_bonus_at": 95,        # bu yuzde ve ustu → surpriz prim
-    "insp_bonus_amt": 300000,   # сум, kisi basi (owner belirler)
+    "insp_bonus_amt": 500000,   # сум, kisi basi, esikte (owner 2026-11-15: 95% → 500.000)
+    "insp_bonus_step": 100000,  # esigin ustundeki HER TAM yuzde icin + (96 → 600.000 … 100 → 1.000.000)
     "insp_fail_below": 80,      # bu yuzdenin ALTI → kesinti
     "insp_fail_amt": 0,         # сум, kisi basi; 0 = kesinti kapali
 }
@@ -4635,7 +4636,8 @@ def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
     _fp = (f"{sc:.2f}").rstrip("0").rstrip(".")
     amt, txt = 0, ""
     if sc >= float(cfg.get("insp_bonus_at") or 95) and int(cfg.get("insp_bonus_amt") or 0) > 0:
-        amt = int(cfg["insp_bonus_amt"])
+        # Tam yuzde basina artar: 96.7 → 96 sayilir (duyurudaki tablo ile ayni).
+        amt = int(cfg["insp_bonus_amt"]) + max(0, int(sc + 1e-9) - int(cfg.get("insp_bonus_at") or 95)) * int(cfg.get("insp_bonus_step") or 0)
         txt = f"Премия за проверку №{r['idx']} · {_fp}%"
     elif sc < float(cfg.get("insp_fail_below") or 0) and int(cfg.get("insp_fail_amt") or 0) > 0:
         amt = -int(cfg["insp_fail_amt"])
@@ -15326,7 +15328,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if get_role(db, user.id) != "owner":
                 await update.message.reply_text("\u274c \u0422\u043e\u043b\u044c\u043a\u043e \u0432\u043b\u0430\u0434\u0435\u043b\u0435\u0446.")
                 return
-            _lim = {"insp_bonus_at": (1, 100), "insp_bonus_amt": (0, 100000000),
+            _lim = {"insp_bonus_at": (1, 100), "insp_bonus_amt": (0, 100000000), "insp_bonus_step": (0, 100000000),
                     "insp_fail_below": (0, 100), "insp_fail_amt": (0, 100000000)}
             _set = {}
             for _k, (_lo, _hi) in _lim.items():
