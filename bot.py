@@ -6977,7 +6977,7 @@ def calc_summary(db, user_id, period=None):
         "fines_count": len(fines),
         "shifts": [dict(s) for s in shifts],
         "fines_list": [dict(f) for f in fines],
-        "active": dict(active) if active else None,
+        "active": (dict(active, pay_from=shift_pay_from_live(db, active)) if active else None),
     }
 
 
@@ -8991,6 +8991,19 @@ def shift_plan(db, uid, start):
 
 def shift_plan_end(db, uid, start):
     return shift_plan(db, uid, start)[1]
+
+
+def shift_pay_from_live(db, sh):
+    """Açık vardiya için ödeme başlangıcı (canlı sayaç, owner 2026-11-15): kapanıştaki
+    `shift_pay_start` kuralının aynısı. ISO metin ya da None."""
+    try:
+        if not sh or sh["end_time"] or not sh["start_time"]:
+            return None
+        st = datetime.fromisoformat(sh["start_time"]).replace(tzinfo=None)
+        pf = shift_pay_start(db, sh, st)
+        return pf.isoformat() if pf else None
+    except Exception:
+        return None
 
 
 def shift_pay_start(db, sh, start):
@@ -11187,6 +11200,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                    "settled": int(r["settled"] or 0), "settled_at": r["settled_at"] or "", "via": r["via"] or ""} for r in _fi],
         "loans": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "reason": r["reason"] or "", "status": r["status"] or "", "at": r["created_at"]} for r in _lo],
     }
+    # Açık vardiyalar: canlı «ödeme başlangıcı» (erken gelen bekliyor) — sayaç kapanışla aynı saysın.
+    for _x in rep["shifts"]:
+        if not _x.get("end_time") and _x.get("start_time") and not _x.get("pay_start"):
+            try:
+                _sr = db.execute("SELECT * FROM shifts WHERE id=?", (int(_x["sid"]),)).fetchone()
+                _x["pay_start"] = shift_pay_from_live(db, _sr)
+            except Exception:
+                pass
     parts.append(f"rep={quote(json.dumps(rep, ensure_ascii=False))}")
     if role == "owner":
         rows = db.execute(
