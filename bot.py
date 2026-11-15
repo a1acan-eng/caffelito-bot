@@ -1035,7 +1035,9 @@ def get_db():
                        # ödeme burada durur (end_time = gerçek çıkış kalır). pay_by = gelen kişi.
                        ("pay_end", "TEXT"), ("pay_by", "INTEGER"),
                        # owner 2026-11-15: grafik saatinden önce başlatıp bekleyenin ödemesi buradan başlar.
-                       ("pay_start", "TEXT")):
+                       ("pay_start", "TEXT"),
+                       # Owner istisnası (2026-11-15): bu vardiyada erken gelişin beklemesi de ödenir.
+                       ("pay_full", "INTEGER")):
         try:
             db.execute(f"ALTER TABLE shifts ADD COLUMN {_sc2} {_sd2}")
         except sqlite3.OperationalError:
@@ -9016,6 +9018,11 @@ def shift_pay_start(db, sh, start):
         uid, sid, bid = int(sh["user_id"]), int(sh["id"]), int(sh["branch_id"] or 0)
     except Exception:
         return None
+    try:
+        if int(sh["pay_full"] or 0):
+            return None          # owner «оплатить с прихода» dedi
+    except Exception:
+        pass
     ps, _pe = shift_plan(db, uid, start)
     if not ps or start >= ps:
         return None
@@ -11117,7 +11124,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, s.pay_full AS pay_full, "
                     "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
                     "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
                     "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)
@@ -11169,7 +11176,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                     "COALESCE(s.overtime,0) AS overtime, s.branch_id AS bid, "
                     "s.rate AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
                     "s.drinks AS drinks, s.note AS note, COALESCE(s.dessert_bonus,0) AS dessert_bonus, "
-                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
+                    "COALESCE(s.night_h,0) AS night_h, COALESCE(s.night_pay,0) AS night_pay, s.night_k AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, s.pay_full AS pay_full, "
                     "? AS nm, s.user_id AS uid FROM shifts s "
                     "WHERE s.user_id=? AND s.start_time IS NOT NULL ORDER BY s.start_time DESC",
                     (show_name, user_id), 90)
@@ -11183,14 +11190,14 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             "0 AS hourly_pay, 0 AS bonus, 0 AS overtime, s.branch_id AS bid, "
             "0 AS rate, s.cat_name AS cat_name, s.shift_role AS shift_role, "
             "s.drinks AS drinks, s.note AS note, 0 AS dessert_bonus, "
-            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, "
+            "COALESCE(s.night_h,0) AS night_h, 0 AS night_pay, NULL AS night_k, s.pay_end AS pay_end, s.pay_by AS pay_by, s.pay_start AS pay_start, s.pay_full AS pay_full, "
             "COALESCE(u.display_name,u.name) AS nm, s.user_id AS uid "
             "FROM shifts s LEFT JOIN users u ON u.user_id=s.user_id "
             "WHERE s.start_time IS NOT NULL ORDER BY s.start_time DESC", (), 150)]
         _or = _repq("SELECT id, user_name AS nm, items, created_at, branch_id AS bid FROM orders ORDER BY id DESC", (), 60)
         _ti = _pa = _fi = _lo = []
     rep = {
-        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"], "pay_end": (r["pay_end"] if "pay_end" in r.keys() else None), "pay_start": (r["pay_start"] if "pay_start" in r.keys() else None), "pay_by_n": (display_name_for(db, r["pay_by"], fallback="") if "pay_by" in r.keys() and r["pay_by"] else "")} for r in _sh],
+        "shifts": [{"sid": r["sid"], "nm": r["nm"] or "?", "uid": r["uid"], "start_time": r["start_time"], "end_time": r["end_time"], "hours": r["hours"] or 0, "total": r["total"] or 0, "hourly_pay": r["hourly_pay"] or 0, "bonus": r["bonus"] or 0, "overtime": r["overtime"] or 0, "bid": r["bid"] or 1, "rate": r["rate"], "cat_name": r["cat_name"] or "", "shift_role": r["shift_role"] or "", "drinks": r["drinks"] or "{}", "note": r["note"] or "", "dessert_bonus": r["dessert_bonus"] or 0, "night_h": r["night_h"] or 0, "night_pay": r["night_pay"] or 0, "night_k": r["night_k"], "pay_end": (r["pay_end"] if "pay_end" in r.keys() else None), "pay_start": (r["pay_start"] if "pay_start" in r.keys() else None), "pay_full": (int(r["pay_full"] or 0) if "pay_full" in r.keys() else 0), "pay_by_n": (display_name_for(db, r["pay_by"], fallback="") if "pay_by" in r.keys() and r["pay_by"] else "")} for r in _sh],
         "orders": [{"id": r["id"], "nm": r["nm"] or "?", "items": r["items"] or "", "at": r["created_at"], "bid": r["bid"] or 1} for r in _or],
         "tips": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "note": r["note"] or "", "at": r["created_at"], "per": r["per"] or ""} for r in _ti],
         "pays": [{"id": r["id"], "nm": r["nm"] or "?", "amount": r["amount"] or 0, "kind": r["kind"] or "", "note": r["note"] or "", "at": r["paid_at"], "per": r["per"] or ""} for r in _pa],
@@ -16351,6 +16358,30 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if row:
                     log_action(db, "delete_shift", user.id, user.first_name, row["user_id"],
                                display_name_for(db, row["user_id"]), {"shift_id": sid})
+
+        elif action == "shift_pay_full":
+            # Owner: bu vardiyada erken gelişin beklemesi de ödensin (istisna, owner 2026-11-15:
+            # «kurallar yeni değişti, Ubay'ınki gelişinden sayılsın»). Kapalı vardiya yeniden hesaplanır.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}
+                return
+            try:
+                sid = int(data.get("id") or 0)
+            except Exception:
+                sid = 0
+            sh = db.execute("SELECT * FROM shifts WHERE id=?", (sid,)).fetchone() if sid else None
+            if not sh:
+                context.result = {"ok": False, "error": "Смена не найдена."}
+                return
+            _on = 1 if data.get("on", 1) else 0
+            db.execute("UPDATE shifts SET pay_full=? WHERE id=?", (_on or None, sid))
+            db.commit()
+            log_action(db, "shift_pay_full", user.id, user.first_name, sh["user_id"], None, {"sid": sid, "on": _on})
+            if sh["end_time"]:
+                await handle_webapp_data(_ShimUpdate(context.bot, user.id, user.first_name, getattr(user, "username", None),
+                                                     json.dumps({"action": "edit_shift", "id": sid})), context)
+            context.result = {"ok": True, "on": _on}
 
         elif action == "edit_shift":
             # Owner: bir vardiyanın giriş/çıkış saatini ELLE düzelt (yanlış kayıtları
