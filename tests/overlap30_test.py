@@ -1,4 +1,4 @@
-# Devir 1 saat → 30 dk + erken gelen bekleme ücreti almaz (owner 2026-11-15).
+# Devir 30 dk, iki vardiya eşit (owner seçimi B) + erken gelen bekleme ücreti almaz (owner 2026-11-15).
 # Çalıştırma: rm -f /tmp/ov.db; PYTHONPATH=. DB_PATH=/tmp/ov.db BOT_TOKEN=123:abc python tests/overlap30_test.py
 import json, bot
 from datetime import datetime, timedelta
@@ -22,15 +22,22 @@ bot.op_cfg_save(db, {'windows': {'1': [{'s': '07:00', 'e': '17:30'}, {'s': '16:3
 # ── 1) geçiş ──
 ch = bot.overlap30_migrate(db)
 T = {r['code']: (r['start_t'], r['end_t']) for r in db.execute("SELECT * FROM shift_templates")}
-check(T['c5n'] == ('17:00', '03:00') and T['mgn'] == ('16:00', '01:00'), f'akşam şablonları 30 dk ileri ({T})')
-check(T['c5d'] == ('07:00', '17:30') and T['mgd'] == ('07:00', '16:30') and T['mgf'] == ('07:00', '00:00'), 'gündüz ve tam gün değişmez')
+check(T['c5d'] == ('07:00', '17:15') and T['c5n'] == ('16:45', '03:00'), f'C5: 10 sa 15 dk + 10 sa 15 dk ({T})')
+check(T['mgd'] == ('07:00', '16:15') and T['mgn'] == ('15:45', '01:00'), 'Magic: 9 sa 15 dk + 9 sa 15 dk')
+check(T['mgf'] == ('07:00', '00:00'), 'tam gün değişmez')
 W = bot.op_cfg(db)['windows']
-check(W['1'][1]['s'] == '17:00' and W['2'][1]['s'] == '16:00' and W['1'][0]['s'] == '07:00', f'ceza pencereleri de ({W})')
-check(len(ch) == 4, f'değişiklik listesi ({ch})')
-check(bot.overlap30_migrate(db) == [] and {r['code']: r['start_t'] for r in db.execute("SELECT * FROM shift_templates")}['c5n'] == '17:00',
+check(W['1'] == [{'s': '07:00', 'e': '17:15'}, {'s': '16:45', 'e': '03:00'}] and W['2'][1]['s'] == '15:45', f'ceza pencereleri de ({W})')
+check(len(ch) == 8, f'değişiklik listesi ({ch})')
+check(bot.overlap30_migrate(db) == [] and {r['code']: r['start_t'] for r in db.execute("SELECT * FROM shift_templates")}['c5n'] == '16:45',
       'ikinci kez çalışmaz')
-s0, e0 = bot.op_window_for(bot.op_cfg(db), 1, datetime(2026, 11, 20, 17, 10))
-check(s0 == datetime(2026, 11, 20, 17, 0), f'17:10 geliş → 17:00 vardiyasına 10 dk geç ({s0})')
+s0, e0 = bot.op_window_for(bot.op_cfg(db), 1, datetime(2026, 11, 20, 17, 0))
+check(s0 == datetime(2026, 11, 20, 16, 45), f'17:00 geliş → 16:45 vardiyasına 15 dk geç ({s0})')
+# canlıdaki durum (ilk sürüm çalıştı: 17:30 / 17:00, devir 30) → aynı sonuç
+db.execute("DELETE FROM meta WHERE k='overlap_split_mig'")
+db.execute("UPDATE shift_templates SET end_t='17:30' WHERE code='c5d'"); db.execute("UPDATE shift_templates SET start_t='17:00' WHERE code='c5n'")
+db.commit(); bot.overlap30_migrate(db)
+T = {r['code']: (r['start_t'], r['end_t']) for r in db.execute("SELECT * FROM shift_templates")}
+check(T['c5d'][1] == '17:15' and T['c5n'][0] == '16:45' and T['mgn'][0] == '15:45', f'17:30/17:00 → 17:15/16:45 ({T})')
 
 # ── 2) erken gelen bekleme ücreti almaz ──
 def grid(uid, d, code):
@@ -44,21 +51,21 @@ pw = bot.branch_pay_window(db, 1)
 D = datetime(2026, 11, 20)
 grid(10, D.date(), 'c5d'); grid(11, D.date(), 'c5n')
 open_shift(10, D + timedelta(hours=7))
-open_shift(11, D + timedelta(hours=16, minutes=40))          # 20 dk erken geldi, Karina içeride
-close(10, D + timedelta(hours=17, minutes=30))
+open_shift(11, D + timedelta(hours=16, minutes=20))          # 25 dk erken geldi, Karina içeride
+close(10, D + timedelta(hours=17, minutes=15))
 r = close(11, D + timedelta(hours=26))                        # 02:00
-want = bot.paid_hours(D + timedelta(hours=17), D + timedelta(hours=26), pw)
-check(r['pay_start'] and r['pay_start'].startswith('2026-11-20T17:00') and abs(r['hours'] - want) < 0.01,
-      f'erken gelen: ödeme 17:00\'dan ({r["pay_start"]}, {r["hours"]} ≈ {want:.2f})')
-check(r['start_time'].startswith('2026-11-20T16:40'), '«Пришли» gerçek saat kalır')
-# önceki kişi izinle erken çıktı (16:50) → 16:50'den itibaren tek başına → ödenir
+want = bot.paid_hours(D + timedelta(hours=16, minutes=45), D + timedelta(hours=26), pw)
+check(r['pay_start'] and r['pay_start'].startswith('2026-11-20T16:45') and abs(r['hours'] - want) < 0.01,
+      f'erken gelen: ödeme 16:45\'ten ({r["pay_start"]}, {r["hours"]} ≈ {want:.2f})')
+check(r['start_time'].startswith('2026-11-20T16:20'), '«Пришли» gerçek saat kalır')
+# önceki kişi izinle erken çıktı (16:30) → 16:30'dan itibaren tek başına → ödenir
 D2 = D + timedelta(days=1)
 grid(10, D2.date(), 'c5d'); grid(11, D2.date(), 'c5n')
 open_shift(10, D2 + timedelta(hours=7))
-open_shift(11, D2 + timedelta(hours=16, minutes=35))
-close(10, D2 + timedelta(hours=16, minutes=50))
+open_shift(11, D2 + timedelta(hours=16, minutes=15))
+close(10, D2 + timedelta(hours=16, minutes=30))
 r = close(11, D2 + timedelta(hours=26))
-check(r['pay_start'] and r['pay_start'].startswith('2026-11-21T16:50'), f'önceki erken çıktı: onun çıkışından ödenir ({r["pay_start"]})')
+check(r['pay_start'] and r['pay_start'].startswith('2026-11-21T16:30'), f'önceki erken çıktı: onun çıkışından ödenir ({r["pay_start"]})')
 # kimse yokken erken gelen (boş şube) → gerçek başlangıçtan
 D3 = D + timedelta(days=2)
 grid(11, D3.date(), 'c5n')
@@ -69,8 +76,8 @@ check(r['pay_start'] is None, 'şubede kimse yoksa erken başlangıç ödenir')
 D4 = D + timedelta(days=3)
 grid(10, D4.date(), 'c5d'); grid(11, D4.date(), 'c5n')
 open_shift(10, D4 + timedelta(hours=7))
-open_shift(11, D4 + timedelta(hours=17, minutes=5))
-close(10, D4 + timedelta(hours=17, minutes=30))
+open_shift(11, D4 + timedelta(hours=16, minutes=50))
+close(10, D4 + timedelta(hours=17, minutes=15))
 r = close(11, D4 + timedelta(hours=26))
 check(r['pay_start'] is None, 'zamanında/geç gelen: dokunulmaz')
 # paralel ikinci barista (par_of) erken katılırsa kesilmez
@@ -80,7 +87,7 @@ open_shift(10, D5 + timedelta(hours=7))
 root = db.execute("SELECT id FROM shifts WHERE user_id=10 AND end_time IS NULL").fetchone()[0]
 open_shift(12, D5 + timedelta(hours=16, minutes=30))
 db.execute("UPDATE shifts SET par_of=? WHERE user_id=12 AND end_time IS NULL", (root,)); db.commit()
-close(10, D5 + timedelta(hours=17, minutes=30))
+close(10, D5 + timedelta(hours=17, minutes=15))
 r = close(12, D5 + timedelta(hours=26))
 check(r['pay_start'] is None, 'paralel grup üyesi önceki sayılmaz')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
