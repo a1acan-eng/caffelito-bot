@@ -7503,6 +7503,32 @@ def adv_create_manual(db, user_id, amount, n_inst, step_days, actor_id, actor_na
     return None, aid
 
 
+def adv_create_instant(db, user_id, amount, actor_id, actor_name, note=""):
+    """ANINDA AVANS (owner 2026-11-16: «normal avans alınması ve anında hesabından kesilmesi»).
+    Owner nakit verdi → TEK parça, vadesi BUGÜN, komisyon yok: bu dekadın hesabından hemen
+    düşer (raporda «аванс»; корректировка değil). Döner: (hata | None, advance_id)."""
+    try:
+        amount = int(amount or 0)
+    except Exception:
+        return "Неверная сумма.", None
+    if not (1 <= amount <= 100_000_000):
+        return "Укажите сумму.", None
+    info = adv_salary_info(db, user_id)
+    now = datetime.now(TZ).isoformat()
+    today = _adv_today()
+    cur = db.execute(
+        "INSERT INTO advances (user_id,month,amount,commission_pct,commission,total,salary,adv_limit,"
+        "status,created_at,created_by,decided_by,decided_by_name,decided_at,decision_note,manual,n_inst,step_days) "
+        "VALUES (?,?,?,0,0,?,?,?,'active',?,?,?,?,?,?,1,1,10)",
+        (user_id, current_period(), amount, amount, info["salary"], info["limit"],
+         now, actor_id, actor_id, actor_name, now, (note or "Аванс · сразу из зарплаты").strip()[:200]))
+    aid = cur.lastrowid
+    db.execute("INSERT INTO advance_inst (advance_id,user_id,n,due_date,period,amount) VALUES (?,?,1,?,?,?)",
+               (aid, user_id, today.isoformat(), today.strftime("%Y-%m"), amount))
+    db.commit()
+    return None, aid
+
+
 def adv_create(db, user_id, amount, actor_id, actor_name, approve=False, n=None):
     """Avans kaydı. approve=True → owner doğrudan verdi (active + takvim).
     Döner: (hata | None, advance_id)."""
@@ -19253,6 +19279,39 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"💸 Аванс выдан — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум\n"
                 f"К возврату {fmt_sum(row['total'])} сум · {int(row['n_inst'] or 3)} ч. из зарплаты.",
+                parse_mode="Markdown")
+
+        # ─── ANINDA avans (owner nakit verdi → bugün hesaptan düşer) ───
+        elif action == "adv_instant":
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                await update.message.reply_text("❌ Только владелец.")
+                return
+            try:
+                target_id = int(data.get("target") or 0)
+            except Exception:
+                target_id = 0
+            if not target_id or not db.execute("SELECT 1 FROM users WHERE user_id=?", (target_id,)).fetchone():
+                await update.message.reply_text("❌ Сотрудник не найден.")
+                return
+            err, aid = adv_create_instant(db, target_id, _norm_amt(data.get("amount", 0)), user.id, user.first_name,
+                                          data.get("note") or "")
+            if err:
+                await update.message.reply_text("❌ " + err)
+                return
+            row = db.execute("SELECT * FROM advances WHERE id=?", (aid,)).fetchone()
+            _gnm = display_name_for(db, target_id, fallback="?")
+            log_action(db, "adv_instant", user.id, user.first_name, target_id, _gnm,
+                       {"adv_id": aid, "amount": row["amount"], "note": row["decision_note"]})
+            if target_id != user.id:
+                try:
+                    await context.bot.send_message(
+                        target_id, f"💸 Вам выдан аванс: *{fmt_sum(row['amount'])} сум*.\nУдержан из зарплаты сразу (эта декада).",
+                        parse_mode="Markdown")
+                except Exception:
+                    pass
+            await update.message.reply_text(
+                f"💸 Аванс — *{md_safe(_gnm)}*: {fmt_sum(row['amount'])} сум · удержан из зарплаты сразу.",
                 parse_mode="Markdown")
 
         # ─── ÖZEL avans (owner elle): parça sayısı / aralık / komisyon owner'da ───
