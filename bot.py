@@ -14624,6 +14624,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 bid = 0
             if bid and branch_ready(get_branch(db, bid)):
                 act = get_active_shift(db, user.id)
+                _old_bid = int(act["branch_id"] or 0) if act is not None else 0
                 if act is not None:
                     db.execute("UPDATE shifts SET branch_id=? WHERE id=?", (bid, act["id"]))
                 db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)",
@@ -14635,6 +14636,13 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     log_action(db, "move_shift_branch", user.id, user.first_name, user.id, shown,
                                {"shift_id": act["id"],
                                 "branch": (get_branch(db, bid) or {})["name"] if get_branch(db, bid) else str(bid)})
+                    # İKİ GRUP DA BİLSİN (owner 2026-11-16): eski şubedeki «начал(а) смену»
+                    # mesajı «перенесена в …» olur, yeni şubeye «начал(а) смену · перешёл(а) из …».
+                    if _old_bid and _old_bid != bid:
+                        try:
+                            await shift_move_announce(context.bot, db, act, _old_bid, bid, shown)
+                        except Exception as _e:
+                            logger.warning(f"shift_move_announce: {_e}")
 
         elif action == "cancel_scheduled":
             # Bekleyen zamanlı siparişi iptal et (kendi siparişin ya da owner)
@@ -22911,6 +22919,55 @@ def sent_msg_record(db, msg):
     except Exception as _e:
         logger.warning(f"sent_msg_record: {_e}")
         return None
+
+
+async def shift_move_announce(bot, db, act, old_bid, new_bid, shown):
+    """Açık vardiya başka şubeye taşındı → eski gruptaki başlangıç mesajı düzeltilir,
+    yeni gruba başlangıç mesajı gider (owner 2026-11-16: «iki taraftan da anlaşılmalı»)."""
+    from html import escape as esc_html
+    on = (get_branch(db, old_bid) or {}).get("name") or "?"
+    nn = (get_branch(db, new_bid) or {}).get("name") or "?"
+    now_s = datetime.now(TZ).strftime("%H:%M")
+    try:
+        st = datetime.fromisoformat(act["start_time"]).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        st = ""
+    old_chats = branch_group_chats(db, (old_bid,))
+    new_chats = branch_group_chats(db, (new_bid,))
+    if old_chats and old_chats == new_chats:
+        return
+    edited = set()
+    for r in db.execute("SELECT * FROM sent_msgs WHERE shift_id=? AND kind='shift_start'", (int(act["id"]),)).fetchall():
+        if str(r["chat_id"]) not in old_chats:
+            continue
+        try:
+            await bot.edit_message_text(
+                chat_id=int(r["chat_id"]), message_id=int(r["message_id"]), parse_mode="HTML",
+                text=(f"↪️ <s>{esc_html(shown)} начал(а) смену</s>\n⏰ {st}\n"
+                      f"Смена перенесена в <b>{esc_html(nn)}</b> в {now_s}"))
+            db.execute("UPDATE sent_msgs SET kind='shift_moved' WHERE id=?", (r["id"],))
+            edited.add(str(r["chat_id"]))
+        except Exception as _e:
+            logger.warning(f"shift_move edit {r['chat_id']}/{r['message_id']}: {_e}")
+    for g in old_chats:
+        if g in edited or g in new_chats:
+            continue
+        try:
+            await bot.send_message(chat_id=int(g), parse_mode="HTML",
+                                   text=f"↪️ <b>{esc_html(shown)}</b> перешёл(а) в <b>{esc_html(nn)}</b> в {now_s} — смена продолжается там")
+        except Exception as _e:
+            logger.warning(f"shift_move old {g}: {_e}")
+    for g in new_chats:
+        if g in old_chats:
+            continue
+        try:
+            m = await bot.send_message(chat_id=int(g), parse_mode="HTML",
+                                       text=(f"🟢 <b>{esc_html(shown)}</b> начал(а) смену\n⏰ {st}\n"
+                                             f"↪️ перешёл(а) из {esc_html(on)} в {now_s}"))
+            sent_msg_tag(db, m, "shift_start", act["id"])
+        except Exception as _e:
+            logger.warning(f"shift_move new {g}: {_e}")
+    db.commit()
 
 
 def sent_msg_tag(db, msg, kind, shift_id):
