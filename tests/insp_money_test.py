@@ -83,5 +83,17 @@ check(r and not r.get('ok'), 'barista elle prim veremez')
 r = act(1, {'action': 'cps_insp_bonus', 'id': iid2, 'uid': 11, 'amount': '300 000'})
 check(r and r.get('ok') and any(a['amount'] == 300000 and 'от владельца' in a['note'] for a in adj(11)), f'elle prim yazıldı ({adj(11)})')
 check(any(int(q['id']) == 11 for q in json.loads(db.execute("SELECT people FROM cps_inspections WHERE id=?", (iid2,)).fetchone()[0])), 'kişi kontrol satırına eklendi')
+# grup mesajında kontrol satırları (owner 2026-11-17)
+txt = bot.insp_lines_text(db, per, 1)
+check('• №1' in txt and 'Karina — 79.9%' in txt, f'satırlar ({txt})')
+edits = []
+class FB2(FB):
+    async def edit_message_text(self, chat_id=None, message_id=None, text=None, **k): edits.append((chat_id, message_id, text))
+db.execute("INSERT INTO sent_msgs (chat_id,message_id,text,ents,created_at) VALUES (-100,77,?,'[]',?)",
+           ("\U0001f3af Проверка пройдена: 175.07 / 160. Цель достигнута — молодцы!", per + "-17T16:30:00"))
+db.commit()
+n = asyncio.run(bot.insp_group_msg_fix(FB2(), db))
+check(n == 1 and edits and edits[0][1] == 77 and '• №1' in edits[0][2] and edits[0][2].startswith('\U0001f3af Проверка пройдена: 175.07'), f'eski mesaj düzeltildi ({edits})')
+check(asyncio.run(bot.insp_group_msg_fix(FB2(), db)) == 0, 'ikinci kez çalışmaz')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
