@@ -11042,7 +11042,22 @@ def build_hash_payload(db, user_id, name, sel_period=None):
             _ext = [{"id": -r["id"], "n": r["name"] or "?", "own": int(r["own"] or 0), "w": int(r["waste"] or 0),
                      "s": int(r["supply"] or 0)} for r in db.execute(
                 "SELECT * FROM brx_ext WHERE COALESCE(archived,0)=0 ORDER BY name").fetchall()]
-            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext}, ensure_ascii=False))}")
+            # Owner: TÜM ürün adları (birleştirme ekranı, owner 2026-11-17: «aynı ürün farklı adlarla»).
+            _names = []
+            if role == "owner":
+                _nmc = {}
+                for _r in db.execute("SELECT item, unit, COUNT(*) AS c FROM brx_tx WHERE COALESCE(voided,0)=0 GROUP BY item, unit").fetchall():
+                    _k = " ".join(str(_r["item"] or "").split())
+                    if not _k:
+                        continue
+                    _e = _nmc.setdefault(_k.casefold(), {"n": _k, "c": 0, "u": []})
+                    _e["c"] += int(_r["c"] or 0)
+                    if (_r["unit"] or "шт") not in _e["u"]:
+                        _e["u"].append(_r["unit"] or "шт")
+                for _i in _its:
+                    _nmc.setdefault(" ".join(str(_i["n"] or "").split()).casefold(), {"n": _i["n"], "c": 0, "u": [_i["u"]]})
+                _names = sorted(_nmc.values(), key=lambda x: x["n"].casefold())
+            parts.append(f"brx={quote(json.dumps({'tx': brx_view(db, _ob), 'bal': _bal, 'items': _its, 'ext': _ext, 'names': _names}, ensure_ascii=False))}")
             parts.append(f"exp_names={quote(json.dumps(exp_names(db), ensure_ascii=False))}")
             # «Расходы» — yalnız owner (owner 2026-10-07)
             if role == "owner":
@@ -20079,6 +20094,38 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES (?,?)", (_fk, f"{0 if _u2 else _fn}|{_u2}"))
                     db.commit()
                     await update.message.reply_text("❌ Неверный PIN.")
+
+        elif action == "brx_merge_many":
+            # BİRDEN ÇOK ADI TEK ADA (owner 2026-11-17). `dst` seçilenlerden biri ya da yeni ad.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            _dst = " ".join(str(data.get("dst") or "").split())[:80]
+            _srcs = [" ".join(str(x or "").split()) for x in (data.get("srcs") or [])]
+            _srcs = [x for x in _srcs if x and x.casefold() != _dst.casefold()]
+            if not _dst or not _srcs:
+                context.result = {"ok": False, "error": "Выберите хотя бы два названия."}; return
+            _sk = {x.casefold() for x in _srcs}
+            _ids = [int(r["id"]) for r in db.execute("SELECT id, item FROM brx_tx").fetchall()
+                    if " ".join(str(r["item"] or "").split()).casefold() in _sk]
+            for _i in _ids:
+                db.execute("UPDATE brx_tx SET item=? WHERE id=?", (_dst, _i))
+            _live = [r for r in db.execute("SELECT * FROM brx_items WHERE COALESCE(archived,0)=0").fetchall()]
+            _has_dst = any(" ".join(str(r["name"] or "").split()).casefold() == _dst.casefold() for r in _live)
+            _arch, _tpl = 0, None
+            for r in _live:
+                if " ".join(str(r["name"] or "").split()).casefold() in _sk:
+                    _tpl = _tpl or r
+                    db.execute("UPDATE brx_items SET archived=1 WHERE id=?", (int(r["id"]),)); _arch += 1
+            # Yeni ad listede yoksa: birleşenlerden birinin birimi/paketiyle eklenir (seçilebilsin).
+            if not _has_dst and _tpl is not None and not brx_cup_name(_dst):
+                db.execute("INSERT INTO brx_items (name, unit, by_name, at, pack) VALUES (?,?,?,?,?)",
+                           (_dst, _tpl["unit"] or "шт", display_name_for(db, user.id, fallback=user.first_name),
+                            now.isoformat(), _tpl["pack"]))
+            db.commit()
+            log_action(db, "brx_merge", user.id, user.first_name, None, "",
+                       {"srcs": _srcs, "dst": _dst, "tx_ids": _ids, "items_archived": _arch})
+            context.result = {"ok": True, "done": len(_ids)}
 
         elif action == "brx_merge":
             # AYNI ÜRÜN İKİ ADLA (owner 2026-10-31: «Cacao / Какао», «Сливки 11% / Сливки 11% 0,2 л»):
