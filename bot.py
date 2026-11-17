@@ -11550,6 +11550,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                         "note": r["note"] or "", "by": r["added_by_name"] or "",
                                         "at": r["created_at"],
                                         "ppl": [q.get("n", "") for q in (json.loads(r["people"]) if r["people"] else [])],
+                                        "ppl_ids": [q.get("id") for q in (json.loads(r["people"]) if r["people"] else [])],
                                         "money": int((db.execute("SELECT COALESCE(SUM(amount),0) AS a FROM adjustments "
                                                                  "WHERE note LIKE ?", (f"%{INSP_TAG.format(r['id'])}%",)
                                                                  ).fetchone() or {"a": 0})["a"] or 0)}
@@ -15472,6 +15473,46 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "score": _ir["score"]})
             await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430."
                                             + (f" Премия/удержание отменены ({_nadj})." if _nadj else ""))
+
+        elif action == "cps_insp_bonus":
+            # ELLE PRİM (owner 2026-11-17: kural konmadan önce «90 üstüne 200-300 bin» sözü verilmişti).
+            # Kontrole bağlı (etiket) → kontrol silinirse bu prim de geri alınır.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            try:
+                _iid = int(data.get("id") or 0); _uid = int(data.get("uid") or 0)
+                _amt = int(_norm_amt(data.get("amount", 0)))
+            except Exception:
+                _iid = _uid = _amt = 0
+            _ir = db.execute("SELECT * FROM cps_inspections WHERE id=?", (_iid,)).fetchone() if _iid else None
+            if not _ir or not _uid or not db.execute("SELECT 1 FROM users WHERE user_id=?", (_uid,)).fetchone():
+                context.result = {"ok": False, "error": "Проверка или сотрудник не найдены."}; return
+            if not (1 <= _amt <= 100_000_000):
+                context.result = {"ok": False, "error": "Укажите сумму."}; return
+            _fp = (f"{float(_ir['score'] or 0):.2f}").rstrip("0").rstrip(".")
+            _tag = INSP_TAG.format(_iid)
+            db.execute("INSERT INTO adjustments (user_id,amount,note,period,branch_id,added_by,added_by_name,created_at) "
+                       "VALUES (?,?,?,?,?,?,?,?)",
+                       (_uid, _amt, f"Премия за проверку №{_ir['idx']} · {_fp}% · от владельца {_tag}", _ir["period"],
+                        int(_ir["branch_id"] or 0), user.id, user.first_name, now.isoformat()))
+            # Kişi kontrol satırında «проходил(а)» olarak görünsün.
+            try:
+                _pp = json.loads(_ir["people"] or "[]")
+            except Exception:
+                _pp = []
+            if _uid not in [int(q.get("id") or 0) for q in _pp]:
+                _pp.append({"id": _uid, "n": display_name_for(db, _uid, fallback="?")})
+                db.execute("UPDATE cps_inspections SET people=? WHERE id=?", (json.dumps(_pp, ensure_ascii=False), _iid))
+            db.commit()
+            log_action(db, "cps_insp_bonus", user.id, user.first_name, _uid, display_name_for(db, _uid, fallback="?"),
+                       {"insp": _iid, "amount": _amt, "score": float(_ir["score"] or 0)})
+            try:
+                await context.bot.send_message(chat_id=_uid, text=(
+                    f"🎉 Премия за проверку №{_ir['idx']} ({_fp}%): {fmt_sum(_amt)} сум. Спасибо за отличную работу!"))
+            except Exception:
+                pass
+            context.result = {"ok": True}
 
         elif action == "cps_insp_cfg":
             # Kontrol primi/kesintisi ayarı (owner 2026-11-15). Geriye dönük uygulanmaz.

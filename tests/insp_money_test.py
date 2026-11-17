@@ -76,5 +76,12 @@ for sc in (95, 96, 97.9, 99, 100):
     db.execute("UPDATE cps_inspections SET score=? WHERE id=?", (sc, iid)); db.commit()
     got.append(bot.insp_apply_money(db, iid)[0][1])
 check(got == [500000, 600000, 700000, 900000, 1000000], f'kademe ({got})')
+# elle prim (owner 2026-11-17: kural öncesi söz)
+iid2 = db.execute("SELECT id FROM cps_inspections ORDER BY id DESC").fetchone()[0]
+r = act(10, {'action': 'cps_insp_bonus', 'id': iid2, 'uid': 11, 'amount': 300000})
+check(r and not r.get('ok'), 'barista elle prim veremez')
+r = act(1, {'action': 'cps_insp_bonus', 'id': iid2, 'uid': 11, 'amount': '300 000'})
+check(r and r.get('ok') and any(a['amount'] == 300000 and 'от владельца' in a['note'] for a in adj(11)), f'elle prim yazıldı ({adj(11)})')
+check(any(int(q['id']) == 11 for q in json.loads(db.execute("SELECT people FROM cps_inspections WHERE id=?", (iid2,)).fetchone()[0])), 'kişi kontrol satırına eklendi')
 print('ALL OK' if not FAIL else 'FAILED: %s' % FAIL)
 raise SystemExit(1 if FAIL else 0)
