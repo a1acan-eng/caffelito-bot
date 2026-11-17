@@ -4745,6 +4745,51 @@ def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
     return out
 
 
+def insp_lines_text(db, period, branch_id):
+    """Grup mesajına: her kontrol ayrı satır — №, tarih, kim geçti, yüzde (owner 2026-11-17:
+    «1. ve 2.de kim kaç aldığı görünsün»)."""
+    out = []
+    for r in db.execute("SELECT * FROM cps_inspections WHERE period=? AND branch_id=? ORDER BY idx",
+                        (period, int(branch_id))).fetchall():
+        try:
+            ppl = ", ".join(q.get("n", "") for q in json.loads(r["people"] or "[]") if q.get("n"))
+        except Exception:
+            ppl = ""
+        try:
+            d = datetime.fromisoformat(r["created_at"]).strftime("%d.%m")
+        except Exception:
+            d = ""
+        sc = (f"{float(r['score'] or 0):.2f}").rstrip("0").rstrip(".")
+        out.append(f"• №{r['idx']}" + (f" · {d}" if d else "") + f" · {ppl or '—'} — {sc}%")
+    return ("\n" + "\n".join(out)) if out else ""
+
+
+async def insp_group_msg_fix(bot, db):
+    """TEK SEFER (owner 2026-11-17): bu ay gruba giden «Проверка пройдена» mesajlarına
+    kontrol satırları eklenir (aynı mesaj düzenlenir)."""
+    if db.execute("SELECT 1 FROM meta WHERE k='insp_msg_fix1'").fetchone():
+        return 0
+    per, n = current_period(), 0
+    for b in db.execute("SELECT id, group_chat_id FROM branches WHERE COALESCE(group_chat_id,'')<>''").fetchall():
+        add = insp_lines_text(db, per, b["id"])
+        if not add:
+            continue
+        for m in db.execute("SELECT * FROM sent_msgs WHERE chat_id=? AND text LIKE ? AND created_at>=? ORDER BY id DESC LIMIT 1",
+                            (int(b["group_chat_id"]), "\U0001f3af Проверка пройдена:%", per + "-01")).fetchall():
+            if "• №" in (m["text"] or ""):
+                continue
+            try:
+                await bot.edit_message_text(chat_id=int(m["chat_id"]), message_id=int(m["message_id"]),
+                                            text=(m["text"] or "").rstrip() + add)
+                db.execute("UPDATE sent_msgs SET text=? WHERE id=?", ((m["text"] or "").rstrip() + add, m["id"]))
+                n += 1
+            except Exception as e:
+                logger.warning(f"insp_group_msg_fix {b['id']}: {e}")
+    db.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('insp_msg_fix1', ?)", (str(n),))
+    db.commit()
+    return n
+
+
 def cps_fr_total(db, period, branch_id=None):
     """Donemdeki proverka sonuclarinin TOPLAMI (+ kac tanesi girilmis)."""
     try:
@@ -15445,6 +15490,7 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                     f"\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d \u0434\u043e {int(_cfg['fr_restore'])}.")
                         else:
                             _gt += " \u0426\u0435\u043b\u044c \u0434\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442\u0430 \u2014 \u043c\u043e\u043b\u043e\u0434\u0446\u044b!"
+                        _gt += insp_lines_text(db, per, bid)
                         await context.bot.send_message(chat_id=int(_g2["group_chat_id"]), text=_gt)
                 except Exception:
                     pass
@@ -22659,6 +22705,10 @@ async def setup_commands(app):
                     pass
     except Exception as e:
         logger.warning(f"overlap30 startup: {e}")
+    try:
+        await insp_group_msg_fix(app.bot, get_db())
+    except Exception as e:
+        logger.warning(f"insp_group_msg_fix startup: {e}")
     # Kayıtlı aktif grup (test/şube için /setgroup ile değiştirilebilir) — restart'ta yüklensin
     try:
         _db = get_db()
