@@ -4760,7 +4760,7 @@ def insp_lines_text(db, period, branch_id):
         except Exception:
             d = ""
         sc = (f"{float(r['score'] or 0):.2f}").rstrip("0").rstrip(".")
-        out.append(f"• №{r['idx']}" + (f" · {d}" if d else "") + f" · {ppl or '—'} — {sc}%")
+        out.append(f"• №{r['idx']}" + (f" · {d}" if d else "") + (f" · {ppl}" if ppl else "") + f" — {sc}%")
     return ("\n" + "\n".join(out)) if out else ""
 
 
