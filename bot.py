@@ -4764,6 +4764,31 @@ def insp_lines_text(db, period, branch_id):
     return ("\n" + "\n".join(out)) if out else ""
 
 
+async def insp_group_refresh(bot, db, period, branch_id):
+    """Kontrolde kişi değişti → gruptaki bu ayın «Проверка пройдена» mesajındaki satırlar
+    güncellenir (aynı mesaj düzenlenir). Döner: düzenlenen sayısı."""
+    b = db.execute("SELECT group_chat_id FROM branches WHERE id=?", (int(branch_id),)).fetchone()
+    if not b or not str(b["group_chat_id"] or "").strip():
+        return 0
+    m = db.execute("SELECT * FROM sent_msgs WHERE chat_id=? AND text LIKE ? AND created_at>=? ORDER BY id DESC LIMIT 1",
+                   (int(b["group_chat_id"]), "\U0001f3af Проверка пройдена:%", period + "-01")).fetchone()
+    if not m:
+        return 0
+    head = (m["text"] or "").split("\n• №")[0].rstrip()
+    new = head + insp_lines_text(db, period, branch_id)
+    if new == (m["text"] or ""):
+        return 0
+    try:
+        await bot.edit_message_text(chat_id=int(m["chat_id"]), message_id=int(m["message_id"]), text=new)
+    except Exception as e:
+        if "not modified" not in str(e).lower():
+            logger.warning(f"insp_group_refresh {branch_id}: {e}")
+            return 0
+    db.execute("UPDATE sent_msgs SET text=? WHERE id=?", (new, m["id"]))
+    db.commit()
+    return 1
+
+
 async def insp_group_msg_fix(bot, db):
     """TEK SEFER (owner 2026-11-17): bu ay gruba giden «Проверка пройдена» mesajlarına
     kontrol satırları eklenir (aynı mesaj düzenlenir)."""
@@ -15520,6 +15545,41 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430."
                                             + (f" Премия/удержание отменены ({_nadj})." if _nadj else ""))
 
+        elif action == "cps_insp_people":
+            # KİM GEÇTİ düzeltmesi (owner 2026-11-18). Para YAZMAZ; kuralın otomatik primi/kesintisi
+            # varsa yeni kişiye taşınır. Owner'ın elle primleri («от владельца») DOKUNULMAZ.
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            try:
+                _iid = int(data.get("id") or 0); _uid = int(data.get("uid") or 0)
+            except Exception:
+                _iid = _uid = 0
+            _ir = db.execute("SELECT * FROM cps_inspections WHERE id=?", (_iid,)).fetchone() if _iid else None
+            if not _ir:
+                context.result = {"ok": False, "error": "Проверка не найдена."}; return
+            if _uid and not db.execute("SELECT 1 FROM users WHERE user_id=?", (_uid,)).fetchone():
+                context.result = {"ok": False, "error": "Сотрудник не найден."}; return
+            _pp = [{"id": _uid, "n": display_name_for(db, _uid, fallback="?")}] if _uid else []
+            db.execute("UPDATE cps_inspections SET people=? WHERE id=?", (json.dumps(_pp, ensure_ascii=False), _iid))
+            _tag = INSP_TAG.format(_iid)
+            _gone = db.execute("DELETE FROM adjustments WHERE note LIKE ? AND note NOT LIKE ?",
+                               (f"%{_tag}%", "%от владельца%")).rowcount
+            db.commit()
+            _money = insp_apply_money(db, _iid, None, user.id, user.first_name)
+            log_action(db, "cps_insp_people", user.id, user.first_name, _uid or None,
+                       (_pp[0]["n"] if _pp else ""), {"insp": _iid, "removed_auto": _gone, "new_auto": len(_money)})
+            for _nu, _na, _nt in _money:
+                try:
+                    await context.bot.send_message(chat_id=int(_nu), text=_nt)
+                except Exception:
+                    pass
+            try:
+                await insp_group_refresh(context.bot, db, _ir["period"], _ir["branch_id"])
+            except Exception as e:
+                logger.warning(f"cps_insp_people group: {e}")
+            context.result = {"ok": True, "moved": _gone, "auto": len(_money)}
+
         elif action == "cps_insp_bonus":
             # ELLE PRİM (owner 2026-11-17: kural konmadan önce «90 üstüne 200-300 bin» sözü verilmişti).
             # Kontrole bağlı (etiket) → kontrol silinirse bu prim de geri alınır.
@@ -15556,6 +15616,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 await context.bot.send_message(chat_id=_uid, text=(
                     f"🎉 Премия за проверку №{_ir['idx']} ({_fp}%): {fmt_sum(_amt)} сум. Спасибо за отличную работу!"))
+            except Exception:
+                pass
+            try:
+                await insp_group_refresh(context.bot, db, _ir["period"], _ir["branch_id"])
             except Exception:
                 pass
             context.result = {"ok": True}
