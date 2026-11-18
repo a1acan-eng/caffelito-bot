@@ -85,7 +85,7 @@ check(r and r.get('ok') and any(a['amount'] == 300000 and 'от владельц
 check(any(int(q['id']) == 11 for q in json.loads(db.execute("SELECT people FROM cps_inspections WHERE id=?", (iid2,)).fetchone()[0])), 'kişi kontrol satırına eklendi')
 # grup mesajında kontrol satırları (owner 2026-11-17)
 txt = bot.insp_lines_text(db, per, 1)
-check('• №1' in txt and 'Karina — 79.9%' in txt, f'satırlar ({txt})')
+check('• №1' in txt and 'KARINA — 79.9%' in txt, f'satırlar ({txt})')
 edits = []
 class FB2(FB):
     async def edit_message_text(self, chat_id=None, message_id=None, text=None, **k): edits.append((chat_id, message_id, text))
