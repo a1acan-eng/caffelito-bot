@@ -231,7 +231,8 @@ def get_db():
         score INTEGER DEFAULT 0, note TEXT,
         added_by INTEGER, added_by_name TEXT, created_at TEXT)""")
     # Kontrolde kim vardi (owner 2026-11-15): [{"id","n"}] + otomatik prim/kesinti adjustment id'leri.
-    for _c in ("people", "adj"):
+    # Kontrolcünün geliş günü/saati ve çıkışı (owner 2026-11-18: blanktaki «время проведения»).
+    for _c in ("people", "adj", "visit_date", "t_in", "t_out"):
         try:
             db.execute(f"ALTER TABLE cps_inspections ADD COLUMN {_c} TEXT")
         except sqlite3.OperationalError:
@@ -4745,6 +4746,52 @@ def insp_apply_money(db, insp_id, cfg=None, actor_id=0, actor_name="Nero"):
     return out
 
 
+def insp_visit_parse(data):
+    """(tarih YYYY-MM-DD | None, geliş HH:MM | None, çıkış HH:MM | None, hata | None)."""
+    def hm(v):
+        v = str(v or "").strip().replace(".", ":")
+        if not v:
+            return None, None
+        try:
+            h, m = v.split(":")[:2]
+            h, m = int(h), int(m)
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return f"{h:02d}:{m:02d}", None
+        except Exception:
+            pass
+        return None, "Время в формате ЧЧ:ММ."
+    d = str(data.get("date") or "").strip()
+    dv = None
+    if d:
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d.%m.%y"):
+            try:
+                dv = datetime.strptime(d, fmt).date().isoformat(); break
+            except Exception:
+                continue
+        if not dv:
+            return None, None, None, "Дата в формате ДД.ММ.ГГГГ."
+    a, e1 = hm(data.get("t_in")); b, e2 = hm(data.get("t_out"))
+    if e1 or e2:
+        return None, None, None, e1 or e2
+    if a and b and b < a:
+        return None, None, None, "Ушёл не может быть раньше, чем пришёл."
+    return dv, a, b, None
+
+
+def insp_when_text(r):
+    """«18.11 · 16:38–17:10» — kontrol günü ve saatleri; yoksa kayıt tarihi."""
+    keys = r.keys() if hasattr(r, "keys") else r
+    vd = r["visit_date"] if "visit_date" in keys else None
+    try:
+        d = datetime.fromisoformat(vd or r["created_at"]).strftime("%d.%m")
+    except Exception:
+        d = ""
+    a = r["t_in"] if "t_in" in keys else None
+    b = r["t_out"] if "t_out" in keys else None
+    tm = (f"{a}–{b}" if a and b else (f"с {a}" if a else (f"до {b}" if b else "")))
+    return " · ".join(x for x in (d, tm) if x)
+
+
 def insp_lines_text(db, period, branch_id):
     """Grup mesajına: her kontrol ayrı satır — №, tarih, kim geçti, yüzde (owner 2026-11-17:
     «1. ve 2.de kim kaç aldığı görünsün»)."""
@@ -4758,10 +4805,7 @@ def insp_lines_text(db, period, branch_id):
                             for q in json.loads(r["people"] or "[]") if q.get("id") or q.get("n"))
         except Exception:
             ppl = ""
-        try:
-            d = datetime.fromisoformat(r["created_at"]).strftime("%d.%m")
-        except Exception:
-            d = ""
+        d = insp_when_text(r)
         sc = (f"{float(r['score'] or 0):.2f}").rstrip("0").rstrip(".")
         out.append(f"• №{r['idx']}" + (f" · {d}" if d else "") + (f" · {ppl}" if ppl else "") + f" — {sc}%")
     return ("\n" + "\n".join(out)) if out else ""
@@ -11604,7 +11648,7 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                                  "ORDER BY COALESCE(sort_order,0), id").fetchall():
                 _bid = int(_b["id"])
                 _rs = db.execute(
-                    "SELECT id, idx, score, note, added_by_name, created_at, people, adj FROM cps_inspections "
+                    "SELECT id, idx, score, note, added_by_name, created_at, people, adj, visit_date, t_in, t_out FROM cps_inspections "
                     "WHERE period=? AND branch_id=? ORDER BY idx", (_selp, _bid)).fetchall()
                 _rch, _tt = cps_fr_reached(db, _selp, _bid, _ccfg)
                 _restored = bool(db.execute(
@@ -11622,6 +11666,8 @@ def build_hash_payload(db, user_id, name, sel_period=None):
                               "rows": [{"id": r["id"], "idx": r["idx"], "score": r["score"],
                                         "note": r["note"] or "", "by": r["added_by_name"] or "",
                                         "at": r["created_at"],
+                                        "vd": r["visit_date"] or "", "ti": r["t_in"] or "", "to": r["t_out"] or "",
+                                        "when": insp_when_text(r),
                                         "ppl": [q.get("n", "") for q in (json.loads(r["people"]) if r["people"] else [])],
                                         "ppl_ids": [q.get("id") for q in (json.loads(r["people"]) if r["people"] else [])],
                                         "money": int((db.execute("SELECT COALESCE(SUM(amount),0) AS a FROM adjustments "
@@ -15453,11 +15499,15 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     _ur = db.execute("SELECT name FROM users WHERE user_id=?", (_u,)).fetchone()
                     if _ur and _u not in [q["id"] for q in _people]:
                         _people.append({"id": _u, "n": _ur["name"] or ""})
+            _vd, _ta, _tb, _verr = insp_visit_parse(data)
+            if _verr:
+                await update.message.reply_text("❌ " + _verr)
+                return
             _cur = db.execute(
-                "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at,people) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO cps_inspections (period,branch_id,idx,score,note,added_by,added_by_name,created_at,people,"
+                "visit_date,t_in,t_out) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (per, bid, int(_prev) + 1, sc, str(data.get("note") or "").strip(),
-                 user.id, user.first_name, now_s, json.dumps(_people, ensure_ascii=False)))
+                 user.id, user.first_name, now_s, json.dumps(_people, ensure_ascii=False), _vd, _ta, _tb))
             _iid = _cur.lastrowid
             db.commit()
             _cfg = cps_cfg(db)
@@ -15547,6 +15597,31 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         "score": _ir["score"]})
             await update.message.reply_text("\u267b\ufe0f \u0417\u0430\u043f\u0438\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0443\u0434\u0430\u043b\u0435\u043d\u0430."
                                             + (f" Премия/удержание отменены ({_nadj})." if _nadj else ""))
+
+        elif action == "cps_insp_time":
+            # Kontrolün günü / geliş / çıkış saati — sonradan düzeltme (owner 2026-11-18).
+            db = get_db()
+            if get_role(db, user.id) != "owner":
+                context.result = {"ok": False, "error": "Только владелец."}; return
+            try:
+                _iid = int(data.get("id") or 0)
+            except Exception:
+                _iid = 0
+            _ir = db.execute("SELECT * FROM cps_inspections WHERE id=?", (_iid,)).fetchone() if _iid else None
+            if not _ir:
+                context.result = {"ok": False, "error": "Проверка не найдена."}; return
+            _vd, _ta, _tb, _verr = insp_visit_parse(data)
+            if _verr:
+                context.result = {"ok": False, "error": _verr}; return
+            db.execute("UPDATE cps_inspections SET visit_date=?, t_in=?, t_out=? WHERE id=?", (_vd, _ta, _tb, _iid))
+            db.commit()
+            log_action(db, "cps_insp_time", user.id, user.first_name, None, None,
+                       {"insp": _iid, "date": _vd, "in": _ta, "out": _tb})
+            try:
+                await insp_group_refresh(context.bot, db, _ir["period"], _ir["branch_id"])
+            except Exception:
+                pass
+            context.result = {"ok": True}
 
         elif action == "cps_insp_people":
             # KİM GEÇTİ düzeltmesi (owner 2026-11-18). Para YAZMAZ; kuralın otomatik primi/kesintisi
