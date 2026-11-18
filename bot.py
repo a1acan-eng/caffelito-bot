@@ -4752,7 +4752,10 @@ def insp_lines_text(db, period, branch_id):
     for r in db.execute("SELECT * FROM cps_inspections WHERE period=? AND branch_id=? ORDER BY idx",
                         (period, int(branch_id))).fetchall():
         try:
-            ppl = ", ".join(q.get("n", "") for q in json.loads(r["people"] or "[]") if q.get("n"))
+            # Ad HER YERDE aynı yazılsın (owner 2026-11-18: biri «Xuseyin», öbürü «XUSEYIN» çıkıyordu)
+            # → kayıttaki kopya değil güncel görünen ad, BÜYÜK harfle.
+            ppl = ", ".join(display_name_for(db, int(q.get("id") or 0), fallback=q.get("n", "")).upper()
+                            for q in json.loads(r["people"] or "[]") if q.get("id") or q.get("n"))
         except Exception:
             ppl = ""
         try:
@@ -22773,6 +22776,16 @@ async def setup_commands(app):
         await insp_group_msg_fix(app.bot, get_db())
     except Exception as e:
         logger.warning(f"insp_group_msg_fix startup: {e}")
+    # Tek sefer: bu ayın «Проверка пройдена» mesajları yeni ad yazımıyla (BÜYÜK harf) yenilenir.
+    try:
+        _db1 = get_db()
+        if not _db1.execute("SELECT 1 FROM meta WHERE k='insp_msg_upper'").fetchone():
+            for _b in _db1.execute("SELECT id FROM branches").fetchall():
+                await insp_group_refresh(app.bot, _db1, current_period(), _b["id"])
+            _db1.execute("INSERT OR REPLACE INTO meta (k,val) VALUES ('insp_msg_upper','1')")
+            _db1.commit()
+    except Exception as e:
+        logger.warning(f"insp_msg_upper startup: {e}")
     # Kayıtlı aktif grup (test/şube için /setgroup ile değiştirilebilir) — restart'ta yüklensin
     try:
         _db = get_db()
