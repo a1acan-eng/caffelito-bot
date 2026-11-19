@@ -23121,6 +23121,9 @@ async def web_nero(request):
     return _nocache(_cors(web.FileResponse(full)))
 
 
+_APP_CACHE = {}
+
+
 async def web_app_current(request):
     """SABİT ADRES: /app → HER ZAMAN `nero/index.html` (güncel Nero).
 
@@ -23130,7 +23133,30 @@ async def web_app_current(request):
     full = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nero", "index.html")
     if not os.path.isfile(full):
         return _cors(web.Response(text="404: nero/index.html yok", status=404))
-    return _nocache(_cors(web.FileResponse(full)))
+    # TRAFİK (owner 2026-11-19: Railway faturası 5$ → 15$): sayfa 2,7 MB ve HER açılışta
+    # «no-store» ile baştan iniyordu. Artık: sıkıştırılmış (~1 MB) + ETag → değişmediyse
+    # telefon «304» alır ve hiç indirmez. Yeni sürüm = yeni ETag → hemen güncel sayfa.
+    try:
+        st = os.stat(full)
+        key = (st.st_mtime_ns, st.st_size)
+        c = _APP_CACHE.get("app")
+        if not c or c["key"] != key:
+            import gzip as _gzip, hashlib as _hl
+            raw = open(full, "rb").read()
+            c = {"key": key, "raw": raw, "gz": _gzip.compress(raw, 6),
+                 "etag": '"' + _hl.md5(raw).hexdigest()[:20] + '"'}
+            _APP_CACHE["app"] = c
+        hdr = {"ETag": c["etag"], "Cache-Control": "no-cache, must-revalidate", "Vary": "Accept-Encoding"}
+        inm = request.headers.get("If-None-Match", "")
+        if inm and c["etag"] in inm:
+            return _cors(web.Response(status=304, headers=hdr))
+        if "gzip" in request.headers.get("Accept-Encoding", "").lower():
+            hdr["Content-Encoding"] = "gzip"
+            return _cors(web.Response(body=c["gz"], content_type="text/html", charset="utf-8", headers=hdr))
+        return _cors(web.Response(body=c["raw"], content_type="text/html", charset="utf-8", headers=hdr))
+    except Exception as e:
+        logger.warning(f"web_app_current cache: {e}")
+        return _nocache(_cors(web.FileResponse(full)))
 
 
 async def web_options(request):
@@ -23233,7 +23259,12 @@ async def api_state(request):
         except Exception:
             _role = "barista"
         payload = f"uid={user['id']}&role={_role}&name={_q(user.get('first_name','') or '')}&std_ack=0"
-    return _nocache(_cors(web.Response(text=payload, content_type="text/plain")))
+    _r = web.Response(text=payload, content_type="text/plain")
+    try:
+        _r.enable_compression()   # durum verisi metin → ~10 kat küçülür (trafik, owner 2026-11-19)
+    except Exception:
+        pass
+    return _nocache(_cors(_r))
 
 
 # ── GRUP MESAJLARINI DUZELTME (owner 2026-09-24) ──────────────────────────
